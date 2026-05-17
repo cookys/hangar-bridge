@@ -35,5 +35,5 @@ coverage/
 .env
 .env.local
 
-# local-only design docs (spec, plan, deploy/security notes)
-docs/
+# docs/ — upstream ignored this for local notes; hangar-bridge fork tracks
+# it for project artifacts (file-tree.txt, kind-discrimination-sites.txt etc.)
