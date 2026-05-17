@@ -21,7 +21,7 @@ export function createMcpServer(opts: McpServerOpts): McpServerHandle {
     tools: {},
   }
   const server = new Server(
-    { name: 'claude-mesh-peers', version: '0.1.0' },
+    { name: 'hangar-bridge-peers', version: '0.1.0' },
     { capabilities, instructions: CHANNEL_INSTRUCTIONS }
   )
   return { server, capabilities, instructions: CHANNEL_INSTRUCTIONS }

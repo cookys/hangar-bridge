@@ -8,7 +8,7 @@ function argValue(args: string[], flag: string): string | undefined {
 }
 
 function readConfigRelayUrl(): string | undefined {
-  const p = join(homedir(), '.claude-mesh', 'config.json')
+  const p = join(homedir(), '.hangar-bridge', 'config.json')
   if (!existsSync(p)) return undefined
   try {
     const cfg = JSON.parse(readFileSync(p, 'utf8')) as { relay_url?: unknown }
@@ -19,10 +19,10 @@ function readConfigRelayUrl(): string | undefined {
 }
 
 export function resolveRelayUrl(args: string[]): string {
-  const url = argValue(args, '--relay') ?? process.env.MESH_RELAY ?? readConfigRelayUrl()
+  const url = argValue(args, '--relay') ?? process.env.HANGAR_RELAY ?? readConfigRelayUrl()
   if (!url) {
     throw new Error(
-      'missing relay URL. Provide one of: --relay <url>, MESH_RELAY env var, or pair first with `mesh pair` (writes ~/.claude-mesh/config.json).'
+      'missing relay URL. Provide one of: --relay <url>, HANGAR_RELAY env var, or pair first with `hangar-bridge pair` (writes ~/.hangar-bridge/config.json).'
     )
   }
   return url

@@ -1,9 +1,9 @@
 {
-  "name": "@claude-mesh/relay",
+  "name": "@hangar-bridge/relay",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "bin": { "claude-mesh-relay": "./dist/index.js" },
+  "bin": { "hangar-bridge-relay": "./dist/index.js" },
   "files": ["dist", "src/db/schema.sql"],
   "scripts": {
     "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.cpSync('src/db/schema.sql','dist/db/schema.sql')\"",
@@ -15,7 +15,7 @@
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('coverage',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@claude-mesh/shared": "workspace:*",
+    "@hangar-bridge/shared": "workspace:*",
     "hono": "^4.6.3",
     "@hono/node-server": "^1.13.1",
     "better-sqlite3": "^11.3.0",

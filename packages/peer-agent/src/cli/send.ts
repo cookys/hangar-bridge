@@ -8,10 +8,10 @@ export async function runSend(args: string[]): Promise<void> {
   const to = args[0]
   const content = args[1]
   if (!to || !content) {
-    throw new Error('usage: mesh send <to> <content> [--relay <url>]')
+    throw new Error('usage: hangar-bridge send <to> <content> [--relay <url>]')
   }
   const relayUrl = resolveRelayUrl(args)
-  const token = readTokenFile(join(homedir(), '.claude-mesh', 'token'))
+  const token = readTokenFile(join(homedir(), '.hangar-bridge', 'token'))
   const res = await fetch(new URL('/v1/messages', relayUrl), {
     method: 'POST',
     headers: {

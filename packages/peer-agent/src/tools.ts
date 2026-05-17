@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { HANDLE_REGEX, TEAM_BROADCAST_HANDLE, type OutboundMessage, type MessageId } from '@claude-mesh/shared'
+import { HANDLE_REGEX, TEAM_BROADCAST_HANDLE, type OutboundMessage, type MessageId } from '@hangar-bridge/shared'
 import type { RelayClient } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'

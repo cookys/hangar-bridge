@@ -17,16 +17,16 @@ describe('runPair', () => {
     }), { status: 200 }))
     await runPair({
       relayUrl: 'https://mesh.example',
-      pairCode: 'MESH-XXXX-XXXX-XXXX',
+      pairCode: 'HANGAR-XXXX-XXXX-XXXX',
       deviceLabel: 'laptop',
       home: workdir,
       fetch: fakeFetch as any
     })
-    expect(existsSync(join(workdir, '.claude-mesh/token'))).toBe(true)
-    expect(readFileSync(join(workdir, '.claude-mesh/token'), 'utf8')).toBe('A'.repeat(43))
-    const cfg = JSON.parse(readFileSync(join(workdir, '.claude-mesh/config.json'), 'utf8'))
+    expect(existsSync(join(workdir, '.hangar-bridge/token'))).toBe(true)
+    expect(readFileSync(join(workdir, '.hangar-bridge/token'), 'utf8')).toBe('A'.repeat(43))
+    const cfg = JSON.parse(readFileSync(join(workdir, '.hangar-bridge/config.json'), 'utf8'))
     expect(cfg.relay_url).toBe('https://mesh.example')
-    expect(cfg.token_path).toContain('.claude-mesh')
+    expect(cfg.token_path).toContain('.hangar-bridge')
     expect(cfg.permission_relay.enabled).toBe(false)
   })
 
@@ -34,7 +34,7 @@ describe('runPair', () => {
     const fakeFetch = vi.fn(async () =>
       new Response(JSON.stringify({ error: 'code_expired' }), { status: 400 }))
     await expect(runPair({
-      relayUrl: 'https://mesh.example', pairCode: 'MESH-X', deviceLabel: 'l',
+      relayUrl: 'https://mesh.example', pairCode: 'HANGAR-X', deviceLabel: 'l',
       home: workdir, fetch: fakeFetch as any
     })).rejects.toThrow(/code_expired/)
   })

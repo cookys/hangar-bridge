@@ -10,8 +10,8 @@ function argValue(args: string[], flag: string): string | undefined {
 }
 
 function readAdminToken(): string {
-  const p = join(homedir(), '.claude-mesh', 'admin-token')
-  if (!existsSync(p)) throw new Error(`admin token not found at ${p}. Run "mesh admin bootstrap --token-file <path>" first.`)
+  const p = join(homedir(), '.hangar-bridge', 'admin-token')
+  if (!existsSync(p)) throw new Error(`admin token not found at ${p}. Run "hangar-bridge admin bootstrap --token-file <path>" first.`)
   return readTokenFile(p)
 }
 
@@ -63,7 +63,7 @@ export async function runAdmin(args: string[]): Promise<void> {
     const file = argValue(rest, '--token-file')
     if (!file || !existsSync(file)) throw new Error('need --token-file <path>')
     const raw = readTokenFile(file)
-    const dir = join(homedir(), '.claude-mesh')
+    const dir = join(homedir(), '.hangar-bridge')
     mkdirSync(dir, { recursive: true })
     const p = join(dir, 'admin-token')
     writeFileSync(p, raw, { mode: 0o600 })
@@ -85,7 +85,7 @@ export async function runAdmin(args: string[]): Promise<void> {
   }
   if (sub === 'disable-user') {
     const h = rest[0]
-    if (!h) throw new Error('usage: mesh admin disable-user <handle>')
+    if (!h) throw new Error('usage: hangar-bridge admin disable-user <handle>')
     const res = await fetch(new URL(`/v1/admin/users/${h}`, relayUrl),
       { method: 'DELETE', headers: { authorization: `Bearer ${adminToken}` } })
     if (res.status !== 200) throw new Error(`disable failed: ${res.status}`)
@@ -94,7 +94,7 @@ export async function runAdmin(args: string[]): Promise<void> {
   }
   if (sub === 'delete-user') {
     const h = rest[0]
-    if (!h) throw new Error('usage: mesh admin delete-user <handle>')
+    if (!h) throw new Error('usage: hangar-bridge admin delete-user <handle>')
     const url = new URL(`/v1/admin/users/${h}`, relayUrl)
     url.searchParams.set('hard', 'true')
     const res = await fetch(url,
@@ -121,7 +121,7 @@ export async function runAdmin(args: string[]): Promise<void> {
   }
   if (sub === 'revoke-token') {
     const id = rest[0]
-    if (!id) throw new Error('usage: mesh admin revoke-token <token_id>')
+    if (!id) throw new Error('usage: hangar-bridge admin revoke-token <token_id>')
     const res = await fetch(new URL(`/v1/admin/tokens/${id}`, relayUrl),
       { method: 'DELETE', headers: { authorization: `Bearer ${adminToken}` } })
     if (res.status !== 200) throw new Error(`revoke failed: ${res.status}`)

@@ -7,7 +7,7 @@ import {
   type Envelope,
   type EnvelopeRow,
   type OutboundMessage,
-} from '@claude-mesh/shared'
+} from '@hangar-bridge/shared'
 import type { Db } from '../db/db.ts'
 
 export class MessageStore {

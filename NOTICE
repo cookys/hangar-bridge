@@ -1,0 +1,26 @@
+hangar-bridge
+Copyright (c) 2026 cookys (fork maintainer)
+
+This product includes software originally developed as part of the claude-mesh project:
+
+  claude-mesh
+  https://github.com/pouriamrt/claude-mesh
+  Copyright (c) 2026 Pouria Mortezaagha
+  Licensed under the MIT License (see LICENSE)
+
+The architectural foundation of hangar-bridge — Hono HTTP relay, SSE message delivery,
+SQLite persistence, MCP stdio peer-agent, channel-tag escape, untrusted-input system
+prompt, sender-stamp anti-spoof, roster gate, reply-storm limiter, idempotency keys,
+SSE reconnect with cursor resume — was implemented in claude-mesh and is preserved
+(or extended) in hangar-bridge per the terms of the MIT License.
+
+hangar-bridge diverges from claude-mesh in the following ways (non-exhaustive):
+- Single-tenant per-host shared-secret auth replacing multi-team/admin/human tier
+- New envelope kinds `task_dispatch` and `task_result` for cross-host dispatch
+- Removal of pair-code distribution flow and admin tier routes
+- Bare MCP server registration (--dangerously-load-development-channels server:...)
+  rather than plugin-marketplace path
+- LAN-first transport (single operator's homelab fleet) without Docker/Caddy
+
+No upstream sync is planned; hangar-bridge treats the inherited code as 100% owned
+from 2026-05-17 onward. Upstream was last updated 2026-04-18.

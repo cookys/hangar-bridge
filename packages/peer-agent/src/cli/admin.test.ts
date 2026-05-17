@@ -8,7 +8,7 @@ describe('runAdminAddUser', () => {
       calls.push({ url: String(url), init })
       return new Response(JSON.stringify({
         handle: 'bob', display_name: 'Bob', tier: 'human',
-        pair_code: 'MESH-XXXX-XXXX-XXXX', expires_at: '2026-04-20T00:00:00Z'
+        pair_code: 'HANGAR-XXXX-XXXX-XXXX', expires_at: '2026-04-20T00:00:00Z'
       }), { status: 201 })
     })
     const logs: string[] = []
@@ -19,6 +19,6 @@ describe('runAdminAddUser', () => {
     })
     expect(calls[0]!.url).toContain('/v1/admin/users')
     expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer admin-tok')
-    expect(logs.join('\n')).toContain('MESH-XXXX-XXXX-XXXX')
+    expect(logs.join('\n')).toContain('HANGAR-XXXX-XXXX-XXXX')
   })
 })

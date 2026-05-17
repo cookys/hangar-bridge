@@ -1,5 +1,5 @@
 import { fetch } from 'undici'
-import { EnvelopeSchema, type Envelope } from '@claude-mesh/shared'
+import { EnvelopeSchema, type Envelope } from '@hangar-bridge/shared'
 import { logJson } from './logger.ts'
 
 export interface SseEvent { event: string; data: string }

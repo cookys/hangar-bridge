@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { generatePairCode, parsePairCode } from './pair-code.ts'
 
 describe('pair code', () => {
-  it('generates codes in MESH-XXXX-XXXX-XXXX format', () => {
+  it('generates codes in HANGAR-XXXX-XXXX-XXXX format', () => {
     const code = generatePairCode()
-    expect(code).toMatch(/^MESH-[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}$/)
+    expect(code).toMatch(/^HANGAR-[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}$/)
   })
 
   it('parses a valid code and validates its checksum', () => {
@@ -21,6 +21,6 @@ describe('pair code', () => {
   it('rejects malformed strings', () => {
     expect(parsePairCode('not-a-code')).toBeNull()
     expect(parsePairCode('')).toBeNull()
-    expect(parsePairCode('MESH-XXXX-XXXX')).toBeNull()
+    expect(parsePairCode('HANGAR-XXXX-XXXX')).toBeNull()
   })
 })

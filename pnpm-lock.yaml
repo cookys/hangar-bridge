@@ -23,13 +23,13 @@ importers:
 
   packages/e2e:
     dependencies:
-      '@claude-mesh/peer-agent':
+      '@hangar-bridge/peer-agent':
         specifier: workspace:*
         version: link:../peer-agent
-      '@claude-mesh/relay':
+      '@hangar-bridge/relay':
         specifier: workspace:*
         version: link:../relay
-      '@claude-mesh/shared':
+      '@hangar-bridge/shared':
         specifier: workspace:*
         version: link:../shared
       '@hono/node-server':
@@ -45,7 +45,7 @@ importers:
 
   packages/peer-agent:
     dependencies:
-      '@claude-mesh/shared':
+      '@hangar-bridge/shared':
         specifier: workspace:*
         version: link:../shared
       '@modelcontextprotocol/sdk':
@@ -67,7 +67,7 @@ importers:
 
   packages/relay:
     dependencies:
-      '@claude-mesh/shared':
+      '@hangar-bridge/shared':
         specifier: workspace:*
         version: link:../shared
       '@hono/node-server':

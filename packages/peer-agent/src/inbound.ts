@@ -1,5 +1,5 @@
-import type { Envelope } from '@claude-mesh/shared'
-import { envelopeToChannelNotification } from '@claude-mesh/shared'
+import type { Envelope } from '@hangar-bridge/shared'
+import { envelopeToChannelNotification } from '@hangar-bridge/shared'
 import { SenderGate } from './gate.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'

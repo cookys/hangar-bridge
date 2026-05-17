@@ -1,5 +1,5 @@
 import { ulid } from 'ulid'
-import type { Envelope, OutboundMessage } from '@claude-mesh/shared'
+import type { Envelope, OutboundMessage } from '@hangar-bridge/shared'
 
 export interface RelayClientOpts {
   relayUrl: string

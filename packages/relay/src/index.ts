@@ -7,7 +7,7 @@ import { join, dirname } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
 import { ulid } from 'ulid'
-import { loadEnvFiles } from '@claude-mesh/shared'
+import { loadEnvFiles } from '@hangar-bridge/shared'
 
 async function prompt(q: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
@@ -17,11 +17,11 @@ async function prompt(q: string): Promise<string> {
 async function main() {
   loadEnvFiles()
   const [, , cmd] = process.argv
-  const dataDir = process.env.MESH_DATA ?? '/data'
+  const dataDir = process.env.HANGAR_DATA ?? '/data'
   const dbPath = join(dataDir, 'mesh.sqlite')
   const port = Number(process.env.PORT ?? 443)
   const host = process.env.HOST ?? '0.0.0.0'
-  const inactiveDays = Number(process.env.MESH_INACTIVE_DAYS ?? 30)
+  const inactiveDays = Number(process.env.HANGAR_INACTIVE_DAYS ?? 30)
 
   if (cmd === 'init') {
     if (existsSync(dbPath)) {

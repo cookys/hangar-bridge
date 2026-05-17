@@ -19,12 +19,12 @@ export const ConfigSchema = z.object({
     auto_publish_branch: z.boolean().default(true),
     auto_publish_repo: z.boolean().default(true)
   }).default({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }),
-  audit_log: z.string().default(() => join(homedir(), '.claude-mesh', 'audit'))
+  audit_log: z.string().default(() => join(homedir(), '.hangar-bridge', 'audit'))
 })
 export type MeshConfig = z.infer<typeof ConfigSchema>
 
 export function defaultConfigPath(): string {
-  return join(homedir(), '.claude-mesh', 'config.json')
+  return join(homedir(), '.hangar-bridge', 'config.json')
 }
 
 export function loadConfig(path: string = defaultConfigPath()): MeshConfig {

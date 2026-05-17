@@ -1,5 +1,5 @@
-import type { Envelope } from '@claude-mesh/shared'
-import { TEAM_BROADCAST_HANDLE } from '@claude-mesh/shared'
+import type { Envelope } from '@hangar-bridge/shared'
+import { TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
 
 export interface Subscriber {
   handle: string

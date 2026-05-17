@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { ulid } from 'ulid'
-import { HANDLE_REGEX, PAIR_CODE_TTL_MS } from '@claude-mesh/shared'
+import { HANDLE_REGEX, PAIR_CODE_TTL_MS } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { generatePairCode } from '../auth/pair-code.ts'
 import { hashToken } from '../auth/hash.ts'

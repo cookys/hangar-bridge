@@ -20,7 +20,7 @@ describe('envelopeToChannelNotification', () => {
     expect(n.params.content).toBe('hello')
     expect(n.params.meta).toMatchObject({
       from: 'alice', msg_id: 'msg_01HRK7Y0000000000000000000',
-      source: 'peers', repo: 'claudes-talking'
+      source: 'hangar-bridge', repo: 'claudes-talking'
     })
   })
 

@@ -45,7 +45,7 @@ describe('admin routes', () => {
     expect(res.status).toBe(201)
     const j = await res.json() as any
     expect(j.handle).toBe('bob')
-    expect(j.pair_code).toMatch(/^MESH-/)
+    expect(j.pair_code).toMatch(/^HANGAR-/)
   })
 
   it('rejects duplicate handle', async () => {

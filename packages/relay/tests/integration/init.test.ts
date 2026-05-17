@@ -12,7 +12,7 @@ describe('initTeam', () => {
     const r = initTeam(db, { ...base, admin_handle: 'pouria' })
     expect(r.admin_token).toBeTruthy()
     expect(r.admin_token.length).toBeGreaterThan(16)
-    expect(r.human_pair_code).toMatch(/^MESH-/)
+    expect(r.human_pair_code).toMatch(/^HANGAR-/)
   })
 
   it('rejects an uppercase handle (would fail envelope validation at send time)', () => {

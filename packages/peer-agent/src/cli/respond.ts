@@ -39,12 +39,12 @@ export async function callRespond(opts: RespondOpts): Promise<RespondResponse> {
 export async function runRespond(args: string[]): Promise<void> {
   const [requestId, verdictRaw] = args
   if (!requestId || !verdictRaw || !['allow', 'yes', 'deny', 'no'].includes(verdictRaw)) {
-    throw new Error('usage: mesh respond <request_id> allow|yes|deny|no [--reason "..."] [--relay <url>]')
+    throw new Error('usage: hangar-bridge respond <request_id> allow|yes|deny|no [--reason "..."] [--relay <url>]')
   }
   const verdict: 'allow' | 'deny' = (verdictRaw === 'yes' || verdictRaw === 'allow') ? 'allow' : 'deny'
   const reason = argValue(args, '--reason')
   const relayUrl = resolveRelayUrl(args)
-  const token = readTokenFile(join(homedir(), '.claude-mesh', 'token'))
+  const token = readTokenFile(join(homedir(), '.hangar-bridge', 'token'))
   const opts: RespondOpts = { relayUrl, token, requestId, verdict }
   if (reason !== undefined) opts.reason = reason
   const r = await callRespond(opts)

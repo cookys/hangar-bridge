@@ -1,9 +1,9 @@
 {
-  "name": "@claude-mesh/peer-agent",
+  "name": "@hangar-bridge/peer-agent",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "bin": { "claude-mesh-peer-agent": "./dist/index.js", "mesh": "./dist/cli.js" },
+  "bin": { "hangar-bridge-peer-agent": "./dist/index.js", "hangar-bridge": "./dist/cli.js" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
@@ -13,7 +13,7 @@
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('coverage',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@claude-mesh/shared": "workspace:*",
+    "@hangar-bridge/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.1",
     "zod": "^3.23.8",
     "undici": "^6.20.0",

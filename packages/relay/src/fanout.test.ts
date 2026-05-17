@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Fanout, type Subscriber } from './fanout.ts'
-import type { Envelope } from '@claude-mesh/shared'
+import type { Envelope } from '@hangar-bridge/shared'
 
 const env = (id: string, to: string, from = 'alice'): Envelope => ({
   id: `msg_01HRK7Y000000000000000000${id.padStart(1, '0')}`, v: 1,

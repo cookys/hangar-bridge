@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { OutboundMessageSchema, TEAM_BROADCAST_HANDLE, type Envelope } from '@claude-mesh/shared'
+import { OutboundMessageSchema, TEAM_BROADCAST_HANDLE, type Envelope } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { hashToken } from '../auth/hash.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'

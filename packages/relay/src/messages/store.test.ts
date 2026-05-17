@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDatabase, type Db } from '../db/db.ts'
 import { MessageStore } from './store.ts'
-import type { OutboundMessage } from '@claude-mesh/shared'
+import type { OutboundMessage } from '@hangar-bridge/shared'
 
 function seed(db: Db) {
   const now = new Date().toISOString()

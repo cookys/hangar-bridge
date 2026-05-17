@@ -1,5 +1,5 @@
 {
-  "name": "@claude-mesh/e2e",
+  "name": "@hangar-bridge/e2e",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@claude-mesh/shared": "workspace:*",
-    "@claude-mesh/relay": "workspace:*",
-    "@claude-mesh/peer-agent": "workspace:*",
+    "@hangar-bridge/shared": "workspace:*",
+    "@hangar-bridge/relay": "workspace:*",
+    "@hangar-bridge/peer-agent": "workspace:*",
     "@hono/node-server": "^1.13.1",
     "ulid": "^2.3.0"
   },

@@ -4,16 +4,16 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { resolveRelayUrl } from './relay-url.ts'
 
-// The resolver reads ~/.claude-mesh/config.json via homedir(). We can't remap
+// The resolver reads ~/.hangar-bridge/config.json via homedir(). We can't remap
 // homedir() without process env tricks, so we use the real home directory and
 // clean up after each test.
-const CFG_DIR = join(homedir(), '.claude-mesh')
+const CFG_DIR = join(homedir(), '.hangar-bridge')
 const CFG_PATH = join(CFG_DIR, 'config.json')
 let backup: string | null = null
 
 describe('resolveRelayUrl', () => {
   beforeEach(() => {
-    delete process.env.MESH_RELAY
+    delete process.env.HANGAR_RELAY
     backup = null
     if (existsSync(CFG_PATH)) {
       backup = readFileSync(CFG_PATH, 'utf8')
@@ -30,18 +30,18 @@ describe('resolveRelayUrl', () => {
   })
 
   it('prefers --relay flag over everything else', () => {
-    process.env.MESH_RELAY = 'http://env:8443'
+    process.env.HANGAR_RELAY = 'http://env:8443'
     writeConfig('http://cfg:8443')
     expect(resolveRelayUrl(['--relay', 'http://flag:8443'])).toBe('http://flag:8443')
   })
 
-  it('falls back to MESH_RELAY env when no flag', () => {
-    process.env.MESH_RELAY = 'http://env:8443'
+  it('falls back to HANGAR_RELAY env when no flag', () => {
+    process.env.HANGAR_RELAY = 'http://env:8443'
     writeConfig('http://cfg:8443')
     expect(resolveRelayUrl([])).toBe('http://env:8443')
   })
 
-  it('falls back to ~/.claude-mesh/config.json relay_url when neither flag nor env', () => {
+  it('falls back to ~/.hangar-bridge/config.json relay_url when neither flag nor env', () => {
     writeConfig('http://cfg:8443')
     expect(resolveRelayUrl([])).toBe('http://cfg:8443')
   })

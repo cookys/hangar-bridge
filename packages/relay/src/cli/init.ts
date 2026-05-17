@@ -1,5 +1,5 @@
 import { ulid } from 'ulid'
-import { HANDLE_REGEX, PAIR_CODE_TTL_MS } from '@claude-mesh/shared'
+import { HANDLE_REGEX, PAIR_CODE_TTL_MS } from '@hangar-bridge/shared'
 import { generateRawToken, hashToken } from '../auth/hash.ts'
 import { generatePairCode } from '../auth/pair-code.ts'
 import type { Db } from '../db/db.ts'

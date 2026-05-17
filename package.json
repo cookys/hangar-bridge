@@ -1,27 +1,34 @@
 {
-  "name": "claude-mesh",
+  "name": "hangar-bridge",
   "private": true,
-  "version": "0.1.5",
-  "description": "Networked Claude-to-Claude messaging over HTTP + MCP channels",
+  "version": "0.1.0",
+  "description": "Claude Code Channels MCP server for cross-host fleet dispatch — fork of pouriamrt/claude-mesh with single-tenant per-host shared-secret auth and task_dispatch/task_result envelopes",
   "license": "MIT",
-  "author": "Pouria Mortezaagha",
+  "author": "cookys (fork maintainer)",
+  "contributors": [
+    {
+      "name": "Pouria Mortezaagha",
+      "url": "https://github.com/pouriamrt",
+      "comment": "original author of pouriamrt/claude-mesh (MIT), the upstream from which hangar-bridge is forked"
+    }
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pouriamrt/claude-mesh.git"
+    "url": "git+https://github.com/cookys/hangar-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/pouriamrt/claude-mesh/issues"
+    "url": "https://github.com/cookys/hangar-bridge/issues"
   },
-  "homepage": "https://github.com/pouriamrt/claude-mesh#readme",
+  "homepage": "https://github.com/cookys/hangar-bridge#readme",
   "keywords": [
     "claude-code",
     "claude",
     "anthropic",
     "mcp",
     "model-context-protocol",
-    "mesh-networking",
-    "messaging",
-    "multi-agent"
+    "channels",
+    "fleet-dispatch",
+    "cross-host"
   ],
   "engines": {
     "node": ">=22",

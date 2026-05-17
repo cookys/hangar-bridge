@@ -10,7 +10,7 @@ describe('initTeam', () => {
       admin_handle: 'alice', admin_display_name: 'Alice'
     })
     expect(result.admin_token).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(result.human_pair_code).toMatch(/^MESH-/)
+    expect(result.human_pair_code).toMatch(/^HANGAR-/)
 
     const team = db.prepare("SELECT name FROM team").get() as any
     expect(team.name).toBe('acme')

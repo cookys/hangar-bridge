@@ -28,7 +28,7 @@ export async function runPair(opts: PairOpts): Promise<void> {
   if (res.status !== 200) throw new Error(`pair failed: ${res.status} ${text}`)
   const r = JSON.parse(text) as PairResponse
 
-  const dir = join(home, '.claude-mesh')
+  const dir = join(home, '.hangar-bridge')
   mkdirSync(dir, { recursive: true })
   const tokenPath = join(dir, 'token')
   writeFileSync(tokenPath, r.token, { mode: 0o600 })

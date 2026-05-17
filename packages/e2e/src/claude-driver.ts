@@ -21,7 +21,7 @@ export async function drive(opts: DriveOpts): Promise<string> {
     return out.join('\n')
   }
   return new Promise((resolve, reject) => {
-    const p = spawn('claude', ['--print', '--dangerously-load-development-channels', 'server:claude-mesh-peers'], {
+    const p = spawn('claude', ['--print', '--dangerously-load-development-channels', 'server:hangar-bridge-peers'], {
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env, HOME: opts.cwd },
     })

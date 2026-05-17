@@ -27,11 +27,11 @@ export function generatePairCode(): string {
   const body8 = base32(randomBytes(5)).slice(0, 8)
   const body = `${body8.slice(0, 4)}-${body8.slice(4, 8)}`
   const cs = checksumOf(body)
-  return `MESH-${body}-${cs}`
+  return `HANGAR-${body}-${cs}`
 }
 
 export function parsePairCode(s: string): { body: string } | null {
-  const m = /^MESH-([0-9A-Z]{4})-([0-9A-Z]{4})-([0-9A-Z]{4})$/.exec(s)
+  const m = /^HANGAR-([0-9A-Z]{4})-([0-9A-Z]{4})-([0-9A-Z]{4})$/.exec(s)
   if (!m) return null
   const body = `${m[1]}-${m[2]}`
   if (checksumOf(body) !== m[3]) return null

@@ -94,7 +94,7 @@ export async function startHarness(
 
 function makeConfigDir(handle: string, relayUrl: string, token: string, permissionRelay: boolean): string {
   const dir = mkdtempSync(join(tmpdir(), `e2e-${handle}-`))
-  const meshDir = join(dir, '.claude-mesh')
+  const meshDir = join(dir, '.hangar-bridge')
   mkdirSync(meshDir, { recursive: true })
   const tokPath = join(meshDir, 'token')
   writeFileSync(tokPath, token, { mode: 0o600 })

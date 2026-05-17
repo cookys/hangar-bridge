@@ -16,8 +16,8 @@ export function ensureMcpRegistered(): void {
     command: process.execPath,
     args: [resolve(join(here, 'index.js'))]
   }
-  if (JSON.stringify(mcpServers['claude-mesh-peers']) === JSON.stringify(entry)) return
-  mcpServers['claude-mesh-peers'] = entry
+  if (JSON.stringify(mcpServers['hangar-bridge-peers']) === JSON.stringify(entry)) return
+  mcpServers['hangar-bridge-peers'] = entry
   json.mcpServers = mcpServers
   writeFileSync(path, JSON.stringify(json, null, 2))
 }

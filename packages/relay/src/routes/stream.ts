@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { isValidMessageId, type Envelope } from '@claude-mesh/shared'
+import { isValidMessageId, type Envelope } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import type { Deps } from '../deps.ts'
 import type { Subscriber } from '../fanout.ts'

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { InboundDispatcher } from './inbound.ts'
 import { SenderGate } from './gate.ts'
-import type { Envelope } from '@claude-mesh/shared'
+import type { Envelope } from '@hangar-bridge/shared'
 
 const envelope = (overrides: Partial<Envelope> = {}): Envelope => ({
   id: 'msg_01HRK7Y0000000000000000000', v: 1, team: 't1',
