@@ -1,6 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { defaultConfigPath } from '../paths.ts'
 
 function argValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag)
@@ -8,7 +7,7 @@ function argValue(args: string[], flag: string): string | undefined {
 }
 
 function readConfigRelayUrl(): string | undefined {
-  const p = join(homedir(), '.hangar-bridge', 'config.json')
+  const p = defaultConfigPath()
   if (!existsSync(p)) return undefined
   try {
     const cfg = JSON.parse(readFileSync(p, 'utf8')) as { relay_url?: unknown }
@@ -22,7 +21,8 @@ export function resolveRelayUrl(args: string[]): string {
   const url = argValue(args, '--relay') ?? process.env.HANGAR_RELAY ?? readConfigRelayUrl()
   if (!url) {
     throw new Error(
-      'missing relay URL. Provide one of: --relay <url>, HANGAR_RELAY env var, or pair first with `hangar-bridge pair` (writes ~/.hangar-bridge/config.json).'
+      'missing relay URL. Provide one of: --relay <url>, HANGAR_RELAY env var, ' +
+      'or write { "relay_url": "..." } into ~/.config/hangar-bridge/config.json.'
     )
   }
   return url

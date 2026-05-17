@@ -1,13 +1,12 @@
 import { readFileSync, existsSync, statSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { homedir } from 'node:os'
+import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
 import { readTokenFile } from './cli/token-file.ts'
+import { defaultConfigPath, defaultAuditDir } from './paths.ts'
 
 export const ConfigSchema = z.object({
   relay_url: z.string().url(),
   token_path: z.string(),
-  admin_token_path: z.string().optional(),
   permission_relay: z.object({
     enabled: z.boolean().default(false),
     routing: z.enum(['never_relay','ask_thread_participants','ask_team'])
@@ -19,15 +18,13 @@ export const ConfigSchema = z.object({
     auto_publish_branch: z.boolean().default(true),
     auto_publish_repo: z.boolean().default(true)
   }).default({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }),
-  audit_log: z.string().default(() => join(homedir(), '.hangar-bridge', 'audit'))
+  audit_log: z.string().default(() => defaultAuditDir())
 })
-export type MeshConfig = z.infer<typeof ConfigSchema>
+export type HangarConfig = z.infer<typeof ConfigSchema>
 
-export function defaultConfigPath(): string {
-  return join(homedir(), '.hangar-bridge', 'config.json')
-}
+export { defaultConfigPath } from './paths.ts'
 
-export function loadConfig(path: string = defaultConfigPath()): MeshConfig {
+export function loadConfig(path: string = defaultConfigPath()): HangarConfig {
   if (!existsSync(path)) throw new Error(`config file not found: ${path}`)
   const raw = JSON.parse(readFileSync(path, 'utf8'))
   return ConfigSchema.parse(raw)
@@ -43,9 +40,9 @@ export function isInsideGitRepoWithRemote(start: string): boolean {
   let dir = resolve(start)
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const gitDir = join(dir, '.git')
+    const gitDir = `${dir}/.git`
     if (existsSync(gitDir) && statSync(gitDir).isDirectory()) {
-      const cfg = join(gitDir, 'config')
+      const cfg = `${gitDir}/config`
       if (existsSync(cfg)) {
         const text = readFileSync(cfg, 'utf8')
         if (/\[remote\s+"[^"]+"\][^\[]*\burl\s*=\s*\S+/s.test(text)) return true

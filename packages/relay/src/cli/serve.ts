@@ -20,7 +20,7 @@ export function startServer(opts: ServeOpts) {
   if (!existsSync(opts.db_path)) {
     console.error(
       `No database at ${opts.db_path}.\n` +
-      `Run \`node packages/relay/dist/index.js init\` first to create the team and schema.`
+      `Run \`node packages/relay/dist/index.js init\` first to seed peers and schema.`
     )
     process.exit(1)
   }

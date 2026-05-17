@@ -6,7 +6,7 @@ describe('openDatabase', () => {
   beforeEach(() => { db = openDatabase(':memory:') })
 
   it('applies schema and reports latest version', () => {
-    expect(getSchemaVersion(db)).toBe(2)
+    expect(getSchemaVersion(db)).toBe(3)
   })
 
   it('human table has last_active_at column (v2)', () => {
@@ -14,12 +14,24 @@ describe('openDatabase', () => {
     expect(cols.some(c => c.name === 'last_active_at')).toBe(true)
   })
 
+  it('drops legacy pair_code table at v3', () => {
+    const names = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table'"
+    ).all().map((r: any) => r.name)
+    expect(names).not.toContain('pair_code')
+  })
+
+  it('pre-seeds the singleton hangar team (D10)', () => {
+    const row = db.prepare("SELECT id, name FROM team WHERE id='hangar'").get() as { id: string; name: string } | undefined
+    expect(row).toEqual({ id: 'hangar', name: 'hangar' })
+  })
+
   it('has all expected tables', () => {
     const names = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     ).all().map((r: any) => r.name)
     expect(names).toEqual(expect.arrayContaining([
-      'audit_log', 'human', 'idempotency_key', 'message', 'pair_code',
+      'audit_log', 'human', 'idempotency_key', 'message',
       'schema_version', 'team', 'token'
     ]))
   })

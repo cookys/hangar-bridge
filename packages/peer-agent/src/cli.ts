@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 import { loadEnvFiles } from '@hangar-bridge/shared'
-import { runPair } from './cli/pair.ts'
 import { ensureMcpRegistered } from './mcp-registration.ts'
-import { resolveRelayUrl } from './cli/relay-url.ts'
 
 loadEnvFiles()
 
@@ -13,30 +11,18 @@ function argValue(args: string[], flag: string): string | undefined {
 
 async function main(): Promise<void> {
   const [, , cmd, ...args] = process.argv
-  if (cmd === 'pair') {
-    const pairCode = args.find(a => /^HANGAR-/.test(a)) ?? process.env.HANGAR_PAIR_CODE ?? ''
-    const label = argValue(args, '--label') ?? process.env.HOSTNAME ?? 'device'
-    if (!pairCode) {
-      console.error('usage: hangar-bridge pair <pair-code> [--relay <url>] [--label <device>]')
+  if (cmd === 'init') {
+    const handle = argValue(args, '--handle') ?? process.env.HOSTNAME
+    const relayUrl = argValue(args, '--relay') ?? process.env.HANGAR_RELAY
+    const force = args.includes('--force')
+    if (!handle || !relayUrl) {
+      console.error('usage: hangar-bridge init --handle <name> --relay <url> [--force]')
       process.exit(2)
     }
-    // Use the same resolution order as admin/send/respond: --relay flag →
-    // HANGAR_RELAY env → ~/.hangar-bridge/config.json. The config.json fallback
-    // only helps re-pairs (first-time pair has no config yet) but costs nothing.
-    let relayUrl: string
-    try { relayUrl = resolveRelayUrl(args) }
-    catch {
-      console.error('usage: hangar-bridge pair <pair-code> [--relay <url>] [--label <device>]')
-      process.exit(2)
-    }
-    await runPair({ relayUrl, pairCode, deviceLabel: label })
+    const { runInit } = await import('./cli/init.ts')
+    runInit({ handle, relayUrl, force })
     ensureMcpRegistered()
     console.log('OK MCP server entry added to ~/.claude.json under "hangar-bridge-peers"')
-    return
-  }
-  if (cmd === 'admin') {
-    const { runAdmin } = await import('./cli/admin.ts')
-    await runAdmin(args)
     return
   }
   if (cmd === 'respond') {
@@ -49,7 +35,7 @@ async function main(): Promise<void> {
     await runSend(args)
     return
   }
-  console.error('commands: pair, admin, respond, send')
+  console.error('commands: init, respond, send')
   process.exit(2)
 }
 

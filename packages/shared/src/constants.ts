@@ -3,8 +3,10 @@ export const MAX_CONTENT_BYTES = 65536
 export const MAX_META_KEY_LENGTH = 64
 export const MAX_META_VALUE_LENGTH = 2048
 export const PERMISSION_REQUEST_TTL_MS = 5 * 60 * 1000
-export const PAIR_CODE_TTL_MS = 24 * 60 * 60 * 1000
 export const TEAM_BROADCAST_HANDLE = '@team' as const
 export const HANDLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/
 export const META_KEY_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/
 export const CHANNEL_SOURCE_PEERS = 'hangar-bridge' as const
+// D10 stub posture: single-tenant. Every authenticated request binds to this
+// team_id; schema retains the column + FK to keep migration risk at zero.
+export const HANGAR_TEAM_ID = 'hangar' as const

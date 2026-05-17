@@ -4,20 +4,7 @@ import { MessageStore } from '../../src/messages/store.ts'
 import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
-import { generateRawToken, hashToken } from '../../src/auth/hash.ts'
-
-function seed(db: Db) {
-  const now = new Date().toISOString()
-  db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES (?,?,?,?)").run('t1','acme',7,now)
-  for (const h of ['alice','bob']) {
-    db.prepare("INSERT INTO human(id,team_id,handle,display_name,created_at) VALUES (?,?,?,?,?)")
-      .run(`h_${h}`, 't1', h, h, now)
-  }
-  const a = generateRawToken(); const b = generateRawToken()
-  db.prepare("INSERT INTO token(id,human_id,token_hash,label,tier,created_at) VALUES (?,?,?,?,?,?)").run('tk_a','h_alice',hashToken(a),'laptop','human',now)
-  db.prepare("INSERT INTO token(id,human_id,token_hash,label,tier,created_at) VALUES (?,?,?,?,?,?)").run('tk_b','h_bob',hashToken(b),'laptop','human',now)
-  return { a, b }
-}
+import { seedPeerSecrets } from './_seed.ts'
 
 function appFor(db: Db) {
   return buildApp({
@@ -30,7 +17,12 @@ describe('POST /v1/permission/respond', () => {
   let db: Db
   let app: ReturnType<typeof buildApp>
   let t: { a: string; b: string }
-  beforeEach(() => { db = openDatabase(':memory:'); t = seed(db); app = appFor(db) })
+  beforeEach(() => {
+    db = openDatabase(':memory:')
+    const peers = seedPeerSecrets(db, ['alice', 'bob'])
+    t = { a: peers.alice!.token, b: peers.bob!.token }
+    app = appFor(db)
+  })
 
   async function post(path: string, token: string, body: unknown) {
     return app.request(path, {

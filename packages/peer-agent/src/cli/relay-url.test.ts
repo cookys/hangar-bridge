@@ -1,32 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { resolveRelayUrl } from './relay-url.ts'
 
-// The resolver reads ~/.hangar-bridge/config.json via homedir(). We can't remap
-// homedir() without process env tricks, so we use the real home directory and
-// clean up after each test.
-const CFG_DIR = join(homedir(), '.hangar-bridge')
-const CFG_PATH = join(CFG_DIR, 'config.json')
-let backup: string | null = null
+let workdir = ''
+const ORIGINAL_CONFIG_DIR = process.env.HANGAR_CONFIG_DIR
 
 describe('resolveRelayUrl', () => {
   beforeEach(() => {
     delete process.env.HANGAR_RELAY
-    backup = null
-    if (existsSync(CFG_PATH)) {
-      backup = readFileSync(CFG_PATH, 'utf8')
-      rmSync(CFG_PATH)
-    }
+    workdir = mkdtempSync(join(tmpdir(), 'hangar-cfg-'))
+    process.env.HANGAR_CONFIG_DIR = workdir
   })
 
   afterEach(() => {
-    if (existsSync(CFG_PATH)) rmSync(CFG_PATH)
-    if (backup !== null) {
-      mkdirSync(CFG_DIR, { recursive: true })
-      writeFileSync(CFG_PATH, backup)
-    }
+    rmSync(workdir, { recursive: true, force: true })
+    if (ORIGINAL_CONFIG_DIR === undefined) delete process.env.HANGAR_CONFIG_DIR
+    else process.env.HANGAR_CONFIG_DIR = ORIGINAL_CONFIG_DIR
   })
 
   it('prefers --relay flag over everything else', () => {
@@ -41,7 +32,7 @@ describe('resolveRelayUrl', () => {
     expect(resolveRelayUrl([])).toBe('http://env:8443')
   })
 
-  it('falls back to ~/.hangar-bridge/config.json relay_url when neither flag nor env', () => {
+  it('falls back to ~/.config/hangar-bridge/config.json relay_url when neither flag nor env', () => {
     writeConfig('http://cfg:8443')
     expect(resolveRelayUrl([])).toBe('http://cfg:8443')
   })
@@ -51,19 +42,17 @@ describe('resolveRelayUrl', () => {
   })
 
   it('ignores an unparseable config.json and treats as missing', () => {
-    mkdirSync(CFG_DIR, { recursive: true })
-    writeFileSync(CFG_PATH, '{not valid json')
+    writeFileSync(join(workdir, 'config.json'), '{not valid json')
     expect(() => resolveRelayUrl([])).toThrow(/missing relay URL/)
   })
 
   it('ignores a config.json without relay_url and treats as missing', () => {
-    mkdirSync(CFG_DIR, { recursive: true })
-    writeFileSync(CFG_PATH, JSON.stringify({ self_handle: 'alice' }))
+    writeFileSync(join(workdir, 'config.json'), JSON.stringify({ self_handle: 'alice' }))
     expect(() => resolveRelayUrl([])).toThrow(/missing relay URL/)
   })
 })
 
 function writeConfig(relayUrl: string): void {
-  mkdirSync(CFG_DIR, { recursive: true })
-  writeFileSync(CFG_PATH, JSON.stringify({ relay_url: relayUrl, token_path: '/tmp/x' }))
+  mkdirSync(workdir, { recursive: true })
+  writeFileSync(join(workdir, 'config.json'), JSON.stringify({ relay_url: relayUrl, token_path: '/tmp/x' }))
 }

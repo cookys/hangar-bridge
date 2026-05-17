@@ -4,46 +4,47 @@ import { MessageStore } from '../../src/messages/store.ts'
 import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
-import { hashToken, generateRawToken } from '../../src/auth/hash.ts'
-
-function seed(db: Db) {
-  const now = new Date().toISOString()
-  db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES (?,?,?,?)")
-    .run('t1', 'acme', 7, now)
-  for (const h of ['alice', 'bob']) {
-    db.prepare("INSERT INTO human(id,team_id,handle,display_name,created_at) VALUES (?,?,?,?,?)")
-      .run(`h_${h}`, 't1', h, h, now)
-  }
-  const raw = generateRawToken()
-  db.prepare("INSERT INTO token(id,human_id,token_hash,label,tier,created_at) VALUES (?,?,?,?,?,?)")
-    .run('tk_alice', 'h_alice', hashToken(raw), 'laptop', 'human', now)
-  return raw
-}
+import { seedPeerSecrets } from './_seed.ts'
 
 describe('POST /v1/messages', () => {
   let db: Db
   let app: ReturnType<typeof buildApp>
-  let token: string
+  let aliceToken: string
   beforeEach(() => {
     db = openDatabase(':memory:')
-    token = seed(db)
+    const peers = seedPeerSecrets(db, ['alice', 'bob'])
+    aliceToken = peers.alice!.token
     app = buildApp({ db, store: new MessageStore(db), fanout: new Fanout(), presence: new PresenceRegistry(), now: () => new Date() })
   })
 
   async function post(body: unknown, headers: Record<string, string> = {}) {
     return app.request('/v1/messages', {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers },
+      headers: { authorization: `Bearer ${aliceToken}`, 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body)
     })
   }
 
-  it('201 + full envelope on valid chat', async () => {
+  // Layer 2 (sender-stamp anti-spoof): the `from` field on the response
+  // envelope must match the bearer-authenticated peer, regardless of any
+  // client-supplied `from` field.
+  it('201 + full envelope on valid chat; relay stamps from (Layer 2)', async () => {
     const res = await post({ to: 'bob', kind: 'chat', content: 'hi' })
     expect(res.status).toBe(201)
     const e = await res.json() as any
     expect(e.id).toMatch(/^msg_/)
     expect(e.from).toBe('alice')
+  })
+
+  it('Layer 2 — client cannot spoof `from`: schema rejects client-supplied from with 400', async () => {
+    // OutboundMessageSchema is z.strict() so any client-supplied `from` field
+    // is structurally rejected before the request reaches the store. Combined
+    // with `store.insert(team, c.get('peer').handle, ...)` this guarantees the
+    // envelope's `from` always equals the bearer-authenticated peer.
+    const res = await post({ to: 'bob', from: 'mallory', kind: 'chat', content: 'pwn' })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toBe('invalid_body')
   })
 
   it('400 on unknown kind', async () => {

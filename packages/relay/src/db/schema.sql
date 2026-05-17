@@ -1,4 +1,16 @@
--- claude-mesh relay schema v1
+-- hangar-bridge relay schema v3
+--
+-- D10 stub posture: single-tenant. `team_id` is constant `'hangar'` everywhere
+-- in application code. Schema retains the column + FK for minimal churn vs
+-- upstream claude-mesh. The `team` row is pre-seeded below so init/store/etc.
+-- don't need to insert it.
+--
+-- Upstream's pair_code flow is gone (P2 auth simplification — single shared
+-- secret per peer, populated by manual scp to ~/.config/hangar-bridge/secret;
+-- relay reads peers map from ~/.config/hangar-bridge/peers.json and seeds the
+-- `human` + `token` rows on startup). `human` and `token` SQL names stay per
+-- C1 — TS identifiers were renamed to `PeerRecord` etc, but the schema is
+-- unchanged to keep migration risk at zero.
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA synchronous = NORMAL;
@@ -22,7 +34,7 @@ CREATE TABLE IF NOT EXISTS human (
   public_key BLOB,
   created_at TEXT NOT NULL,
   disabled_at TEXT,
-  last_active_at TEXT,   -- v2: updated on every authenticated request; drives auto-purge
+  last_active_at TEXT,
   UNIQUE(team_id, handle)
 );
 
@@ -37,21 +49,12 @@ CREATE TABLE IF NOT EXISTS token (
 );
 CREATE INDEX IF NOT EXISTS idx_token_human ON token(human_id);
 
-CREATE TABLE IF NOT EXISTS pair_code (
-  code_hash BLOB PRIMARY KEY,
-  human_id TEXT NOT NULL REFERENCES human(id),
-  tier TEXT NOT NULL CHECK(tier IN ('human', 'admin')),
-  expires_at TEXT NOT NULL,
-  consumed_at TEXT,
-  created_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS message (
   id TEXT PRIMARY KEY,
   v INTEGER NOT NULL,
   team_id TEXT NOT NULL REFERENCES team(id),
   from_handle TEXT NOT NULL,
-  to_handle TEXT NOT NULL,    -- human handle or '@team'
+  to_handle TEXT NOT NULL,    -- peer handle or '@team'
   in_reply_to TEXT,
   thread_root TEXT,
   kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict')),
@@ -83,3 +86,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_team_at ON audit_log(team_id, at);
 
 INSERT OR IGNORE INTO schema_version(version) VALUES (1);
 INSERT OR IGNORE INTO schema_version(version) VALUES (2);
+INSERT OR IGNORE INTO schema_version(version) VALUES (3);
+
+-- D10: single fixed team row. All authenticated requests bind to this team.
+INSERT OR IGNORE INTO team(id, name, retention_days, created_at)
+  VALUES ('hangar', 'hangar', 7, '2026-05-17T00:00:00Z');

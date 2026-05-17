@@ -2,48 +2,64 @@ import type { MiddlewareHandler } from 'hono'
 import type { Db } from '../db/db.ts'
 import { hashToken, timingSafeEqual } from './hash.ts'
 
-export type Tier = 'human' | 'admin'
-
 export interface TokenRecord {
   id: string
   human_id: string
-  tier: Tier
   label: string
 }
 
-export interface HumanRecord {
+/**
+ * Authenticated peer identity attached to the Hono context.
+ *
+ * Renamed from upstream's `HumanRecord` per C1: hangar-bridge talks to *peer
+ * hosts in the fleet*, not human chat users. The SQL table name stays `human`
+ * (D10/C1) so this is purely a TS identifier change with zero migration risk.
+ */
+export interface PeerRecord {
   id: string
-  team_id: string
   handle: string
   display_name: string
 }
 
 export interface AuthContext {
   token: TokenRecord
-  human: HumanRecord
-  team_id: string
+  peer: PeerRecord
 }
 
 interface AuthRow {
   token_id: string
   human_id: string
-  tier: Tier
   label: string
   token_hash: Buffer
   revoked_at: string | null
-  team_id: string
   handle: string
   display_name: string
   disabled_at: string | null
 }
 
+/**
+ * Layer 1 of the 5-layer auth defense — Bearer-token gate.
+ *
+ * - Single-tenant: every authenticated request implicitly binds to
+ *   `HANGAR_TEAM_ID = 'hangar'` (D10 stub posture). No tier hierarchy —
+ *   upstream's `requireTier: 'human' | 'admin'` selector is gone with the
+ *   admin route.
+ * - The bearer is the contents of each peer's
+ *   `~/.config/hangar-bridge/secret` file (43-char URL-safe base64). Each
+ *   peer holds its OWN secret; the relay's peers.json maps SHA256(secret) →
+ *   handle. On startup the relay seeds `human` + `token` rows from
+ *   peers.json, so this lookup pattern (timing-safe compare against an
+ *   indexed hash) stays identical to upstream's DB-bearer flow.
+ * - Layer 2 (sender-stamp anti-spoof) lives downstream: `c.set('peer', ...)`
+ *   is the only way routes learn the requester's identity; client-supplied
+ *   `from` is ignored.
+ */
 export function bearerAuth(
-  db: Db,
-  opts: { requireTier: Tier }
+  db: Db
 ): MiddlewareHandler<{ Variables: AuthContext }> {
   const stmt = db.prepare(`
-    SELECT t.id AS token_id, t.human_id, t.tier, t.label, t.token_hash, t.revoked_at,
-           h.team_id, h.handle, h.display_name, h.disabled_at
+    SELECT t.id AS token_id, t.human_id, t.label, t.token_hash, t.revoked_at,
+           h.handle, h.display_name, h.disabled_at
     FROM token t JOIN human h ON h.id = t.human_id
     WHERE t.token_hash = ?
   `)
@@ -64,26 +80,16 @@ export function bearerAuth(
     }
     if (row.revoked_at !== null) return c.json({ error: 'unauthorized' }, 401)
     if (row.disabled_at !== null) return c.json({ error: 'unauthorized' }, 401)
-    // Tier is a capability hierarchy: admin ⊇ human. An admin token can
-    // satisfy a human-tier gate (send messages, list peers, etc.), but a
-    // human token never reaches admin-only routes.
-    const rank: Record<Tier, number> = { human: 0, admin: 1 }
-    if (rank[row.tier] < rank[opts.requireTier]) return c.json({ error: 'unauthorized' }, 401)
 
-    // Stamp last_active_at for every authenticated request. Drives the
-    // inactivity sweep (see startServer). Cheap single-row UPDATE; no need
-    // to throttle at this volume.
     db.prepare('UPDATE human SET last_active_at=? WHERE id=?')
       .run(new Date().toISOString(), row.human_id)
 
-    c.set('token', { id: row.token_id, human_id: row.human_id, tier: row.tier, label: row.label })
-    c.set('human', {
+    c.set('token', { id: row.token_id, human_id: row.human_id, label: row.label })
+    c.set('peer', {
       id: row.human_id,
-      team_id: row.team_id,
       handle: row.handle,
       display_name: row.display_name,
     })
-    c.set('team_id', row.team_id)
     return next()
   }
 }

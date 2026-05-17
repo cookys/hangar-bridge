@@ -4,20 +4,7 @@ import { MessageStore } from '../../src/messages/store.ts'
 import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
-import { hashToken, generateRawToken } from '../../src/auth/hash.ts'
-
-function seed(db: Db) {
-  const now = new Date().toISOString()
-  db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES (?,?,?,?)").run('t1','acme',7,now)
-  for (const h of ['alice','bob']) {
-    db.prepare("INSERT INTO human(id,team_id,handle,display_name,created_at) VALUES (?,?,?,?,?)")
-      .run(`h_${h}`, 't1', h, h, now)
-  }
-  const alice = generateRawToken(); const bob = generateRawToken()
-  db.prepare("INSERT INTO token(id,human_id,token_hash,label,tier,created_at) VALUES (?,?,?,?,?,?)").run('tk_a','h_alice',hashToken(alice),'laptop','human',now)
-  db.prepare("INSERT INTO token(id,human_id,token_hash,label,tier,created_at) VALUES (?,?,?,?,?,?)").run('tk_b','h_bob',hashToken(bob),'laptop','human',now)
-  return { alice, bob }
-}
+import { seedPeerSecrets } from './_seed.ts'
 
 async function readNEvents(stream: ReadableStream<Uint8Array>, n: number, timeoutMs = 2000): Promise<string[]> {
   const reader = stream.getReader()
@@ -48,7 +35,8 @@ describe('GET /v1/stream', () => {
   let tok: { alice: string; bob: string }
   beforeEach(() => {
     db = openDatabase(':memory:')
-    tok = seed(db)
+    const peers = seedPeerSecrets(db, ['alice', 'bob'])
+    tok = { alice: peers.alice!.token, bob: peers.bob!.token }
     app = buildApp({ db, store: new MessageStore(db), fanout: new Fanout(), presence: new PresenceRegistry(), now: () => new Date() })
   })
 

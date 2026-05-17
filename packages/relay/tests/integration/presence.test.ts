@@ -4,20 +4,7 @@ import { MessageStore } from '../../src/messages/store.ts'
 import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
-import { hashToken, generateRawToken } from '../../src/auth/hash.ts'
-
-function seed(db: Db) {
-  const now = new Date().toISOString()
-  db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES (?,?,?,?)").run('t1','acme',7,now)
-  for (const h of ['alice','bob']) {
-    db.prepare("INSERT INTO human(id,team_id,handle,display_name,created_at) VALUES (?,?,?,?,?)")
-      .run(`h_${h}`, 't1', h, h, now)
-  }
-  const raw = generateRawToken()
-  db.prepare("INSERT INTO token(id,human_id,token_hash,label,tier,created_at) VALUES (?,?,?,?,?,?)")
-    .run('tk', 'h_alice', hashToken(raw), 'laptop', 'human', now)
-  return raw
-}
+import { seedPeerSecrets } from './_seed.ts'
 
 describe('presence + peers', () => {
   let db: Db
@@ -25,7 +12,8 @@ describe('presence + peers', () => {
   let token: string
   beforeEach(() => {
     db = openDatabase(':memory:')
-    token = seed(db)
+    const peers = seedPeerSecrets(db, ['alice', 'bob'])
+    token = peers.alice!.token
     app = buildApp({
       db,
       store: new MessageStore(db),

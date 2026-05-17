@@ -96,7 +96,16 @@ describe('envelopeToChannelNotification', () => {
   })
 })
 
-describe('escaping', () => {
+/**
+ * Layer 4 of the 5-layer auth defense — Channel-tag escape.
+ *
+ * Untrusted peer-supplied envelope content is injected into the receiving
+ * Claude Code session as `<channel ...>body</channel>`. Without escaping,
+ * a malicious peer could embed `</channel><channel source="trusted">…` and
+ * bypass the channel boundary. `escapeChannelAttr` and `escapeChannelBody`
+ * make that structurally impossible.
+ */
+describe('escaping — Layer 4 (Channel-tag escape)', () => {
   it('escapes <, >, &, " in attr values', () => {
     expect(escapeChannelAttr('<script>&"')).toBe('&lt;script&gt;&amp;&quot;')
   })

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import type { MessageId } from '@hangar-bridge/shared'
+import { HANGAR_TEAM_ID, type MessageId } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import type { Deps } from '../deps.ts'
 
@@ -19,14 +19,14 @@ interface RequestRow {
 
 export function permissionRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
-  app.use('*', bearerAuth(deps.db, { requireTier: 'human' }))
+  app.use('*', bearerAuth(deps.db))
 
   app.post('/respond', async c => {
     const parsed = Body.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'invalid_body' }, 400)
 
-    const team = c.get('team_id')
-    const me = c.get('human').handle
+    const team = HANGAR_TEAM_ID
+    const me = c.get('peer').handle
 
     const rows = deps.db.prepare(`
       SELECT id, content, from_handle, meta_json
@@ -65,7 +65,7 @@ export function permissionRoute(deps: Deps) {
     deps.db.prepare(
       "INSERT INTO audit_log(team_id,at,actor_human_id,event,detail_json) VALUES (?,?,?,?,?)"
     ).run(
-      team, nowIso, c.get('human').id, 'permission.verdict',
+      team, nowIso, c.get('peer').id, 'permission.verdict',
       JSON.stringify({ request_id: want, behavior: parsed.data.verdict })
     )
 

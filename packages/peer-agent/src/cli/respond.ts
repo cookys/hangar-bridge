@@ -1,7 +1,6 @@
-import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { resolveRelayUrl } from './relay-url.ts'
 import { readTokenFile } from './token-file.ts'
+import { defaultSecretPath } from '../paths.ts'
 
 export interface RespondOpts {
   relayUrl: string
@@ -44,7 +43,7 @@ export async function runRespond(args: string[]): Promise<void> {
   const verdict: 'allow' | 'deny' = (verdictRaw === 'yes' || verdictRaw === 'allow') ? 'allow' : 'deny'
   const reason = argValue(args, '--reason')
   const relayUrl = resolveRelayUrl(args)
-  const token = readTokenFile(join(homedir(), '.hangar-bridge', 'token'))
+  const token = readTokenFile(defaultSecretPath())
   const opts: RespondOpts = { relayUrl, token, requestId, verdict }
   if (reason !== undefined) opts.reason = reason
   const r = await callRespond(opts)

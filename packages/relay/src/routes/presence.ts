@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
+import { HANGAR_TEAM_ID, TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
 import type { Deps } from '../deps.ts'
@@ -14,13 +14,13 @@ const PresenceBody = z.object({
 
 export function presenceRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
-  app.use('*', bearerAuth(deps.db, { requireTier: 'human' }))
+  app.use('*', bearerAuth(deps.db))
   app.use('*', rateLimit({ windowMs: 1_000, max: 1, key: c => `pres:${c.get('token').id}` }))
   app.post('/', async c => {
     const parsed = PresenceBody.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'invalid_body' }, 400)
-    const team = c.get('team_id')
-    const handle = c.get('human').handle
+    const team = HANGAR_TEAM_ID
+    const handle = c.get('peer').handle
     const label = c.get('token').label
     deps.presence.set(team, handle, label, parsed.data)
 

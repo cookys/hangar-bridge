@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { HANGAR_TEAM_ID } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import type { Deps } from '../deps.ts'
 
@@ -12,21 +13,20 @@ interface HumanRow {
 
 export function peersRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
-  app.use('*', bearerAuth(deps.db, { requireTier: 'human' }))
+  app.use('*', bearerAuth(deps.db))
 
-  let cached: { at: number; team_id: string; body: string } | null = null
+  let cached: { at: number; body: string } | null = null
 
   app.get('/', c => {
-    const team = c.get('team_id')
-    if (cached && cached.team_id === team && Date.now() - cached.at < TTL_MS) {
+    if (cached && Date.now() - cached.at < TTL_MS) {
       return c.body(cached.body, 200, { 'content-type': 'application/json' })
     }
     const humans = deps.db.prepare(
       "SELECT id, handle, display_name FROM human WHERE team_id=? AND disabled_at IS NULL"
-    ).all(team) as HumanRow[]
+    ).all(HANGAR_TEAM_ID) as HumanRow[]
 
     const list = humans.map(h => {
-      const snap = deps.presence.get(team, h.handle)
+      const snap = deps.presence.get(HANGAR_TEAM_ID, h.handle)
       return {
         handle: h.handle,
         display_name: h.display_name,
@@ -37,7 +37,7 @@ export function peersRoute(deps: Deps) {
       }
     })
     const body = JSON.stringify(list)
-    cached = { at: Date.now(), team_id: team, body }
+    cached = { at: Date.now(), body }
     return c.body(body, 200, { 'content-type': 'application/json' })
   })
   return app

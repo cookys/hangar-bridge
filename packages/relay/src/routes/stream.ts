@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { isValidMessageId, type Envelope } from '@hangar-bridge/shared'
+import { HANGAR_TEAM_ID, isValidMessageId, type Envelope } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import type { Deps } from '../deps.ts'
 import type { Subscriber } from '../fanout.ts'
@@ -9,7 +9,7 @@ const PING_INTERVAL_MS = 25_000
 
 export function streamRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
-  app.use('*', bearerAuth(deps.db, { requireTier: 'human' }))
+  app.use('*', bearerAuth(deps.db))
 
   app.get('/', c => {
     const since = c.req.query('since')
@@ -18,8 +18,8 @@ export function streamRoute(deps: Deps) {
     }
 
     return streamSSE(c, async stream => {
-      const team_id = c.get('team_id')
-      const handle = c.get('human').handle
+      const team_id = HANGAR_TEAM_ID
+      const handle = c.get('peer').handle
 
       const backlog = since
         ? deps.store.fetchSince(team_id, handle, since)

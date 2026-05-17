@@ -1,5 +1,10 @@
 import { Hono } from 'hono'
-import { OutboundMessageSchema, TEAM_BROADCAST_HANDLE, type Envelope } from '@hangar-bridge/shared'
+import {
+  HANGAR_TEAM_ID,
+  OutboundMessageSchema,
+  TEAM_BROADCAST_HANDLE,
+  type Envelope,
+} from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { hashToken } from '../auth/hash.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
@@ -7,7 +12,7 @@ import type { Deps } from '../deps.ts'
 
 export function messagesRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
-  app.use('*', bearerAuth(deps.db, { requireTier: 'human' }))
+  app.use('*', bearerAuth(deps.db))
   app.use('*', rateLimit({ windowMs: 60_000, max: 120, key: c => `msg:${c.get('token').id}` }))
 
   app.post('/', async c => {
@@ -26,9 +31,11 @@ export function messagesRoute(deps: Deps) {
       return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400)
     }
 
+    // Layer 2 (sender-stamp anti-spoof): `from` is the bearer-authenticated
+    // peer handle from middleware. Client-supplied `from` (if any) is ignored.
     let envelope: Envelope
     try {
-      envelope = deps.store.insert(c.get('team_id'), c.get('human').handle, parsed.data)
+      envelope = deps.store.insert(HANGAR_TEAM_ID, c.get('peer').handle, parsed.data)
     } catch (err) {
       const message = err instanceof Error ? err.message : ''
       return c.json({ error: 'invalid_message', message }, 400)

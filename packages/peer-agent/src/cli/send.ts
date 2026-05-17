@@ -1,8 +1,7 @@
-import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { ulid } from 'ulid'
 import { resolveRelayUrl } from './relay-url.ts'
 import { readTokenFile } from './token-file.ts'
+import { defaultSecretPath } from '../paths.ts'
 
 export async function runSend(args: string[]): Promise<void> {
   const to = args[0]
@@ -11,7 +10,7 @@ export async function runSend(args: string[]): Promise<void> {
     throw new Error('usage: hangar-bridge send <to> <content> [--relay <url>]')
   }
   const relayUrl = resolveRelayUrl(args)
-  const token = readTokenFile(join(homedir(), '.hangar-bridge', 'token'))
+  const token = readTokenFile(defaultSecretPath())
   const res = await fetch(new URL('/v1/messages', relayUrl), {
     method: 'POST',
     headers: {
