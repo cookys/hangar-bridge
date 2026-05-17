@@ -1,0 +1,16 @@
+# hangar-bridge P7 cross-host dispatch round-trip
+# captured 2026-05-17T10:38:16Z
+# relay=http://192.168.101.6:8443  openclaw_host=cookys-openclaw  gentoo_host=cookys-gentoo
+# /health (openclaw): {"ok":true,"version":"0.4.0","uptime_ms":144}
+# /health (gentoo):   {"ok":true,"version":"0.4.0","uptime_ms":1616}
+# NTP delta (gentoo − openclaw): 278 ms
+
+# --- dispatcher (openclaw) ---
+{"phase":"dispatcher.start","t":"2026-05-17T10:38:16.122Z","self":"openclaw","remote":"gentoo","relay":"http://192.168.101.6:8443","correlation_id":"RTNJC0P6PM62PK6611T4MYNDCF"}
+{"phase":"dispatcher.sent","t":"2026-05-17T10:38:16.202Z","msg_id":"msg_01KRTR7RM2ND3FRS1XPNTBDXMF","correlation_id":"RTNJC0P6PM62PK6611T4MYNDCF","delivered_at":"2026-05-17T10:38:16.196Z"}
+{"phase":"dispatcher.received_result","t":"2026-05-17T10:38:16.215Z","msg_id":"msg_01KRTR7RMKSZD12QZ623G3G3NX","from":"gentoo","correlation_id":"RTNJC0P6PM62PK6611T4MYNDCF","in_reply_to":"msg_01KRTR7RM2ND3FRS1XPNTBDXMF","content":"processed by gentoo: cross-host dispatch ping"}
+
+# --- responder (gentoo) ---
+{"phase":"responder.start","t":"2026-05-17T10:38:15.121Z","self":"gentoo","remote":"openclaw","relay":"http://192.168.101.6:8443"}
+{"phase":"responder.received_dispatch","t":"2026-05-17T10:38:16.201Z","msg_id":"msg_01KRTR7RM2ND3FRS1XPNTBDXMF","from":"openclaw","correlation_id":"RTNJC0P6PM62PK6611T4MYNDCF","task_kind":"cross-host-probe","content":"cross-host dispatch ping"}
+{"phase":"responder.sent_result","t":"2026-05-17T10:38:16.217Z","msg_id":"msg_01KRTR7RMKSZD12QZ623G3G3NX","correlation_id":"RTNJC0P6PM62PK6611T4MYNDCF"}
