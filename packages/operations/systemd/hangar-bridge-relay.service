@@ -1,0 +1,31 @@
+[Unit]
+Description=hangar-bridge relay — single-tenant peer message relay
+Documentation=https://github.com/cookys/hangar-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %h expands to the user's home dir at unit-start time.
+Environment=HANGAR_DATA=%h/.local/share/hangar-bridge
+Environment=HANGAR_PEERS_FILE=%h/.config/hangar-bridge/peers.json
+Environment=PORT=8443
+Environment=HOST=192.168.101.6
+# Default-off sweeper — peer rotation goes through peers.json on this fork.
+Environment=HANGAR_INACTIVE_DAYS=0
+# `%h/.nvm/versions/node/v22.22.3/bin` is for gentoo (nvm path).
+# `/usr/local/bin:/usr/bin:/bin` covers openclaw (system node 24).
+Environment=PATH=%h/.nvm/versions/node/v22.22.3/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/projects/hangar-bridge
+ExecStart=/usr/bin/env node packages/relay/dist/index.js
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
