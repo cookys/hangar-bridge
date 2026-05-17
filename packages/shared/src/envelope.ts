@@ -11,7 +11,8 @@ export const AddressSchema = z.union([
 ])
 
 export const KindSchema = z.enum([
-  'chat', 'presence_update', 'permission_request', 'permission_verdict'
+  'chat', 'presence_update', 'permission_request', 'permission_verdict',
+  'task_dispatch', 'task_result'
 ])
 
 export const MetaSchema = z.record(
@@ -45,6 +46,13 @@ export const EnvelopeSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['in_reply_to'],
       message: 'permission_verdict requires in_reply_to referencing the permission_request'
+    })
+  }
+  if (e.kind === 'task_result' && e.in_reply_to === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['in_reply_to'],
+      message: 'task_result requires in_reply_to referencing the task_dispatch'
     })
   }
 })

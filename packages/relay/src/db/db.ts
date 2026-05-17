@@ -14,6 +14,7 @@ export function openDatabase(path: string): Db {
   db.exec(schema)
   migrateV1ToV2(db)
   migrateV2ToV3(db)
+  migrateV3ToV4(db)
   return db
 }
 
@@ -35,6 +36,58 @@ function migrateV1ToV2(db: Db): void {
 function migrateV2ToV3(db: Db): void {
   db.exec('DROP TABLE IF EXISTS pair_code')
   db.exec('INSERT OR IGNORE INTO schema_version(version) VALUES (3)')
+}
+
+/**
+ * Widens message.kind CHECK to admit task_dispatch + task_result. SQLite cannot
+ * ALTER a CHECK constraint in place, so the table must be rebuilt. Probes the
+ * existing CREATE statement and skips when the new kinds are already allowed
+ * (fresh DB on v4 schema.sql, or repeat-open of an already-migrated DB).
+ */
+function migrateV3ToV4(db: Db): void {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='message'"
+  ).get() as { sql: string } | undefined
+  if (row && row.sql.includes("'task_dispatch'")) {
+    db.exec('INSERT OR IGNORE INTO schema_version(version) VALUES (4)')
+    return
+  }
+  db.exec('BEGIN')
+  try {
+    db.exec(`
+      CREATE TABLE message_v4 (
+        id TEXT PRIMARY KEY,
+        v INTEGER NOT NULL,
+        team_id TEXT NOT NULL REFERENCES team(id),
+        from_handle TEXT NOT NULL,
+        to_handle TEXT NOT NULL,
+        in_reply_to TEXT,
+        thread_root TEXT,
+        kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')),
+        content TEXT NOT NULL,
+        meta_json TEXT NOT NULL DEFAULT '{}',
+        sent_at TEXT NOT NULL,
+        delivered_at TEXT
+      )
+    `)
+    db.exec(`
+      INSERT INTO message_v4(id, v, team_id, from_handle, to_handle, in_reply_to,
+                             thread_root, kind, content, meta_json, sent_at, delivered_at)
+      SELECT id, v, team_id, from_handle, to_handle, in_reply_to,
+             thread_root, kind, content, meta_json, sent_at, delivered_at
+      FROM message
+    `)
+    db.exec('DROP TABLE message')
+    db.exec('ALTER TABLE message_v4 RENAME TO message')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_message_team_id ON message(team_id, id)')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_message_to_handle ON message(team_id, to_handle, id)')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_message_thread ON message(thread_root)')
+    db.exec('INSERT OR IGNORE INTO schema_version(version) VALUES (4)')
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
 }
 
 export function getSchemaVersion(db: Db): number {

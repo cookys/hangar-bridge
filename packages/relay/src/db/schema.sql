@@ -1,4 +1,4 @@
--- hangar-bridge relay schema v3
+-- hangar-bridge relay schema v4
 --
 -- D10 stub posture: single-tenant. `team_id` is constant `'hangar'` everywhere
 -- in application code. Schema retains the column + FK for minimal churn vs
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS message (
   to_handle TEXT NOT NULL,    -- peer handle or '@team'
   in_reply_to TEXT,
   thread_root TEXT,
-  kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict')),
+  kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')),
   content TEXT NOT NULL,
   meta_json TEXT NOT NULL DEFAULT '{}',
   sent_at TEXT NOT NULL,
@@ -87,6 +87,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_team_at ON audit_log(team_id, at);
 INSERT OR IGNORE INTO schema_version(version) VALUES (1);
 INSERT OR IGNORE INTO schema_version(version) VALUES (2);
 INSERT OR IGNORE INTO schema_version(version) VALUES (3);
+INSERT OR IGNORE INTO schema_version(version) VALUES (4);
 
 -- D10: single fixed team row. All authenticated requests bind to this team.
 INSERT OR IGNORE INTO team(id, name, retention_days, created_at)

@@ -8,7 +8,7 @@ describe('RelayClient', () => {
       calls.push({ url: String(url), init })
       return new Response(JSON.stringify({
         id: 'msg_01HRK7Y000000000000000000A',
-        v: 1, team: 't1', from: 'alice', to: 'bob',
+        v: 2, team: 't1', from: 'alice', to: 'bob',
         in_reply_to: null, thread_root: null, kind: 'chat', content: 'hi', meta: {},
         sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
       }), { status: 201, headers: { 'content-type': 'application/json' } })

@@ -11,6 +11,7 @@ export interface ChannelNotification {
     description?: string
     input_preview?: string
     behavior?: 'allow' | 'deny'
+    correlation_id?: string
   }
 }
 
@@ -43,6 +44,25 @@ export function envelopeToChannelNotification(e: Envelope): ChannelNotification 
     }
   }
 
+  if (e.kind === 'task_result') {
+    return {
+      method: 'notifications/claude/channel',
+      params: {
+        content: escapeChannelBody(e.content),
+        meta: {
+          from: e.from,
+          msg_id: e.id,
+          ...(e.in_reply_to ? { in_reply_to: e.in_reply_to } : {}),
+          ...(e.thread_root ? { thread_root: e.thread_root } : {}),
+          source: CHANNEL_SOURCE_PEERS,
+          kind: 'task_result',
+          ...safeMeta
+        },
+        correlation_id: safeMeta.correlation_id ?? (e.in_reply_to ?? '')
+      }
+    }
+  }
+
   return {
     method: 'notifications/claude/channel',
     params: {
@@ -53,6 +73,7 @@ export function envelopeToChannelNotification(e: Envelope): ChannelNotification 
         ...(e.in_reply_to ? { in_reply_to: e.in_reply_to } : {}),
         ...(e.thread_root ? { thread_root: e.thread_root } : {}),
         source: CHANNEL_SOURCE_PEERS,
+        ...(e.kind === 'task_dispatch' ? { kind: 'task_dispatch' } : {}),
         ...safeMeta
       }
     }

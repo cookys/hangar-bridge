@@ -3,7 +3,7 @@ import { Fanout, type Subscriber } from './fanout.ts'
 import type { Envelope } from '@hangar-bridge/shared'
 
 const env = (id: string, to: string, from = 'alice'): Envelope => ({
-  id: `msg_01HRK7Y000000000000000000${id.padStart(1, '0')}`, v: 1,
+  id: `msg_01HRK7Y000000000000000000${id.padStart(1, '0')}`, v: 2,
   team: 't1', from, to, in_reply_to: null, thread_root: null,
   kind: 'chat', content: 'x', meta: {},
   sent_at: new Date().toISOString(), delivered_at: null

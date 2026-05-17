@@ -4,7 +4,7 @@ import { SenderGate } from './gate.ts'
 import type { Envelope } from '@hangar-bridge/shared'
 
 const envelope = (overrides: Partial<Envelope> = {}): Envelope => ({
-  id: 'msg_01HRK7Y0000000000000000000', v: 1, team: 't1',
+  id: 'msg_01HRK7Y0000000000000000000', v: 2, team: 't1',
   from: 'alice', to: 'bob', in_reply_to: null, thread_root: null,
   kind: 'chat', content: 'hi', meta: {},
   sent_at: '2026-04-17T00:00:00.000Z', delivered_at: null,

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 1 as const
+export const PROTOCOL_VERSION = 2 as const
 export const MAX_CONTENT_BYTES = 65536
 export const MAX_META_KEY_LENGTH = 64
 export const MAX_META_VALUE_LENGTH = 2048

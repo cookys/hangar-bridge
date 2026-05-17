@@ -5,7 +5,7 @@ import type { RelayClient } from './outbound.ts'
 describe('registerTools', () => {
   it('send_to_peer calls RelayClient.send', async () => {
     const send = vi.fn(async () => ({
-      id: 'msg_01HRK7Y000000000000000000A', v: 1, team: 't1', from: 'a', to: 'bob',
+      id: 'msg_01HRK7Y000000000000000000A', v: 2, team: 't1', from: 'a', to: 'bob',
       in_reply_to: null, thread_root: null, kind: 'chat', content: 'hi', meta: {},
       sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
     }))

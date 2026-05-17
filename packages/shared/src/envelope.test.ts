@@ -21,7 +21,7 @@ describe('EnvelopeSchema', () => {
     expect(EnvelopeSchema.parse(validChatEnvelope())).toBeDefined()
   })
   it('rejects wrong protocol version', () => {
-    expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), v: 2 })).toThrow()
+    expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), v: 3 })).toThrow()
   })
   it('rejects content larger than MAX_CONTENT_BYTES', () => {
     const e = { ...validChatEnvelope(), content: 'a'.repeat(MAX_CONTENT_BYTES + 1) }
@@ -47,6 +47,47 @@ describe('EnvelopeSchema', () => {
       meta: { request_id: 'abcde', behavior: 'allow' }
     }
     expect(() => EnvelopeSchema.parse(e)).toThrow(/in_reply_to/)
+  })
+  it('accepts task_dispatch envelope', () => {
+    const e = {
+      ...validChatEnvelope(), kind: 'task_dispatch',
+      content: 'run pytest on the e2e suite',
+      meta: { correlation_id: 'corr_abc', task_kind: 'shell' }
+    }
+    expect(EnvelopeSchema.parse(e)).toBeDefined()
+  })
+  it('accepts task_result with in_reply_to', () => {
+    const e = {
+      ...validChatEnvelope(), kind: 'task_result',
+      in_reply_to: 'msg_01HRK7Y0000000000000000001',
+      content: 'exit 0; 47 passed',
+      meta: { correlation_id: 'corr_abc' }
+    }
+    expect(EnvelopeSchema.parse(e)).toBeDefined()
+  })
+  it('rejects task_result without in_reply_to', () => {
+    const e = {
+      ...validChatEnvelope(), kind: 'task_result', in_reply_to: null,
+      content: 'exit 0', meta: { correlation_id: 'corr_abc' }
+    }
+    expect(() => EnvelopeSchema.parse(e)).toThrow(/in_reply_to/)
+  })
+  it('silently strips unknown top-level fields (not strict)', () => {
+    // EnvelopeSchema is NOT z.strict — relay tolerates extras for forward-compat.
+    // (Layer 2 anti-spoof enforced via OutboundMessageSchema.strict, not here.)
+    const e = { ...validChatEnvelope(), futureField: 'ignored' }
+    const parsed = EnvelopeSchema.parse(e) as Record<string, unknown>
+    expect(parsed.futureField).toBeUndefined()
+  })
+  it('roundtrips task_result envelope through JSON serialization', () => {
+    const e = {
+      ...validChatEnvelope(), kind: 'task_result' as const,
+      in_reply_to: 'msg_01HRK7Y0000000000000000001' as const,
+      content: 'exit 0', meta: { correlation_id: 'corr_xyz' }
+    }
+    const json = JSON.stringify(EnvelopeSchema.parse(e))
+    const back = EnvelopeSchema.parse(JSON.parse(json))
+    expect(back).toEqual(EnvelopeSchema.parse(e))
   })
 })
 
@@ -81,7 +122,7 @@ describe('row <-> envelope conversion', () => {
       to: fc.constantFrom('alice', 'bob', '@team'),
       in_reply_to: fc.constant(null),
       thread_root: fc.constant(null),
-      kind: fc.constantFrom('chat', 'presence_update'),
+      kind: fc.constantFrom('chat', 'presence_update', 'task_dispatch'),
       content: fc.string({ maxLength: 1024 }),
       meta: fc.dictionary(
         fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/),

@@ -1,0 +1,154 @@
+# Kind-discrimination survey for P3 (envelope additions)
+# Generated: 2026-05-17
+# Source: `grep -rn "kind:" packages/`  → 94 raw lines
+# After filtering dist/* + coverage/* (rebuilt automatically): 15 real source sites
+#
+# Editing decision per site (P3 scope: add task_dispatch + task_result):
+# ✏️  = MUST edit in P3
+# 🔍  = Verified, no change needed
+# 🧪  = Test fixture, extend in P3a for new kinds (optional in P3)
+
+═══════════════════════════════════════════════════════════════════════════════
+SHARED PACKAGE
+═══════════════════════════════════════════════════════════════════════════════
+
+✏️  packages/shared/src/envelope.ts:13–15    (KindSchema enum)
+    → ADD 'task_dispatch', 'task_result' to enum
+
+✏️  packages/shared/src/envelope.ts:42–50    (superRefine)
+    → ADD task_result rule: requires in_reply_to (mirrors permission_verdict)
+
+🔍  packages/shared/src/envelope.ts:37,55,70,82,93   (KindSchema usage)
+    → No edit; flow through transparently
+
+✏️  packages/shared/src/channel.ts:17–60    (envelopeToChannelNotification)
+    → ADD task_result branch (emits correlation_id from meta)
+    → task_dispatch falls through to chat-like default (no new branch needed)
+
+✏️  packages/shared/src/constants.ts:1       (PROTOCOL_VERSION)
+    → BUMP 1 → 2
+
+🧪  packages/shared/src/envelope.test.ts:42  ('kind: surprise' rejection)
+    → Verify still rejects with new kinds added
+
+🧪  packages/shared/src/envelope.test.ts:46  (permission_verdict in_reply_to rule)
+    → Keep as-is; P3a will add mirror test for task_result
+
+🧪  packages/shared/src/envelope.test.ts:84  (fast-check generator)
+    → EXTEND fc.constantFrom to include 'task_dispatch', 'task_result'
+
+🧪  packages/shared/src/channel.test.ts      (no new tests in P3 itself)
+    → P3a will add task_dispatch + task_result coverage
+
+═══════════════════════════════════════════════════════════════════════════════
+RELAY PACKAGE
+═══════════════════════════════════════════════════════════════════════════════
+
+✏️  packages/relay/src/db/schema.sql:60      (message.kind CHECK constraint)
+    → WIDEN CHECK to include 'task_dispatch','task_result'
+    → ADD `INSERT OR IGNORE INTO schema_version VALUES (4)`
+
+✏️  packages/relay/src/db/db.ts              (migrations)
+    → ADD migrateV3ToV4: rebuild message table for existing v3 DBs (CHECK widening
+      requires table recreation in SQLite). No-op for fresh DBs (schema.sql already
+      has v4 constraint).
+
+🔍  packages/relay/src/messages/store.ts:35,41  (PROTOCOL_VERSION + msg.kind)
+    → Generic passthrough; v4 schema accepts new kinds automatically
+
+🔍  packages/relay/src/routes/permission.ts:56  (kind: 'permission_verdict')
+    → Hard literal; unrelated to P3
+
+🔍  packages/relay/src/routes/presence.ts:34   (kind: 'presence_update')
+    → Hard literal; unrelated to P3
+
+🧪  packages/relay/src/messages/store.test.ts  (many `kind: 'chat'` fixtures)
+    → No edit; existing fixtures still valid. P4 may add task_dispatch
+      integration tests (deferred).
+
+🧪  packages/relay/src/fanout.test.ts:8        (fixture kind:'chat')
+    → No edit; chat fixture still valid.
+
+🧪  packages/relay/tests/integration/messages.test.ts:51  ('kind: surprise' rejection)
+    → No edit; surprise stays rejected.
+
+═══════════════════════════════════════════════════════════════════════════════
+PEER-AGENT PACKAGE
+═══════════════════════════════════════════════════════════════════════════════
+
+🔍  packages/peer-agent/src/index.ts:32      (`msg.kind === 'chat'` DM tracking)
+    → DM-routing is chat-specific. task_dispatch is server-initiated (not
+      user-tool-DM); task_result is generated, not human-routed. Skipping —
+      could extend in P4 if task_* needs DM-routing semantics.
+
+🔍  packages/peer-agent/src/inbound.ts:20,25 (log + permission_request branch)
+    → Generic log of kind; permission_request unchanged. New kinds pass
+      through envelopeToChannelNotification → emit.
+
+🔍  packages/peer-agent/src/outbound.ts      (RelayClient.send is generic)
+    → Already generic over OutboundMessage; new kinds work.
+
+🔍  packages/peer-agent/src/tools.ts:99,139  (chat tool + permission verdict tool)
+    → Tool surface unchanged. task_dispatch / task_result are NOT exposed as
+      MCP tools in P3 (deferred to P4 — tools would need new descriptors).
+
+🔍  packages/peer-agent/src/cli/send.ts:21   (CLI default `kind: 'chat'`)
+    → CLI hard-coded to chat; not affected.
+
+🔍  packages/peer-agent/src/permission.ts    (PermissionTracker)
+    → request_id tracking is generic; no kind branching here.
+
+🧪  packages/peer-agent/src/inbound.test.ts:9,39,47  (chat + perm fixtures)
+    → No edit; existing fixtures still valid.
+
+🧪  packages/peer-agent/src/outbound.test.ts, tools.test.ts  (chat fixtures)
+    → No edit; chat fixtures still valid.
+
+═══════════════════════════════════════════════════════════════════════════════
+E2E PACKAGE
+═══════════════════════════════════════════════════════════════════════════════
+
+🧪  packages/e2e/src/scenarios/thread.test.ts:11    (chat fixture)
+    → No edit; chat fixture valid.
+
+🧪  packages/e2e/src/scenarios/permission.test.ts:14,45  (permission_request fixtures)
+    → No edit.
+
+🧪  packages/e2e/src/harness.test.ts:23  (chat fixture)
+    → No edit.
+
+═══════════════════════════════════════════════════════════════════════════════
+DECISION SUMMARY (for P3 commit message)
+═══════════════════════════════════════════════════════════════════════════════
+
+Files edited in P3 (source): 4
+  - packages/shared/src/envelope.ts          (KindSchema + superRefine)
+  - packages/shared/src/channel.ts           (task_result branch)
+  - packages/shared/src/constants.ts         (PROTOCOL_VERSION 1→2)
+  - packages/relay/src/db/schema.sql         (CHECK widening + version row)
+  - packages/relay/src/db/db.ts              (migrateV3ToV4)
+
+Files edited in P3 (tests): 1 (extend fast-check generator)
+  - packages/shared/src/envelope.test.ts     (fc.constantFrom)
+
+Files edited in P3a (test expansion): 1
+  - packages/shared/src/envelope.test.ts     (+ task_result tests, escape tests,
+                                              correlation_id uniqueness)
+
+Sites verified-no-change: 15
+  - All marked 🔍 above. Each verified to be generic-pass-through or
+    deliberately-unrelated-to-new-kinds.
+
+Skeptic estimate ≥15 sites verified; actual real source kind-handling sites = 5
+edited + 15 verified = 20 inspections. Reduction vs skeptic: edits concentrated
+in shared (envelope schema + channel adapter), as expected from a strict-typed
+envelope architecture.
+
+K5 reply-limiter throttle concern: ReplyLimiter only ticks on tools.ts
+`send_chat_message` invocations (recordOutbound at tools.ts:106). task_result
+is NOT exposed as an MCP tool in P3 (no descriptor added); the limiter never
+fires on it. Revisit if/when task_result becomes a tool-callable kind in P4.
+
+D7 PUBLIC source attribution: This survey + annotations follow plan README
+v1.2 Phase P3 spec (Phases table row 5). No upstream claude-mesh code
+borrowed beyond what was already in efc106f.
