@@ -1,7 +1,9 @@
 import { z } from 'zod'
+import { ulid } from 'ulid'
 import { HANDLE_REGEX, TEAM_BROADCAST_HANDLE, type OutboundMessage, type MessageId } from '@hangar-bridge/shared'
 import type { RelayClient } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
+import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
 import { detectWorkingContext } from './roots.ts'
 
@@ -22,6 +24,13 @@ const RespondInput = z.object({
   request_id: z.string().regex(/^[a-km-z]{5}$/i),
   verdict: z.enum(['allow', 'deny']),
   reason: z.string().optional(),
+})
+const ULID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/i
+const DispatchInput = z.object({
+  to: AddressSchema,
+  payload: z.string(),
+  correlation_id: z.string().regex(ULID_REGEX).optional(),
+  task_kind: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/).optional(),
 })
 
 export const TOOL_DESCRIPTORS = [
@@ -69,6 +78,21 @@ export const TOOL_DESCRIPTOR_RESPOND = {
   },
 } as const
 
+export const TOOL_DESCRIPTOR_DISPATCH = {
+  name: 'dispatch_task',
+  description: 'Hand a task off to a teammate (or @team for fanout). The result returns as a task_result channel notification keyed by correlation_id. Unlike send_to_peer, this is user-initiated and is NOT throttled by the reply-storm limiter.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      to: { type: 'string', description: 'handle like "alice" or the literal "@team"' },
+      payload: { type: 'string', description: 'task body — what the peer should do' },
+      correlation_id: { type: 'string', description: 'ULID; auto-generated if omitted. Returned task_result will carry this so you can match the response.' },
+      task_kind: { type: 'string', description: 'optional label for the task (e.g. "code-review", "build-check")' },
+    },
+    required: ['to', 'payload'],
+  },
+} as const
+
 export interface PresenceOpts {
   auto_publish_cwd: boolean
   auto_publish_branch: boolean
@@ -80,6 +104,7 @@ export function registerTools(
   presence: PresenceOpts,
   permissionTracker?: PermissionTracker,
   replyLimiter?: ReplyLimiter,
+  dispatchTracker?: DispatchTracker,
 ) {
   async function callTool(name: string, args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
     if (name === 'send_to_peer') {
@@ -121,6 +146,25 @@ export function registerTools(
       if (presence.auto_publish_repo && ctx.repo) body.repo = ctx.repo
       await client.setPresence(body)
       return { content: [{ type: 'text', text: 'presence updated' }] }
+    }
+    if (name === 'dispatch_task') {
+      if (!dispatchTracker) throw new Error('dispatch_task disabled (no DispatchTracker wired)')
+      const input = DispatchInput.parse(args)
+      const correlation_id = (input.correlation_id ?? ulid()).toUpperCase()
+      // K5: intentionally skip replyLimiter.canReplyTo + recordOutbound for the
+      // dispatch path. dispatch_task is user-initiated work, not a bot reply,
+      // so the reply-storm limiter must NOT throttle it.
+      const meta: Record<string, string> = { correlation_id }
+      if (input.task_kind !== undefined) meta.task_kind = input.task_kind
+      const payload: OutboundMessage = {
+        to: input.to,
+        kind: 'task_dispatch',
+        content: input.payload,
+        meta,
+      }
+      const env = await client.send(payload, { idempotency_key: correlation_id })
+      dispatchTracker.recordOutgoing(correlation_id, env.id, input.to)
+      return { content: [{ type: 'text', text: `dispatched ${env.id} correlation_id=${correlation_id}` }] }
     }
     if (name === 'respond_to_permission') {
       if (!permissionTracker) throw new Error('permission relay disabled')

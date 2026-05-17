@@ -24,13 +24,14 @@ export class RelayClient {
     this.fetchImpl = inj.fetch ?? globalThis.fetch
   }
 
-  async send(msg: OutboundMessage): Promise<Envelope> {
+  async send(msg: OutboundMessage, opts: { idempotency_key?: string } = {}): Promise<Envelope> {
+    const idempotencyKey = (opts.idempotency_key ?? ulid()).toLowerCase()
     const res = await this.fetchImpl(new URL('/v1/messages', this.opts.relayUrl), {
       method: 'POST',
       headers: {
         authorization: `Bearer ${this.opts.token}`,
         'content-type': 'application/json',
-        'idempotency-key': ulid().toLowerCase(),
+        'idempotency-key': idempotencyKey,
       },
       body: JSON.stringify(msg),
     })

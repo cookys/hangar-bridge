@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { PERMISSION_REQUEST_TTL_MS } from '@hangar-bridge/shared'
+import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS } from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
 import { loadConfig, loadToken, assertTokenNotInRepo } from './config.ts'
 import { RelayClient } from './outbound.ts'
-import { registerTools, TOOL_DESCRIPTORS, TOOL_DESCRIPTOR_RESPOND } from './tools.ts'
+import { registerTools, TOOL_DESCRIPTORS, TOOL_DESCRIPTOR_RESPOND, TOOL_DESCRIPTOR_DISPATCH } from './tools.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
 import { StreamClient } from './stream.ts'
 import { PermissionTracker } from './permission.ts'
+import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import { pathToFileURL } from 'node:url'
@@ -26,21 +27,23 @@ async function main(): Promise<void> {
   const permissionTracker = permissionRelayEnabled
     ? new PermissionTracker({ ttlMs: PERMISSION_REQUEST_TTL_MS })
     : undefined
+  const dispatchTracker = new DispatchTracker({ ttlMs: DISPATCH_REQUEST_TIMEOUT_MS })
   const approvalRouter = new ApprovalRouter({ routing: cfg.permission_relay.routing as RoutingPolicy })
   const originalSend = client.send.bind(client)
-  client.send = async msg => {
+  client.send = async (msg, opts) => {
     if (msg.kind === 'chat' && typeof msg.to === 'string' && msg.to !== '@team') {
       approvalRouter.recordDm(msg.to)
     }
-    return originalSend(msg)
+    return originalSend(msg, opts)
   }
   const replyLimiter = new ReplyLimiter({ windowMs: 10_000, maxReplies: 2 })
-  const { callTool } = registerTools(client, cfg.presence, permissionTracker, replyLimiter)
+  const { callTool } = registerTools(client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker)
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...TOOL_DESCRIPTORS,
       ...(permissionRelayEnabled ? [TOOL_DESCRIPTOR_RESPOND] : []),
+      TOOL_DESCRIPTOR_DISPATCH,
     ],
   }))
   server.setRequestHandler(CallToolRequestSchema, async req => {
@@ -75,6 +78,7 @@ async function main(): Promise<void> {
     emit: n => { void server.notification(n as never) },
     setCursor: id => { cursor = id },
     permissionTracker,
+    dispatchTracker,
     replyLimiter,
   })
 

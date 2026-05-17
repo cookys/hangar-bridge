@@ -3,6 +3,7 @@ export const MAX_CONTENT_BYTES = 65536
 export const MAX_META_KEY_LENGTH = 64
 export const MAX_META_VALUE_LENGTH = 2048
 export const PERMISSION_REQUEST_TTL_MS = 5 * 60 * 1000
+export const DISPATCH_REQUEST_TIMEOUT_MS = 30 * 60 * 1000
 export const TEAM_BROADCAST_HANDLE = '@team' as const
 export const HANDLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/
 export const META_KEY_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/

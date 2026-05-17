@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { InboundDispatcher } from './inbound.ts'
 import { SenderGate } from './gate.ts'
+import { DispatchTracker } from './correlation.ts'
 import type { Envelope } from '@hangar-bridge/shared'
 
 const envelope = (overrides: Partial<Envelope> = {}): Envelope => ({
@@ -83,5 +84,43 @@ describe('InboundDispatcher', () => {
       setCursor: () => { /* no-op */ },
     })
     expect(() => d4.handle(envelope())).not.toThrow()
+  })
+
+  it('matches incoming task_result against DispatchTracker and emits notification', () => {
+    const tracker = new DispatchTracker({ ttlMs: 60_000 })
+    tracker.recordOutgoing('01HR0000000000000000000ABC', 'msg_01HRK7Y0000000000000000DSP', 'alice')
+    const d5 = new InboundDispatcher({
+      gate: new SenderGate(['alice']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+      dispatchTracker: tracker,
+    })
+    d5.handle(envelope({
+      kind: 'task_result',
+      in_reply_to: 'msg_01HRK7Y0000000000000000DSP',
+      content: 'done',
+      meta: { correlation_id: '01HR0000000000000000000ABC' },
+    }))
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.method).toBe('notifications/claude/channel')
+    expect((sent[0]!.params as { correlation_id?: string }).correlation_id).toBe('01HR0000000000000000000ABC')
+  })
+
+  it('still emits task_result with unknown correlation_id (orphan — flagged, not dropped)', () => {
+    const tracker = new DispatchTracker({ ttlMs: 60_000 })
+    const d6 = new InboundDispatcher({
+      gate: new SenderGate(['alice']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+      dispatchTracker: tracker,
+    })
+    d6.handle(envelope({
+      kind: 'task_result',
+      in_reply_to: 'msg_01HRK7Y0000000000000000ORP',
+      content: 'orphan reply',
+      meta: { correlation_id: '01HR000000000000UNKNOWNCID' },
+    }))
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.method).toBe('notifications/claude/channel')
   })
 })
