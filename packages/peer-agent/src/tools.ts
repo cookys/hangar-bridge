@@ -154,6 +154,12 @@ export function registerTools(
       // K5: intentionally skip replyLimiter.canReplyTo + recordOutbound for the
       // dispatch path. dispatch_task is user-initiated work, not a bot reply,
       // so the reply-storm limiter must NOT throttle it.
+      //
+      // Note: the *receiving* side (inbound.ts) still calls
+      // replyLimiter.recordInbound(e.from) for every envelope including
+      // task_result. That's by design — inbound recording just resets the
+      // sender's window counter; the K5 worry is throttling OUTBOUND, and we
+      // skip that here.
       const meta: Record<string, string> = { correlation_id }
       if (input.task_kind !== undefined) meta.task_kind = input.task_kind
       const payload: OutboundMessage = {

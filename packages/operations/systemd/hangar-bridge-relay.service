@@ -13,9 +13,12 @@ Environment=PORT=8443
 Environment=HOST=192.168.101.6
 # Default-off sweeper — peer rotation goes through peers.json on this fork.
 Environment=HANGAR_INACTIVE_DAYS=0
-# `%h/.nvm/versions/node/v22.22.3/bin` is for gentoo (nvm path).
-# `/usr/local/bin:/usr/bin:/bin` covers openclaw (system node 24).
-Environment=PATH=%h/.nvm/versions/node/v22.22.3/bin:/usr/local/bin:/usr/bin:/bin
+# `%h/.nvm/alias/node22/bin` (symlink to current nvm node 22.x) is
+# for gentoo; openclaw falls through to system node via the rest of PATH.
+# Set the symlink with: `ln -sfT $(nvm which 22) ~/.nvm/alias/node22`
+# (or just `mkdir -p ~/.nvm/alias && ln -sfT ~/.nvm/versions/node/v$(nvm version 22) ~/.nvm/alias/node22`).
+# Avoids the v22.x.y minor-bump trap where the unit silently breaks on `nvm install 22 --reinstall`.
+Environment=PATH=%h/.nvm/alias/node22/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/projects/hangar-bridge
 ExecStart=/usr/bin/env node packages/relay/dist/index.js
 Restart=on-failure
