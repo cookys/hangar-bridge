@@ -17,6 +17,12 @@ After:
    `~/.config/hangar-bridge/secret` (mode 0600) and the relay's
    `peers.json` has this peer's SHA-256.
 
+Node visibility prerequisite: **none** — the install kit points
+Claude Code at `packages/peer-agent/bin/peer-agent.sh`, which
+auto-locates node via `$NODE_BIN` → `~/.nvm/alias/node22/bin/node`
+→ PATH → `nvm.sh` sourcing. Hosts using nvm don't need a symlink,
+PATH patch, or claude.json edit after a node patch bump.
+
 ## Install
 
 ```bash

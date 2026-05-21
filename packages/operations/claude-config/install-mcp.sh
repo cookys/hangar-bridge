@@ -25,6 +25,7 @@ set -euo pipefail
 CLAUDE_JSON="${HOME}/.claude.json"
 REPO_DIR="${REPO_DIR:-${HOME}/projects/hangar-bridge}"
 PEER_AGENT_JS="${REPO_DIR}/packages/peer-agent/dist/index.js"
+PEER_AGENT_SH="${REPO_DIR}/packages/peer-agent/bin/peer-agent.sh"
 DRY_RUN="${1:-}"
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -34,6 +35,11 @@ fi
 if [[ ! -f "${PEER_AGENT_JS}" ]]; then
   echo "ERROR: peer-agent dist not found at ${PEER_AGENT_JS}" >&2
   echo "Run 'pnpm -r build' in ${REPO_DIR} first." >&2
+  exit 1
+fi
+if [[ ! -x "${PEER_AGENT_SH}" ]]; then
+  echo "ERROR: peer-agent wrapper not executable at ${PEER_AGENT_SH}" >&2
+  echo "Run 'chmod +x ${PEER_AGENT_SH}'." >&2
   exit 1
 fi
 
@@ -47,12 +53,15 @@ BACKUP="${CLAUDE_JSON}.bak.$(date +%Y%m%d-%H%M%S)"
 cp -p "${CLAUDE_JSON}" "${BACKUP}"
 echo "Backup: ${BACKUP}"
 
-# Merge: set .mcpServers["hangar-bridge-peer-agent"] = {command, args, env}
-PATCHED="$(jq --arg p "${PEER_AGENT_JS}" '
+# Merge: set .mcpServers["hangar-bridge-peer-agent"] = {command, args, env}.
+# `command` is the wrapper, not `node` directly — Claude Code's MCP execvp
+# does not inherit nvm's PATH, so bare `node` breaks on hosts that install
+# node via nvm (the wrapper finds node via a fallback chain).
+PATCHED="$(jq --arg p "${PEER_AGENT_SH}" '
   .mcpServers //= {} |
   .mcpServers["hangar-bridge-peer-agent"] = {
-    command: "node",
-    args: [$p],
+    command: $p,
+    args: [],
     env: {}
   }
 ' "${CLAUDE_JSON}")"

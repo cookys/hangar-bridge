@@ -1,11 +1,9 @@
 {
-  "_comment": "Merge this fragment into ~/.claude.json under .mcpServers. The peer-agent talks stdio MCP to Claude Code and connects to the local relay over HTTP. After merging, start a CC session with --dangerously-load-development-channels server:hangar-bridge-peer-agent and run /mcp to verify.",
+  "_comment": "Merge this fragment into ~/.claude.json under .mcpServers. The peer-agent talks stdio MCP to Claude Code and connects to the local relay over HTTP. The `command` points to a wrapper that auto-locates node (covers nvm hosts where Claude Code's MCP execvp sees no node on PATH); the wrapper execs the sibling dist/index.js. After merging, start a CC session with --dangerously-load-development-channels server:hangar-bridge-peer-agent and run /mcp to verify.",
   "mcpServers": {
     "hangar-bridge-peer-agent": {
-      "command": "node",
-      "args": [
-        "REPLACE_WITH_ABSOLUTE_PATH/hangar-bridge/packages/peer-agent/dist/index.js"
-      ],
+      "command": "REPLACE_WITH_ABSOLUTE_PATH/hangar-bridge/packages/peer-agent/bin/peer-agent.sh",
+      "args": [],
       "env": {}
     }
   }
