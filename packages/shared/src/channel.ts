@@ -93,8 +93,9 @@ const RESERVED = new Set<string>(RESERVED_META_KEYS)
 function sanitizeMeta(meta: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(meta)) {
-    // Drop reserved keys (subject/kind/task_kind) so a forged sender-meta key can
-    // never masquerade as a relay-stamped routing/command signal (B1).
+    // Drop reserved keys (subject, kind) so a forged sender-meta key can never
+    // masquerade as a relay-stamped signal (B1). task_kind is NOT reserved — it is a
+    // benign non-authoritative display label and is allowed through.
     if (RESERVED.has(k)) continue
     if (META_KEY_REGEX.test(k)) out[k] = escapeChannelAttr(v)
   }

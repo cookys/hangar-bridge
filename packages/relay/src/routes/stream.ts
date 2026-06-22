@@ -8,6 +8,9 @@ import type { Subscriber } from '../fanout.ts'
 
 const PING_INTERVAL_MS = 25_000
 const BACKLOG_PAGE = 1000
+// Cap the per-connection backlog/live dedupe set so a long-lived SSE on a busy
+// handle cannot grow it without bound (this is the shared multi-tenant relay).
+const SEEN_CAP = 8192
 
 export function streamRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
@@ -49,6 +52,15 @@ export function streamRoute(deps: Deps) {
       }
 
       const seen = new Set<string>()
+      // Bounded FIFO eviction: dedupe only needs the connect-window (backlog vs live);
+      // once drained, live ids are strictly newer, so evicting the oldest is safe.
+      const markSeen = (id: string) => {
+        if (seen.size >= SEEN_CAP) {
+          const oldest = seen.values().next().value
+          if (oldest !== undefined) seen.delete(oldest)
+        }
+        seen.add(id)
+      }
       const queue: Envelope[] = []
       let notify: (() => void) | null = null
       const sub: Subscriber = {
@@ -64,7 +76,7 @@ export function streamRoute(deps: Deps) {
       const writeAndMark = async (e: Envelope) => {
         await stream.writeSSE({ event: 'message', data: JSON.stringify(e) })
         deps.store.markDelivered(e.id)
-        seen.add(e.id)
+        markSeen(e.id)
       }
 
       // Backlog. since-resume uses the id cursor only (no delivered_at filter — B3,
@@ -106,7 +118,7 @@ export function streamRoute(deps: Deps) {
           if (seen.has(e.id)) continue
           await stream.writeSSE({ event: 'message', data: JSON.stringify(e) })
           deps.store.markDelivered(e.id)
-          seen.add(e.id)
+          markSeen(e.id)
         }
       } finally {
         cleanup()

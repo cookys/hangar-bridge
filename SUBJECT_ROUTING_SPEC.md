@@ -8,8 +8,10 @@ Review history (ceo-agent loop): 1 triage of 43-finding broad review + 3 focused
   M3/M4/M5, and round-3 B1 (gated_subject integrity field + reserved-meta strip), B2 (zod nullish + default(null)),
   B3 (two-semantics backlog cursor).
 IMPLEMENTED 2026-06-22 on branch `feat/subject-routing-acl` (stage1 c12ca54 / stage2 77aa54f / stage3 cb3cde3).
-  TDD per the recommendation below; `pnpm -r build` (tsc) + `vitest run` GREEN: shared 68, relay 79
-  (incl. subject-acl integration 8 + fanout accept 3), peer-agent 80. e2e not run (needs live Claude drivers).
+  TDD per the recommendation below. GREEN: `pnpm -r typecheck` (ALL 5 incl. e2e), `pnpm -r build`,
+  `vitest run` shared 72, relay 81 (incl. subject-acl integration 11 + fanout accept 3), peer-agent 80.
+  e2e runtime not run (needs live Claude drivers) but its typecheck passes. Hardened over 2 code-review rounds
+  (round1: 2 blocking gate-bypass/label-loss; round2: 2 blocking e2e-typecheck/relay-seen-leak) — all fixed.
   Implementation deltas vs spec (noted in commits): EnvelopeSchema.subject given `.default(null)` (reduces
   caller churn; relay still stamps explicitly); peer-agent task_kind regex widened to allow '.' so a dotted
   task_kind both labels + derives the gated subject; no subject DB index (M2 — JS-side matcher).
@@ -17,20 +19,6 @@ IMPLEMENTED 2026-06-22 on branch `feat/subject-routing-acl` (stage1 c12ca54 / st
   subjects.interest; same-box cross-project isolation via project-scoped .mcp.json + HANGAR_CONFIG_DIR.
 Generated 2026-06-22.
 -->
-
-The `hangar-bridge` source isn't in this repo. The findings cite specific line numbers I can't verify against live source here, but the findings themselves quote the relevant code precisely (e.g., `META_KEY_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/`, `safeMeta = sanitizeMeta(e.meta)`, `subject: SubjectSchema.nullable().optional()`, `fetchSince` with `id > ?` only). I have enough to revise the draft. The findings are internally consistent and self-contained.
-
-Let me revise the three blocking areas while preserving everything else.
-
-**Resolution plan:**
-
-1. **Finding 1 (M5 meta.subject confused-deputy):** Stop plumbing `subject` into the flat `meta` object. Instead (a) reserve `subject`/`kind`/`task_kind` meta keys at the relay publish chokepoint (strip/reject inbound), and (b) surface the authentic subject under a dedicated top-level `ChannelNotification.gated_subject` field set from `e.subject` after `sanitizeMeta`. Update R2/§9.1 so the worker keys off `gated_subject`, and state sender-meta subject/task_kind is non-authoritative and stripped.
-
-2. **Finding 2 (strict `!== null` vs optional undefined):** Use nullish checks (`!= null`) on `OutboundMessageSchema` refinements, or `.default(null)`. I'll use `!= null` and also add `.default(null)` for robustness.
-
-3. **Finding 3 (R5 `delivered_at IS NULL` baked into fetchSince):** Don't push `delivered_at IS NULL` unconditionally into the id-cursored resume `fetchSince`. Keep two semantics: client-cursor resume = `id > since` only; cold-start drain = pending-only. Restore the split, fix the @team and interest-narrowed black-hole regressions.
-
-Here is the full revised Markdown body.
 
 # LEAN Fail-Closed Subject-ACL — Implementation Spec (v3-lean)
 

@@ -35,10 +35,10 @@ export function messagesRoute(deps: Deps) {
     const data = parsed.data
     const peer = c.get('peer')
 
-    // B1: strip reserved meta keys so a sender can NEVER forge a routing/command
-    // signal (subject/kind/task_kind) into a channel notification. The only subject
-    // a receiver ever sees is the relay-stamped envelope field (surfaced as
-    // `gated_subject`), never sender meta.
+    // B1: strip reserved meta keys (subject, kind) so a sender can NEVER forge a
+    // relay signal into a channel notification. The only subject a receiver sees is
+    // the relay-stamped envelope field (surfaced as `gated_subject`), never sender
+    // meta. (task_kind is intentionally NOT reserved — a benign display label.)
     if (data.meta) {
       for (const k of RESERVED_META_KEYS) delete (data.meta as Record<string, string>)[k]
     }

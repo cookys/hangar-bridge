@@ -154,6 +154,7 @@ describe('P5 self-loopback: dispatch_task ↔ task_result correlation', () => {
       // tool; here we construct it directly to validate the protocol.
       const replyEnv = await peerB.client.send({
         to: 'peera',
+        subject: null,
         kind: 'task_result',
         content: 'build green: 193+2 tests pass',
         in_reply_to: dispatchMsgId as MessageId,
@@ -219,6 +220,7 @@ describe('P5 self-loopback: dispatch_task ↔ task_result correlation', () => {
       // peerB replies normally.
       await peerB.client.send({
         to: 'peera',
+        subject: null,
         kind: 'task_result',
         content: 'reply',
         in_reply_to: dispatchMsgId as MessageId,
