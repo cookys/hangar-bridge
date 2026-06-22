@@ -8,6 +8,16 @@ export const TEAM_BROADCAST_HANDLE = '@team' as const
 export const HANDLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/
 export const META_KEY_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/
 export const CHANNEL_SOURCE_PEERS = 'hangar-bridge' as const
+// Subject = optional dotted lowercase routing key (e.g. "mple2.command.assign").
+// The first dot-token is the ACL "namespace". subject=null ⇒ legacy fan-out.
+export const SUBJECT_REGEX = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$/
+export const MAX_SUBJECT_LENGTH = 128
+// Meta keys reserved for relay-stamped routing/command signals. The relay strips
+// these from inbound envelope meta at the publish chokepoint so a sender cannot
+// forge a gated-subject/command signal into a channel notification (B1). The
+// authentic subject reaches receivers ONLY via the relay-stamped envelope.subject
+// field surfaced as the dedicated `gated_subject` channel field — never via meta.
+export const RESERVED_META_KEYS = ['subject', 'kind', 'task_kind'] as const
 // D10 stub posture: single-tenant. Every authenticated request binds to this
 // team_id; schema retains the column + FK to keep migration risk at zero.
 export const HANGAR_TEAM_ID = 'hangar' as const
