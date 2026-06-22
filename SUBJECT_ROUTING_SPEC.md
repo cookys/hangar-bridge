@@ -7,10 +7,14 @@ Review history (ceo-agent loop): 1 triage of 43-finding broad review + 3 focused
   R6 (non-fatal subject:=task_kind), M1 (drop generation counter; read-once-at-connect), M2 (drop dead index),
   M3/M4/M5, and round-3 B1 (gated_subject integrity field + reserved-meta strip), B2 (zod nullish + default(null)),
   B3 (two-semantics backlog cursor).
-NOTE: v4's three B-fixes have NOT themselves been re-reviewed. The remaining open class (zod nuances, meta
-  forgeability, SQL predicate placement) is best certified by IMPLEMENTATION + the test suite, not more prose review.
-  Recommendation: lock this spec, implement TDD (write the enumerated tests incl. B1/B2/B3 cases first), let
-  `pnpm -r test` + tsc be the convergence oracle. Implementation NOT started; awaiting Board go/no-go.
+IMPLEMENTED 2026-06-22 on branch `feat/subject-routing-acl` (stage1 c12ca54 / stage2 77aa54f / stage3 cb3cde3).
+  TDD per the recommendation below; `pnpm -r build` (tsc) + `vitest run` GREEN: shared 68, relay 79
+  (incl. subject-acl integration 8 + fanout accept 3), peer-agent 80. e2e not run (needs live Claude drivers).
+  Implementation deltas vs spec (noted in commits): EnvelopeSchema.subject given `.default(null)` (reduces
+  caller churn; relay still stamps explicitly); peer-agent task_kind regex widened to allow '.' so a dotted
+  task_kind both labels + derives the gated subject; no subject DB index (M2 — JS-side matcher).
+  TODO (operator): muyan relay deploy (peers.json subjects.owned + restart/init); per-box config.json
+  subjects.interest; same-box cross-project isolation via project-scoped .mcp.json + HANGAR_CONFIG_DIR.
 Generated 2026-06-22.
 -->
 
