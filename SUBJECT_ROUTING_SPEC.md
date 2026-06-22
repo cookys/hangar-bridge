@@ -12,9 +12,16 @@ IMPLEMENTED 2026-06-22 on branch `feat/subject-routing-acl` (stage1 c12ca54 / st
   `vitest run` shared 72, relay 81 (incl. subject-acl integration 11 + fanout accept 3), peer-agent 80.
   e2e runtime not run (needs live Claude drivers) but its typecheck passes. Hardened over 2 code-review rounds
   (round1: 2 blocking gate-bypass/label-loss; round2: 2 blocking e2e-typecheck/relay-seen-leak) — all fixed.
-  Implementation deltas vs spec (noted in commits): EnvelopeSchema.subject given `.default(null)` (reduces
-  caller churn; relay still stamps explicitly); peer-agent task_kind regex widened to allow '.' so a dotted
-  task_kind both labels + derives the gated subject; no subject DB index (M2 — JS-side matcher).
+  Implementation deltas vs spec (noted in commits) — these OVERRIDE the spec body where it disagrees:
+    1. EnvelopeSchema.subject given `.default(null)` (reduces caller churn; relay still stamps explicitly).
+    2. peer-agent task_kind regex widened to allow '.' so a dotted task_kind both labels + derives the gated subject.
+    3. no subject DB index (M2 — JS-side matcher).
+    4. RESERVED_META_KEYS = ['subject','kind'] only — task_kind is NOT reserved/stripped (the spec body's
+       three-key version is superseded). task_kind is a benign non-authoritative display label; B1 confused-deputy
+       stays closed because receivers key ONLY off the relay-stamped gated_subject (verified in
+       factor640/COORDINATION.md §收令方, which forbids trusting meta.task_kind). Defense reduced from 2 layers
+       (strip + receiver discipline) to 1 verified layer (receiver discipline) — accepted residual; phase-4
+       rollout MUST keep that COORDINATION.md contract in place.
   TODO (operator): muyan relay deploy (peers.json subjects.owned + restart/init); per-box config.json
   subjects.interest; same-box cross-project isolation via project-scoped .mcp.json + HANGAR_CONFIG_DIR.
 Generated 2026-06-22.
