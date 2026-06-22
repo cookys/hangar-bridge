@@ -69,15 +69,20 @@ export class MessageStore {
     return rows.map(envelopeFromRow)
   }
 
-  fetchPendingFor(team_id: string, to_handle: string): Envelope[] {
+  // Cold-start pending drain, CURSORED so the caller can page through with a
+  // monotonic id cursor (start since_id='') and never get stuck on a full page of
+  // non-deliverable (interest-narrowed, delivered_at=NULL) rows at the front of the
+  // window — the single-shot variant could permanently starve deliverable rows past
+  // position 1000 (B3 black hole).
+  fetchPendingSince(team_id: string, to_handle: string, since_id: string): Envelope[] {
     const rows = this.db.prepare(`
       SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
              kind, content, meta_json, sent_at, delivered_at
       FROM message
-      WHERE team_id=? AND delivered_at IS NULL
+      WHERE team_id=? AND id > ? AND delivered_at IS NULL
         AND (to_handle=? OR (to_handle='@team' AND from_handle != ?))
       ORDER BY id ASC LIMIT 1000
-    `).all(team_id, to_handle, to_handle) as EnvelopeRow[]
+    `).all(team_id, since_id, to_handle, to_handle) as EnvelopeRow[]
     return rows.map(envelopeFromRow)
   }
 

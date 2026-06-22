@@ -82,18 +82,21 @@ export function streamRoute(deps: Deps) {
       // Backlog. since-resume uses the id cursor only (no delivered_at filter — B3,
       // preserves @team multi-recipient redelivery), draining pages until < BACKLOG_PAGE
       // so a JS-filtered page can't strand the recipient below the live edge.
-      if (since) {
-        let cursor: string = since
-        for (;;) {
-          const page = deps.store.fetchSince(team_id, handle, cursor)
-          if (page.length === 0) break
-          for (const e of page) if (deliverable(e) && !seen.has(e.id)) await writeAndMark(e)
-          cursor = page[page.length - 1]!.id
-          if (page.length < BACKLOG_PAGE) break
-        }
-      } else {
-        const page = deps.store.fetchPendingFor(team_id, handle)
+      // Both branches drain in a monotonic id-cursor loop, advancing the cursor on
+      // EVERY page (deliverable or not) so a full page of non-deliverable rows can
+      // never starve deliverable rows behind it (B3). since-resume = id>cursor only
+      // (client cursor is the dedup authority, preserves @team redelivery); cold-start
+      // = id>cursor AND delivered_at IS NULL (pending-only).
+      const drain = since
+        ? (cur: string) => deps.store.fetchSince(team_id, handle, cur)
+        : (cur: string) => deps.store.fetchPendingSince(team_id, handle, cur)
+      let cursor: string = since ?? ''
+      for (;;) {
+        const page = drain(cursor)
+        if (page.length === 0) break
         for (const e of page) if (deliverable(e) && !seen.has(e.id)) await writeAndMark(e)
+        cursor = page[page.length - 1]!.id
+        if (page.length < BACKLOG_PAGE) break
       }
 
       const pingTimer = setInterval(() => {
