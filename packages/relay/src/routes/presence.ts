@@ -31,6 +31,7 @@ export function presenceRoute(deps: Deps) {
 
     const envelope = deps.store.insert(team, handle, {
       to: TEAM_BROADCAST_HANDLE,
+      subject: null,
       kind: 'presence_update',
       content: parsed.data.summary,
       meta,

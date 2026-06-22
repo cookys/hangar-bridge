@@ -74,4 +74,30 @@ describe('Fanout', () => {
     f.subscribe(collectingSub('bob'))
     expect(new Set(f.onlineHandles('t1'))).toEqual(new Set(['alice', 'bob']))
   })
+
+  // Subscribe-side ACL gate: the per-subscriber `accept` predicate (set by the
+  // stream route from the authenticated handle's owned-set) decides delivery.
+  const subjEnv = (subject: string | null, to = 'bob'): Envelope => ({ ...env('A', to), subject })
+
+  it('skips a subscriber whose accept() rejects, delivers to one that accepts', () => {
+    const bob = { ...collectingSub('bob'), accept: (e: Envelope) => e.subject === null || e.subject.startsWith('mple2') }
+    f.subscribe(bob)
+    f.deliver(subjEnv('mple2.x'))
+    f.deliver(subjEnv('other.x'))
+    expect(bob.received.map(e => e.subject)).toEqual(['mple2.x'])
+  })
+
+  it('deliver returns whether at least one subscriber accepted', () => {
+    const bob = { ...collectingSub('bob'), accept: (e: Envelope) => e.subject !== 'no.x' }
+    f.subscribe(bob)
+    expect(f.deliver(subjEnv('ok.x'))).toBe(true)
+    expect(f.deliver(subjEnv('no.x'))).toBe(false)
+  })
+
+  it('null-subject delivers even with no accept predicate (back-compat)', () => {
+    const bob = collectingSub('bob')
+    f.subscribe(bob)
+    expect(f.deliver(subjEnv(null))).toBe(true)
+    expect(bob.received).toHaveLength(1)
+  })
 })

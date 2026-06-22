@@ -36,6 +36,7 @@ export class MessageStore {
       team: team_id,
       from: from_handle,
       to: msg.to,
+      subject: msg.subject ?? null,
       in_reply_to: msg.in_reply_to ?? null,
       thread_root,
       kind: msg.kind,
@@ -46,10 +47,10 @@ export class MessageStore {
     })
 
     this.db.prepare(`
-      INSERT INTO message(id,v,team_id,from_handle,to_handle,in_reply_to,thread_root,kind,content,meta_json,sent_at,delivered_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO message(id,v,team_id,from_handle,to_handle,subject,in_reply_to,thread_root,kind,content,meta_json,sent_at,delivered_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
-      envelope.id, envelope.v, envelope.team, envelope.from, envelope.to,
+      envelope.id, envelope.v, envelope.team, envelope.from, envelope.to, envelope.subject,
       envelope.in_reply_to, envelope.thread_root, envelope.kind, envelope.content,
       JSON.stringify(envelope.meta), envelope.sent_at, envelope.delivered_at
     )
@@ -58,7 +59,7 @@ export class MessageStore {
 
   fetchSince(team_id: string, to_handle: string, since_id: string): Envelope[] {
     const rows = this.db.prepare(`
-      SELECT id, v, team_id, from_handle, to_handle, in_reply_to, thread_root,
+      SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
              kind, content, meta_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ?
@@ -70,7 +71,7 @@ export class MessageStore {
 
   fetchPendingFor(team_id: string, to_handle: string): Envelope[] {
     const rows = this.db.prepare(`
-      SELECT id, v, team_id, from_handle, to_handle, in_reply_to, thread_root,
+      SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
              kind, content, meta_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND delivered_at IS NULL

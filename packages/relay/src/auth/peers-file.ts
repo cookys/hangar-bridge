@@ -4,9 +4,19 @@ import { ulid } from 'ulid'
 import { HANGAR_TEAM_ID, HANDLE_REGEX } from '@hangar-bridge/shared'
 import type { Db } from '../db/db.ts'
 
+// owned = namespaces (bare first-tokens) this peer may publish/subscribe to.
+// interest = optional default narrowing patterns (exact or trailing '>').
+const NAMESPACE_REGEX = /^[a-z][a-z0-9_]*$/
+const INTEREST_REGEX = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*(\.?>)?$/
+const SubjectsSchema = z.object({
+  owned: z.array(z.string().regex(NAMESPACE_REGEX)).default([]),
+  interest: z.array(z.string().regex(INTEREST_REGEX)).default([]),
+})
+
 const PeerEntrySchema = z.object({
   secret_sha256_hex: z.string().regex(/^[0-9a-f]{64}$/, 'must be 64 lowercase hex chars (SHA-256)'),
   display_name: z.string().min(1).max(128).optional(),
+  subjects: SubjectsSchema.optional(),
 })
 export const PeersFileSchema = z.record(z.string().regex(HANDLE_REGEX), PeerEntrySchema)
 export type PeersFile = z.infer<typeof PeersFileSchema>
@@ -15,6 +25,7 @@ export interface PeerEntry {
   handle: string
   secret_sha256_hex: string
   display_name: string
+  subjects: { owned: string[]; interest: string[] }
 }
 
 export function loadPeersFile(path: string): PeerEntry[] {
@@ -31,6 +42,7 @@ export function loadPeersFile(path: string): PeerEntry[] {
     handle,
     secret_sha256_hex: entry.secret_sha256_hex,
     display_name: entry.display_name ?? handle,
+    subjects: entry.subjects ?? { owned: [], interest: [] },
   }))
 }
 
@@ -53,14 +65,17 @@ export function seedPeers(db: Db, peers: PeerEntry[], now: Date = new Date()): v
       ).get(HANGAR_TEAM_ID, peer.handle) as { id: string } | undefined
 
       const humanId = existingHuman?.id ?? `h_${ulid()}`
+      // Re-seed overwrites subjects so removing a namespace from peers.json +
+      // re-seed REVOKES it (next connection / next delivery decision re-reads DB).
+      const subjectsJson = JSON.stringify(peer.subjects ?? { owned: [], interest: [] })
       if (!existingHuman) {
         db.prepare(
-          "INSERT INTO human(id,team_id,handle,display_name,created_at,last_active_at) VALUES (?,?,?,?,?,?)"
-        ).run(humanId, HANGAR_TEAM_ID, peer.handle, peer.display_name, nowIso, nowIso)
+          "INSERT INTO human(id,team_id,handle,display_name,subjects,created_at,last_active_at) VALUES (?,?,?,?,?,?,?)"
+        ).run(humanId, HANGAR_TEAM_ID, peer.handle, peer.display_name, subjectsJson, nowIso, nowIso)
       } else {
         db.prepare(
-          "UPDATE human SET display_name=?, disabled_at=NULL WHERE id=?"
-        ).run(peer.display_name, humanId)
+          "UPDATE human SET display_name=?, subjects=?, disabled_at=NULL WHERE id=?"
+        ).run(peer.display_name, subjectsJson, humanId)
       }
 
       const existingToken = db.prepare(
