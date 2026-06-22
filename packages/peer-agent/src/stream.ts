@@ -27,6 +27,9 @@ export interface StreamClientOpts {
   relayUrl: string
   token: string
   sinceCursor: () => string | undefined
+  // Interest patterns (exact or trailing '>') sent as the x-hangar-subjects header
+  // so the relay narrows delivery to these. Empty ⇒ all owned + null-subject.
+  subjects?: string[]
   onEnvelope: (e: Envelope) => void
   onAuthError: () => void
   reconnectBaseMs?: number
@@ -47,10 +50,13 @@ export class StreamClient {
         const since = this.opts.sinceCursor()
         const url = new URL('/v1/stream', this.opts.relayUrl)
         if (since) url.searchParams.set('since', since)
-        const res = await fetch(url, {
-          headers: { authorization: `Bearer ${this.opts.token}`, accept: 'text/event-stream' },
-          signal: this.aborter.signal,
-        })
+        const headers: Record<string, string> = {
+          authorization: `Bearer ${this.opts.token}`, accept: 'text/event-stream',
+        }
+        if (this.opts.subjects && this.opts.subjects.length > 0) {
+          headers['x-hangar-subjects'] = this.opts.subjects.join(',')
+        }
+        const res = await fetch(url, { headers, signal: this.aborter.signal })
         if (res.status === 401) { this.opts.onAuthError(); return }
         if (res.status !== 200 || !res.body) throw new Error(`stream http ${res.status}`)
         this.attempt = 0

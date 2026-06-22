@@ -7,6 +7,13 @@ import { defaultConfigPath, defaultAuditDir } from './paths.ts'
 export const ConfigSchema = z.object({
   relay_url: z.string().url(),
   token_path: z.string(),
+  // Subject routing. `interest` (exact or trailing '>') is sent to the relay as the
+  // narrowing filter (x-hangar-subjects header). `owned` is informational on the peer
+  // side — the relay DB (human.subjects) is the authoritative ACL. Both default empty.
+  subjects: z.object({
+    owned: z.array(z.string()).default([]),
+    interest: z.array(z.string()).default([]),
+  }).default({ owned: [], interest: [] }),
   permission_relay: z.object({
     enabled: z.boolean().default(false),
     routing: z.enum(['never_relay','ask_thread_participants','ask_team'])

@@ -1,5 +1,5 @@
 import type { Envelope } from '@hangar-bridge/shared'
-import { envelopeToChannelNotification } from '@hangar-bridge/shared'
+import { envelopeToChannelNotification, matchesInterest } from '@hangar-bridge/shared'
 import { SenderGate } from './gate.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
@@ -10,18 +10,38 @@ export interface InboundDispatcherOpts {
   gate: SenderGate
   emit: (notification: { method: string; params: Record<string, unknown> }) => void
   setCursor: (id: string) => void
+  // Local interest narrowing (exact or trailing '>'). FAIL-OPEN relative to the
+  // relay (M5): only narrows by interest, NEVER drops on ownership — the relay's
+  // gate is authoritative, so local config drift must not lose owned-and-delivered
+  // traffic. Empty ⇒ no local narrowing.
+  interest?: string[] | undefined
   permissionTracker?: PermissionTracker | undefined
   dispatchTracker?: DispatchTracker | undefined
   replyLimiter?: ReplyLimiter | undefined
 }
 
+const SEEN_CAP = 4096
+
 export class InboundDispatcher {
+  private seen = new Set<string>()
   constructor(private opts: InboundDispatcherOpts) {}
 
   handle(e: Envelope): void {
     logJson('info', 'peer.inbound.received', { from: e.from, kind: e.kind, msg_id: e.id })
     if (!this.opts.gate.accept(e.from)) {
       logJson('warn', 'peer.inbound.sender_gate_drop', { from: e.from, msg_id: e.id })
+      return
+    }
+    // Dedupe by msg_id (covers the subscribe/backlog connect-window): advance the
+    // cursor past a re-seen envelope but do NOT re-inject it into context.
+    if (this.seen.has(e.id)) {
+      this.opts.setCursor(e.id)
+      return
+    }
+    // Local interest narrowing (fail-open: interest only, never ownership).
+    const interest = this.opts.interest
+    if (e.subject !== null && interest && interest.length > 0 && !matchesInterest(e.subject, interest)) {
+      this.opts.setCursor(e.id)
       return
     }
     if (e.kind === 'permission_request' && this.opts.permissionTracker) {
@@ -51,6 +71,8 @@ export class InboundDispatcher {
         err: String(err instanceof Error ? err.message : err),
       })
     }
+    if (this.seen.size >= SEEN_CAP) this.seen.clear()
+    this.seen.add(e.id)
     this.opts.setCursor(e.id)
   }
 }
