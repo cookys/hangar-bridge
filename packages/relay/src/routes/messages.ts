@@ -43,10 +43,16 @@ export function messagesRoute(deps: Deps) {
       for (const k of RESERVED_META_KEYS) delete (data.meta as Record<string, string>)[k]
     }
 
-    // Fail-closed namespace ACL. Only chat + task_dispatch carry gated subjects
-    // (M3: reactive/system kinds are exempt). subject!=null ⇒ `to` is a concrete
-    // handle (enforced by schema direct-only refine), so the cast below is safe.
-    if (data.subject != null && (data.kind === 'chat' || data.kind === 'task_dispatch')) {
+    // Fail-closed namespace ACL — gate on SUBJECT PRESENCE, not a kind allow-list.
+    // A non-null subject is only meaningful on a command-carrying kind; a subjected
+    // reactive/system kind (presence_update/permission_*/task_result) is rejected
+    // outright, else a non-owner could smuggle a gated_subject via e.g. a subjected
+    // presence_update and bypass the ownership check entirely. subject!=null ⇒ `to`
+    // is a concrete handle (schema direct-only refine), so the cast below is safe.
+    if (data.subject != null) {
+      if (data.kind !== 'chat' && data.kind !== 'task_dispatch') {
+        return c.json({ error: 'invalid_message', message: 'subject_not_allowed_for_kind' }, 400)
+      }
       const ownedPub = loadOwnedSet(deps.db, HANGAR_TEAM_ID, peer.handle)
       if (!ownsNamespace(data.subject, ownedPub)) {
         auditSubjectDenied(deps, peer.id, 'subject.publish_denied', { subject: data.subject, handle: peer.handle })
@@ -54,7 +60,7 @@ export function messagesRoute(deps: Deps) {
       }
       const ownedRcpt = loadOwnedSet(deps.db, HANGAR_TEAM_ID, data.to as string)
       if (!ownsNamespace(data.subject, ownedRcpt)) {
-        auditSubjectDenied(deps, peer.id, 'subject.recipient_not_owner', { subject: data.subject, to: data.to as string })
+        auditSubjectDenied(deps, peer.id, 'subject.recipient_denied', { subject: data.subject, to: data.to as string })
         return c.json({ error: 'recipient_not_owner' }, 409)
       }
     }

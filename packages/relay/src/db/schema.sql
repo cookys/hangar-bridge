@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS human (
   created_at TEXT NOT NULL,
   disabled_at TEXT,
   last_active_at TEXT,
+  subjects TEXT,              -- JSON {owned,interest} for the namespace ACL (v5)
   UNIQUE(team_id, handle)
 );
 
@@ -61,7 +62,8 @@ CREATE TABLE IF NOT EXISTS message (
   content TEXT NOT NULL,
   meta_json TEXT NOT NULL DEFAULT '{}',
   sent_at TEXT NOT NULL,
-  delivered_at TEXT
+  delivered_at TEXT,
+  subject TEXT               -- dotted routing key, NULL = legacy fan-out (v5)
 );
 CREATE INDEX IF NOT EXISTS idx_message_team_id ON message(team_id, id);
 CREATE INDEX IF NOT EXISTS idx_message_to_handle ON message(team_id, to_handle, id);
@@ -88,6 +90,7 @@ INSERT OR IGNORE INTO schema_version(version) VALUES (1);
 INSERT OR IGNORE INTO schema_version(version) VALUES (2);
 INSERT OR IGNORE INTO schema_version(version) VALUES (3);
 INSERT OR IGNORE INTO schema_version(version) VALUES (4);
+INSERT OR IGNORE INTO schema_version(version) VALUES (5);
 
 -- D10: single fixed team row. All authenticated requests bind to this team.
 INSERT OR IGNORE INTO team(id, name, retention_days, created_at)

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { HANGAR_TEAM_ID, isValidMessageId, type Envelope } from '@hangar-bridge/shared'
+import { HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, type Envelope } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { loadOwnedSet, ownsNamespace, matchesInterest } from '../acl.ts'
 import type { Deps } from '../deps.ts'
@@ -8,8 +8,6 @@ import type { Subscriber } from '../fanout.ts'
 
 const PING_INTERVAL_MS = 25_000
 const BACKLOG_PAGE = 1000
-// Interest token: a subject, optionally with a trailing '>' (the only wildcard).
-const INTEREST_REGEX = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*(\.?>)?$/
 
 export function streamRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()

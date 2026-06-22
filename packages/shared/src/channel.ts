@@ -63,7 +63,6 @@ export function envelopeToChannelNotification(e: Envelope): ChannelNotification 
           kind: 'task_result',
           ...safeMeta
         },
-        ...(e.subject ? { gated_subject: e.subject } : {}),
         correlation_id: safeMeta.correlation_id ?? (e.in_reply_to ?? '')
       }
     }
@@ -82,7 +81,10 @@ export function envelopeToChannelNotification(e: Envelope): ChannelNotification 
         ...(e.kind === 'task_dispatch' ? { kind: 'task_dispatch' } : {}),
         ...safeMeta
       },
-      ...(e.subject ? { gated_subject: e.subject } : {})
+      // gated_subject only for command-carrying kinds (defense in depth: the publish
+      // gate already rejects a subjected non-chat/task_dispatch, but never stamp the
+      // signal for any other kind even if one slips through).
+      ...(e.subject && (e.kind === 'chat' || e.kind === 'task_dispatch') ? { gated_subject: e.subject } : {})
     }
   }
 }

@@ -71,7 +71,12 @@ export class InboundDispatcher {
         err: String(err instanceof Error ? err.message : err),
       })
     }
-    if (this.seen.size >= SEEN_CAP) this.seen.clear()
+    // Bounded FIFO eviction (Set preserves insertion order): drop the oldest id, not
+    // the whole set — a wholesale clear could re-inject a just-evicted id on replay.
+    if (this.seen.size >= SEEN_CAP) {
+      const oldest = this.seen.values().next().value
+      if (oldest !== undefined) this.seen.delete(oldest)
+    }
     this.seen.add(e.id)
     this.opts.setCursor(e.id)
   }

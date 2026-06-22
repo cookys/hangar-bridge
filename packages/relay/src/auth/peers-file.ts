@@ -1,13 +1,12 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { z } from 'zod'
 import { ulid } from 'ulid'
-import { HANGAR_TEAM_ID, HANDLE_REGEX } from '@hangar-bridge/shared'
+import { HANGAR_TEAM_ID, HANDLE_REGEX, NAMESPACE_REGEX, INTEREST_REGEX } from '@hangar-bridge/shared'
 import type { Db } from '../db/db.ts'
 
 // owned = namespaces (bare first-tokens) this peer may publish/subscribe to.
 // interest = optional default narrowing patterns (exact or trailing '>').
-const NAMESPACE_REGEX = /^[a-z][a-z0-9_]*$/
-const INTEREST_REGEX = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*(\.?>)?$/
+// Regexes single-sourced from @hangar-bridge/shared (no divergent copies).
 const SubjectsSchema = z.object({
   owned: z.array(z.string().regex(NAMESPACE_REGEX)).default([]),
   interest: z.array(z.string().regex(INTEREST_REGEX)).default([]),
@@ -66,7 +65,9 @@ export function seedPeers(db: Db, peers: PeerEntry[], now: Date = new Date()): v
 
       const humanId = existingHuman?.id ?? `h_${ulid()}`
       // Re-seed overwrites subjects so removing a namespace from peers.json +
-      // re-seed REVOKES it (next connection / next delivery decision re-reads DB).
+      // re-seed REVOKES it. The owned-set is read once per SSE connection (M1), so
+      // revocation takes effect on the next connection; in-flight streams pick it up
+      // on reconnect (a relay restart, the documented re-seed path, drops all streams).
       const subjectsJson = JSON.stringify(peer.subjects ?? { owned: [], interest: [] })
       if (!existingHuman) {
         db.prepare(
