@@ -178,7 +178,10 @@ export function registerTools(
       let subject: string | null = input.subject ?? null
       if (subject === null && input.to !== TEAM_BROADCAST_HANDLE && input.task_kind !== undefined) {
         const candidate = input.task_kind.toLowerCase()
-        if (SUBJECT_REGEX.test(candidate)) subject = candidate
+        if (SUBJECT_REGEX.test(candidate)) {
+          subject = candidate
+          meta.task_kind = candidate  // keep the display label consistent with the derived route key
+        }
       }
       const payload: OutboundMessage = {
         to: input.to,

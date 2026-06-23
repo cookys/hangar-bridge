@@ -1,4 +1,4 @@
--- hangar-bridge relay schema v4
+-- hangar-bridge relay schema v5
 --
 -- D10 stub posture: single-tenant. `team_id` is constant `'hangar'` everywhere
 -- in application code. Schema retains the column + FK for minimal churn vs
