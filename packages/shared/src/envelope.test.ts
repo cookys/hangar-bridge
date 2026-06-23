@@ -10,6 +10,7 @@ import { PROTOCOL_VERSION, MAX_CONTENT_BYTES } from './constants.ts'
 const validChatEnvelope = (): Envelope => ({
   id: 'msg_01HRK7Y0000000000000000000', v: PROTOCOL_VERSION,
   team: 'team_abc', from: 'alice', to: 'bob',
+  subject: null,
   in_reply_to: null, thread_root: null,
   kind: 'chat', content: 'hello',
   meta: { repo: 'claudes-talking' },
@@ -113,6 +114,12 @@ describe('row <-> envelope conversion', () => {
     const e = validChatEnvelope()
     expect(envelopeFromRow(envelopeToRow(e))).toEqual(e)
   })
+  it('round-trips a subjected direct envelope (subject preserved)', () => {
+    const e: Envelope = { ...validChatEnvelope(), to: 'bob', subject: 'mple2.command.assign' }
+    const back = envelopeFromRow(envelopeToRow(e))
+    expect(back.subject).toBe('mple2.command.assign')
+    expect(back).toEqual(e)
+  })
   it('property: arbitrary valid envelopes round-trip cleanly', () => {
     const arb = fc.record({
       id: fc.constantFrom('msg_01HRK7Y0000000000000000000', 'msg_01HRK7Y0000000000000000001'),
@@ -120,6 +127,7 @@ describe('row <-> envelope conversion', () => {
       team: fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/),
       from: fc.constantFrom('alice', 'bob', 'charlie'),
       to: fc.constantFrom('alice', 'bob', '@team'),
+      subject: fc.constant(null),
       in_reply_to: fc.constant(null),
       thread_root: fc.constant(null),
       kind: fc.constantFrom('chat', 'presence_update', 'task_dispatch'),
@@ -134,5 +142,64 @@ describe('row <-> envelope conversion', () => {
     fc.assert(fc.property(arb, e => {
       expect(envelopeFromRow(envelopeToRow(e as Envelope))).toEqual(e)
     }), { numRuns: 200 })
+  })
+})
+
+describe('subject field (routing + ACL)', () => {
+  it('omitted subject defaults to null (back-compat)', () => {
+    const e = validChatEnvelope() as Record<string, unknown>
+    delete e.subject
+    expect(EnvelopeSchema.parse(e).subject).toBe(null)
+  })
+  it('accepts a valid dotted lowercase subject on a direct message', () => {
+    const e = { ...validChatEnvelope(), to: 'bob', subject: 'mple2.command.assign' }
+    expect(EnvelopeSchema.parse(e).subject).toBe('mple2.command.assign')
+  })
+  it('rejects uppercase / hyphen / leading-dot subjects', () => {
+    for (const s of ['Mple2', 'mple2-x', '.mple2', 'mple2.', 'mple2..x']) {
+      expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), to: 'bob', subject: s })).toThrow()
+    }
+  })
+  it('rejects a subject longer than 128 chars', () => {
+    const s = 'a' + '.b'.repeat(80) // > 128
+    expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), to: 'bob', subject: s })).toThrow()
+  })
+  it('DIRECT-ONLY: subject + to=@team is rejected', () => {
+    expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@team', subject: 'mple2.x' }))
+      .toThrow(/concrete handle/)
+  })
+  it('ACK CHANNEL: subject + in_reply_to is rejected', () => {
+    const e = { ...validChatEnvelope(), to: 'bob', subject: 'mple2.x', in_reply_to: 'msg_01HRK7Y0000000000000000001' }
+    expect(() => EnvelopeSchema.parse(e)).toThrow(/subject=null/)
+  })
+  it('null-subject @team stays valid (legacy broadcast)', () => {
+    expect(EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@team', subject: null })).toBeDefined()
+  })
+})
+
+describe('OutboundMessageSchema subject', () => {
+  it('omitted subject normalizes to null (default)', () => {
+    expect(OutboundMessageSchema.parse({ to: 'bob', kind: 'chat', content: 'hi' }).subject).toBe(null)
+  })
+  it('accepts a subjected direct outbound', () => {
+    const m = OutboundMessageSchema.parse({ to: 'bob', kind: 'task_dispatch', content: 'x', subject: 'mple2.assign' })
+    expect(m.subject).toBe('mple2.assign')
+  })
+  it('ack (in_reply_to, no subject) is accepted — not spuriously 400d (B2)', () => {
+    expect(OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'ack', in_reply_to: 'msg_01HRK7Y0000000000000000001'
+    })).toBeDefined()
+  })
+  it('null-subject @team broadcast is accepted (B2)', () => {
+    expect(OutboundMessageSchema.parse({ to: '@team', kind: 'task_dispatch', content: 'x' })).toBeDefined()
+  })
+  it('subject + @team is rejected', () => {
+    expect(() => OutboundMessageSchema.parse({ to: '@team', kind: 'task_dispatch', content: 'x', subject: 'mple2.x' }))
+      .toThrow(/concrete handle/)
+  })
+  it('subject + in_reply_to is rejected', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', subject: 'mple2.x', in_reply_to: 'msg_01HRK7Y0000000000000000001'
+    })).toThrow(/subject=null/)
   })
 })

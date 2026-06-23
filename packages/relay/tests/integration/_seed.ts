@@ -17,7 +17,7 @@ export function seedPeerSecrets(db: Db, handles: string[]): Record<string, Seede
   const entries = handles.map(handle => {
     const raw = generateRawToken()
     out[handle] = { handle, token: raw }
-    return { handle, secret_sha256_hex: hashToken(raw).toString('hex'), display_name: handle }
+    return { handle, secret_sha256_hex: hashToken(raw).toString('hex'), display_name: handle, subjects: { owned: [], interest: [] } }
   })
   seedPeers(db, entries)
   return out

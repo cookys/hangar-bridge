@@ -22,8 +22,8 @@ describe('loadPeersFile', () => {
     })
     const peers = loadPeersFile(path)
     expect(peers).toEqual([
-      { handle: 'openclaw', secret_sha256_hex: 'a'.repeat(64), display_name: 'openclaw' },
-      { handle: 'gentoo', secret_sha256_hex: 'b'.repeat(64), display_name: 'Gentoo Box' },
+      { handle: 'openclaw', secret_sha256_hex: 'a'.repeat(64), display_name: 'openclaw', subjects: { owned: [], interest: [] } },
+      { handle: 'gentoo', secret_sha256_hex: 'b'.repeat(64), display_name: 'Gentoo Box', subjects: { owned: [], interest: [] } },
     ])
     rmSync(path, { force: true })
   })

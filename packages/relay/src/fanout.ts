@@ -4,6 +4,10 @@ import { TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
 export interface Subscriber {
   handle: string
   team_id: string
+  // Per-subscriber gate (ownership + interest), set by the stream route from the
+  // authenticated handle's owned-set. When present and it returns false, the
+  // envelope is NOT delivered to this subscriber. Absent ⇒ accept all (back-compat).
+  accept?: (e: Envelope) => boolean
   deliver: (e: Envelope) => void
 }
 
@@ -34,19 +38,34 @@ export class Fanout {
     if (set.size === 0) byHandle.delete(sub.handle)
   }
 
-  deliver(e: Envelope): void {
+  /**
+   * Deliver to matching subscribers, consulting each subscriber's `accept` gate.
+   * Returns true iff at least one subscriber accepted it (post-gate) — used by the
+   * publish route to decide delivered-tracking for null-subject messages.
+   */
+  deliver(e: Envelope): boolean {
     const byHandle = this.subs.get(e.team)
-    if (!byHandle) return
+    if (!byHandle) return false
+    let delivered = false
     if (e.to === TEAM_BROADCAST_HANDLE) {
       for (const [handle, set] of byHandle) {
         if (handle === e.from) continue
-        for (const sub of set) sub.deliver(e)
+        for (const sub of set) {
+          if (sub.accept && !sub.accept(e)) continue
+          sub.deliver(e)
+          delivered = true
+        }
       }
-      return
+      return delivered
     }
     const set = byHandle.get(e.to)
-    if (!set) return
-    for (const sub of set) sub.deliver(e)
+    if (!set) return false
+    for (const sub of set) {
+      if (sub.accept && !sub.accept(e)) continue
+      sub.deliver(e)
+      delivered = true
+    }
+    return delivered
   }
 
   onlineHandles(team_id: string): string[] {

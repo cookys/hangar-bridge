@@ -1,4 +1,4 @@
-import { META_KEY_REGEX, CHANNEL_SOURCE_PEERS } from './constants.ts'
+import { META_KEY_REGEX, CHANNEL_SOURCE_PEERS, RESERVED_META_KEYS } from './constants.ts'
 import type { Envelope } from './envelope.ts'
 
 export interface ChannelNotification {
@@ -6,6 +6,11 @@ export interface ChannelNotification {
   params: {
     content: string
     meta: Record<string, string>
+    // The authentic, relay-stamped gated subject. Set from `e.subject` (envelope
+    // field), NEVER from sender meta — so a receiver can trust it as the command
+    // routing key (B1). The relay strips reserved meta keys at publish, and
+    // sanitizeMeta drops them too (defense in depth).
+    gated_subject?: string
     request_id?: string
     tool_name?: string
     description?: string
@@ -75,14 +80,23 @@ export function envelopeToChannelNotification(e: Envelope): ChannelNotification 
         source: CHANNEL_SOURCE_PEERS,
         ...(e.kind === 'task_dispatch' ? { kind: 'task_dispatch' } : {}),
         ...safeMeta
-      }
+      },
+      // gated_subject only for command-carrying kinds (defense in depth: the publish
+      // gate already rejects a subjected non-chat/task_dispatch, but never stamp the
+      // signal for any other kind even if one slips through).
+      ...(e.subject && (e.kind === 'chat' || e.kind === 'task_dispatch') ? { gated_subject: e.subject } : {})
     }
   }
 }
 
+const RESERVED = new Set<string>(RESERVED_META_KEYS)
 function sanitizeMeta(meta: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(meta)) {
+    // Drop reserved keys (subject, kind) so a forged sender-meta key can never
+    // masquerade as a relay-stamped signal (B1). task_kind is NOT reserved — it is a
+    // benign non-authoritative display label and is allowed through.
+    if (RESERVED.has(k)) continue
     if (META_KEY_REGEX.test(k)) out[k] = escapeChannelAttr(v)
   }
   return out

@@ -53,6 +53,7 @@ export function permissionRoute(deps: Deps) {
 
     const verdict = deps.store.insert(team, me, {
       to: req.from_handle,
+      subject: null,
       kind: 'permission_verdict',
       content: '',
       in_reply_to: req.id as MessageId,

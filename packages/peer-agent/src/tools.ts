@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ulid } from 'ulid'
-import { HANDLE_REGEX, TEAM_BROADCAST_HANDLE, type OutboundMessage, type MessageId } from '@hangar-bridge/shared'
+import { HANDLE_REGEX, TEAM_BROADCAST_HANDLE, SUBJECT_REGEX, MAX_SUBJECT_LENGTH, type OutboundMessage, type MessageId } from '@hangar-bridge/shared'
 import type { RelayClient } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
@@ -12,9 +12,11 @@ const AddressSchema = z.union([
   z.literal(TEAM_BROADCAST_HANDLE),
 ])
 
+const SubjectInput = z.string().regex(SUBJECT_REGEX).max(MAX_SUBJECT_LENGTH)
 const SendInput = z.object({
   to: AddressSchema,
   content: z.string(),
+  subject: SubjectInput.optional(),
   in_reply_to: z.string().optional(),
   meta: z.record(z.string()).optional(),
 })
@@ -29,8 +31,12 @@ const ULID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/i
 const DispatchInput = z.object({
   to: AddressSchema,
   payload: z.string(),
+  subject: SubjectInput.optional(),
   correlation_id: z.string().regex(ULID_REGEX).optional(),
-  task_kind: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/).optional(),
+  // Allow dots so a dotted task_kind (e.g. "mple2.assign") can both label the task
+  // and auto-derive the gated subject. Hyphen/uppercase still permitted but won't
+  // derive a (lowercase, dot-only) subject — that path falls back to null (R6).
+  task_kind: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/).optional(),
 })
 
 export const TOOL_DESCRIPTORS = [
@@ -42,6 +48,7 @@ export const TOOL_DESCRIPTORS = [
       properties: {
         to: { type: 'string', description: 'handle like "alice" or the literal "@team"' },
         content: { type: 'string' },
+        subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); requires a concrete `to` (not @team) and ownership of the namespace' },
         in_reply_to: { type: 'string', description: 'msg_id being replied to (optional)' },
         meta: { type: 'object', additionalProperties: { type: 'string' } },
       },
@@ -86,8 +93,9 @@ export const TOOL_DESCRIPTOR_DISPATCH = {
     properties: {
       to: { type: 'string', description: 'handle like "alice" or the literal "@team"' },
       payload: { type: 'string', description: 'task body — what the peer should do' },
+      subject: { type: 'string', description: 'optional dotted routing subject; if omitted it is derived from task_kind (when subject-valid). Gated by the namespace ACL; not used for @team.' },
       correlation_id: { type: 'string', description: 'ULID; auto-generated if omitted. Returned task_result will carry this so you can match the response.' },
-      task_kind: { type: 'string', description: 'optional label for the task (e.g. "code-review", "build-check")' },
+      task_kind: { type: 'string', description: 'optional label for the task (e.g. "mple2.assign"); a subject-valid task_kind auto-derives the routing subject' },
     },
     required: ['to', 'payload'],
   },
@@ -121,6 +129,7 @@ export function registerTools(
       }
       const payload: OutboundMessage = {
         to: input.to,
+        subject: input.subject ?? null,
         kind: 'chat',
         content: input.content,
         meta: input.meta ?? {},
@@ -162,8 +171,21 @@ export function registerTools(
       // skip that here.
       const meta: Record<string, string> = { correlation_id }
       if (input.task_kind !== undefined) meta.task_kind = input.task_kind
+      // Command coupling (C1): the ACL gates `subject`, so derive it from task_kind
+      // when not given. Non-fatal (R6): if task_kind is absent or not subject-valid
+      // (uppercase/hyphen/…), fall back to subject=null (legacy ungated dispatch)
+      // rather than erroring. Never derive for @team (direct-only invariant, R1).
+      let subject: string | null = input.subject ?? null
+      if (subject === null && input.to !== TEAM_BROADCAST_HANDLE && input.task_kind !== undefined) {
+        const candidate = input.task_kind.toLowerCase()
+        if (SUBJECT_REGEX.test(candidate)) {
+          subject = candidate
+          meta.task_kind = candidate  // keep the display label consistent with the derived route key
+        }
+      }
       const payload: OutboundMessage = {
         to: input.to,
+        subject,
         kind: 'task_dispatch',
         content: input.payload,
         meta,
@@ -186,6 +208,7 @@ export function registerTools(
       if (input.reason !== undefined) meta.reason = input.reason
       await client.send({
         to: sender,
+        subject: null,
         kind: 'permission_verdict',
         in_reply_to: msg_id as MessageId,
         content: '',

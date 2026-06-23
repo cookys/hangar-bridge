@@ -68,11 +68,11 @@ describe('MessageStore', () => {
     expect(list.map(e => e.id)).toEqual([b.id, c.id])
   })
 
-  it('fetchPendingFor returns undelivered messages for a handle', () => {
+  it('fetchPendingSince returns undelivered messages after the cursor', () => {
     const a = store.insert('t1', 'alice', { to: 'bob', kind: 'chat', content: '1' })
     store.markDelivered(a.id)
     store.insert('t1', 'alice', { to: 'bob', kind: 'chat', content: '2' })
-    const pending = store.fetchPendingFor('t1', 'bob')
+    const pending = store.fetchPendingSince('t1', 'bob', '')
     expect(pending).toHaveLength(1)
     expect(pending[0]!.content).toBe('2')
   })

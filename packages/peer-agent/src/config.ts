@@ -1,12 +1,20 @@
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
+import { NAMESPACE_REGEX, INTEREST_REGEX } from '@hangar-bridge/shared'
 import { readTokenFile } from './cli/token-file.ts'
 import { defaultConfigPath, defaultAuditDir } from './paths.ts'
 
 export const ConfigSchema = z.object({
   relay_url: z.string().url(),
   token_path: z.string(),
+  // Subject routing. `interest` (exact or trailing '>') is sent to the relay as the
+  // narrowing filter (x-hangar-subjects header). `owned` is informational on the peer
+  // side — the relay DB (human.subjects) is the authoritative ACL. Both default empty.
+  subjects: z.object({
+    owned: z.array(z.string().regex(NAMESPACE_REGEX)).default([]),
+    interest: z.array(z.string().regex(INTEREST_REGEX)).default([]),
+  }).default({ owned: [], interest: [] }),
   permission_relay: z.object({
     enabled: z.boolean().default(false),
     routing: z.enum(['never_relay','ask_thread_participants','ask_team'])

@@ -15,7 +15,28 @@ export function openDatabase(path: string): Db {
   migrateV1ToV2(db)
   migrateV2ToV3(db)
   migrateV3ToV4(db)
+  migrateV4ToV5(db)
   return db
+}
+
+/**
+ * Adds subject routing + ACL columns: `message.subject` (the dotted routing key,
+ * nullable) and `human.subjects` (JSON {owned,interest} for the namespace ACL).
+ * ALTER TABLE ADD COLUMN guarded by pragma table_info (mirrors migrateV1ToV2) —
+ * NOT CREATE IF NOT EXISTS, which never adds a column to an existing table. No
+ * subject index: the by-handle scan is served by idx_message_to_handle and the
+ * subject filter runs in JS (single shared matcher), so an index would be dead.
+ */
+function migrateV4ToV5(db: Db): void {
+  const msgCols = db.pragma('table_info(message)') as Array<{ name: string }>
+  if (!msgCols.some(c => c.name === 'subject')) {
+    db.exec('ALTER TABLE message ADD COLUMN subject TEXT')
+  }
+  const humanCols = db.pragma('table_info(human)') as Array<{ name: string }>
+  if (!humanCols.some(c => c.name === 'subjects')) {
+    db.exec('ALTER TABLE human ADD COLUMN subjects TEXT')
+  }
+  db.exec('INSERT OR IGNORE INTO schema_version(version) VALUES (5)')
 }
 
 function migrateV1ToV2(db: Db): void {

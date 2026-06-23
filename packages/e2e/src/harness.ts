@@ -57,7 +57,7 @@ export async function startHarness(
   const seedEntries = handles.map(handle => {
     const raw = generateRawToken()
     peers[handle] = { handle, token: raw, configDir: '' }
-    return { handle, secret_sha256_hex: hashToken(raw).toString('hex'), display_name: handle }
+    return { handle, secret_sha256_hex: hashToken(raw).toString('hex'), display_name: handle, subjects: { owned: [], interest: [] } }
   })
   seedPeers(db, seedEntries)
 

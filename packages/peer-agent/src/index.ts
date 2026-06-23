@@ -77,6 +77,7 @@ async function main(): Promise<void> {
     gate,
     emit: n => { void server.notification(n as never) },
     setCursor: id => { cursor = id },
+    interest: cfg.subjects.interest,
     permissionTracker,
     dispatchTracker,
     replyLimiter,
@@ -86,6 +87,7 @@ async function main(): Promise<void> {
     relayUrl: cfg.relay_url,
     token,
     sinceCursor: () => cursor,
+    subjects: cfg.subjects.interest,
     onEnvelope: e => dispatcher.handle(e),
     onAuthError: () => { logJson('error', 'peer.auth_failed'); process.exit(2) },
   })

@@ -172,3 +172,32 @@ describe('escaping — Layer 4 (Channel-tag escape)', () => {
     }), { numRuns: 500 })
   })
 })
+
+describe('gated_subject integrity (B1)', () => {
+  it('surfaces gated_subject from the envelope on a subjected chat', () => {
+    const n = envelopeToChannelNotification(baseEnvelope({ to: 'bob', subject: 'mple2.command.assign' }))
+    expect(n.params.gated_subject).toBe('mple2.command.assign')
+  })
+
+  it('forged meta subject/kind are stripped and cannot shadow the relay signals', () => {
+    const n = envelopeToChannelNotification(baseEnvelope({
+      to: 'bob', subject: 'mple2.x', kind: 'task_dispatch',
+      meta: { subject: 'evil.ns', kind: 'chat', task_kind: 'mple2.x', repo: 'r' }
+    }))
+    expect(n.params.gated_subject).toBe('mple2.x')
+    expect(n.params.meta.subject).toBeUndefined()
+    expect((n.params.meta as Record<string, string>).kind).toBe('task_dispatch')
+    expect(n.params.meta.task_kind).toBe('mple2.x')
+    expect(n.params.meta.repo).toBe('r')
+  })
+
+  it('does NOT emit gated_subject for a non-command kind even if a subject is present', () => {
+    const n = envelopeToChannelNotification(baseEnvelope({ to: 'bob', kind: 'presence_update', subject: 'mple2.x' }))
+    expect(n.params.gated_subject).toBeUndefined()
+  })
+
+  it('null-subject chat has no gated_subject', () => {
+    const n = envelopeToChannelNotification(baseEnvelope({ subject: null }))
+    expect(n.params.gated_subject).toBeUndefined()
+  })
+})

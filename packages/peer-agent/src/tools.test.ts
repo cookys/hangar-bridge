@@ -14,7 +14,7 @@ describe('registerTools', () => {
     const client = { send, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient
     const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
     const result = await callTool('send_to_peer', { to: 'bob', content: 'hi' })
-    expect(send).toHaveBeenCalledWith({ to: 'bob', kind: 'chat', content: 'hi', meta: {} })
+    expect(send).toHaveBeenCalledWith({ to: 'bob', subject: null, kind: 'chat', content: 'hi', meta: {} })
     expect((result.content[0] as any).text).toContain('msg_')
   })
 
@@ -64,6 +64,32 @@ describe('registerTools — dispatch_task', () => {
     expect(tracker.has(msg.meta.correlation_id)).toBe(true)
     expect(tracker.peerFor(msg.meta.correlation_id)).toBe('alice')
     expect((result.content[0] as any).text).toContain('dispatched msg_')
+  })
+
+  const dispatchSubject = async (input: Record<string, unknown>): Promise<string | null> => {
+    const { client, send } = mkClient()
+    const { callTool } = registerTools(client, presence, undefined, undefined, new DispatchTracker({ ttlMs: 60_000 }))
+    await callTool('dispatch_task', { to: 'alice', payload: 'x', ...input })
+    return (send.mock.calls[0]![0] as any).subject
+  }
+
+  it('uses an explicit subject when given', async () => {
+    expect(await dispatchSubject({ subject: 'mple2.command.assign' })).toBe('mple2.command.assign')
+  })
+  it('derives subject from a subject-valid task_kind (closes confused-deputy C1)', async () => {
+    expect(await dispatchSubject({ task_kind: 'mple2.assign' })).toBe('mple2.assign')
+  })
+  it('lowercases a trivially-valid task_kind when deriving', async () => {
+    expect(await dispatchSubject({ task_kind: 'MPLE2' })).toBe('mple2')
+  })
+  it('non-fatal (R6): hyphenated/non-subject task_kind falls back to subject=null', async () => {
+    expect(await dispatchSubject({ task_kind: 'code-review' })).toBe(null)
+  })
+  it('never derives a subject for @team (direct-only, R1)', async () => {
+    const { client, send } = mkClient()
+    const { callTool } = registerTools(client, presence, undefined, undefined, new DispatchTracker({ ttlMs: 60_000 }))
+    await callTool('dispatch_task', { to: '@team', payload: 'x', task_kind: 'mple2.prioritize' })
+    expect((send.mock.calls[0]![0] as any).subject).toBe(null)
   })
 
   it('honors caller-supplied correlation_id', async () => {
