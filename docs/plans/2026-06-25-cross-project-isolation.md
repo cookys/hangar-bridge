@@ -48,12 +48,15 @@ with zero relay `src/` edits.
 
 - **O:** Two Claude Code sessions on the same host, in different projects, never
   receive each other's directed traffic.
-- **KR1:** `hangar-bridge init-project <name> --relay <url>` (the CLI bin is `hangar-bridge`,
-  per `packages/peer-agent/package.json:6`; `init-project` is a new sibling of the existing
-  `init`/`respond`/`send` subcommands in `cli.ts`) provisions a project identity
-  (`<hostname>-<name>` handle) in one command — it COMPUTES the project config dir
-  (`${root}/projects/<name>`), writes secret+config there, writes the project `.mcp.json`,
-  and emits the relay `peers.json` line. (`--config-dir <abs>` overrides the computed dir.)
+- **KR1:** `hangar-bridge init-project --relay <url>` (CLI bin is `hangar-bridge`, per
+  `packages/peer-agent/package.json:6`; new sibling of `init`/`respond`/`send`). By default the
+  project **`<name>` auto-derives** from `git remote get-url origin` (`<owner>-<repo>`), falling
+  back to the cwd basename when there is no origin remote — so `cookys/foo` and `kevin/foo` forks
+  get distinct identities (`cookys-foo` vs `kevin-foo`) with no operator effort. `--name <x>` /
+  `--handle <x>` override (config-adjustable). It then COMPUTES the project config dir
+  (`${root}/projects/<name>`), writes secret+config there, writes the project `.mcp.json` (server
+  key `hangar-bridge-peers-<name>`), emits the relay `peers.json` line — and **fails loudly on any
+  collision** (see §2.5). (`--config-dir <abs>` overrides the computed dir.)
 - **KR2:** Launching `claude` inside project A's repo connects the peer-agent under
   handle `<host>-A`. Observable: from that session, a `set_summary`/presence write (or any
   `send_to_peer`) makes the relay reflect handle `<host>-A` — i.e. `list_peers` shows `<host>-A`
@@ -77,12 +80,25 @@ with zero relay `src/` edits.
   never `openssl rand -hex`. Relay gate: `/^Bearer [A-Za-z0-9_-]{43}$/`.
 - **Identity authority = secret → `peers.json` key.** `config.json` has no authoritative
   `self_handle`; do not introduce one as the identity source.
-- Handle derivation default = `${os.hostname()}-${project}`, lowercased, non-`[a-z0-9_-]` → `-`,
-  collapse repeated `-`. The result MUST satisfy `HANDLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/`
+- **`<name>` auto-derivation (default):** parse `git remote get-url origin`; if it yields
+  `<owner>/<repo>` (github/ssh/https forms), `name = "<owner>-<repo>"`; else (no origin / unparseable)
+  `name = basename(cwd)`. `--name <x>` overrides the derived name; `--config-dir` does NOT change the
+  name. This makes forks of the same repo distinct by owner.
+- Handle derivation = `${os.hostname()}-${name}`, lowercased, non-`[a-z0-9_-]` → `-`, collapse
+  repeated `-`. The result MUST satisfy `HANDLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/`
   (`shared/src/constants.ts:8`, enforced on `peers.json` keys at `relay/auth/peers-file.ts:20`):
   if the first char is not `[a-z]`, prefix `h`; truncate to 32 chars. If it still cannot match
-  (e.g. empty after sanitising), **fail with a clear error suggesting explicit `--handle`** rather
-  than emitting an invalid key. Caller may always override with `--handle` (also `HANDLE_REGEX`-validated).
+  (e.g. empty after sanitising), **fail with a clear error suggesting explicit `--handle`/`--name`**.
+  Caller may always override with `--handle` (also `HANDLE_REGEX`-validated).
+- **MANDATORY collision detection (a project must NEVER silently share another's identity).** Before
+  writing anything, `init-project` FAILS LOUDLY if EITHER: (a) the project config dir already exists
+  (without `--force`) — covers re-running for the same `<name>`; OR (b) the derived handle is already a
+  key in the relay's `peers.json` when that file is locally readable (path from config / a `--peers-file`
+  flag) — covers two different checkouts/forks that derive the SAME `<name>` (e.g. two clones of
+  `cookys/foo`). The error must name the colliding handle and suggest a distinct `--name`
+  (e.g. `foo-laptop`). If `peers.json` is not locally readable, print a PROMINENT warning that the
+  operator must verify the key is unused before adding it. This converts the old "operator-confirms"
+  soft mitigation into a hard gate.
 - **`HANGAR_CONFIG_DIR` is the EXACT config directory, NOT a root** — `paths.ts:configDir()`
   returns it verbatim (`paths.ts:12-15`) and `runInit` writes `secret`/`config.json`/`audit/`
   directly under it (`cli/init.ts:25-47`). Therefore `init-project <name>` COMPUTES the project
@@ -94,6 +110,10 @@ with zero relay `src/` edits.
   (`:25-27`) and writes `config.json` with no mode (`:47`). So `init-project` MUST, after `runInit`:
   `chmod 700` the project config dir + its `audit/`, and `chmod 600` the `config.json`. Secret is
   already `0600` from `runInit`.
+- **MCP server name = `hangar-bridge-peers-<name>` (per-project UNIQUE), NOT the global `hangar-bridge-peers`.**
+  Because each project's `.mcp.json` server key is unique, it never collides with the global host-handle
+  server, so the design does NOT depend on Claude Code overriding a same-name server — this removes the
+  Phase-0 precedence question entirely (no live relay restart needed to prove it). `--server-name` overrides.
 - **Node ≥ 22** (`package.json` `engines: node >=22`) / TypeScript ESM with `.ts` import specifiers.
 - Every new behaviour has a vitest test; do not lower coverage. Build = `corepack pnpm -r build`,
   test = `corepack pnpm -r test`, both green before done.
@@ -115,11 +135,12 @@ with zero relay `src/` edits.
 
 ## 4. Phases
 
-### Phase 0 — SPIKE: prove Claude Code applies project `.mcp.json` env + same-name precedence (size: Fix, GATING)
-The whole design rests on: (a) a project-scoped `.mcp.json` `env` block actually reaches the
-spawned peer-agent process, and (b) a project server named `hangar-bridge-peers` takes precedence
-over (or is the one used vs) a global `~/.claude.json` server of the same name. This is verified
-ON-DEVICE before any other phase — do not assume it.
+### Phase 0 — SANITY (NON-gating after the R7 unique-server-name revision): Claude applies project `.mcp.json` env (size: Fix, 驗收-only)
+**Superseded by the unique-server-name design.** With per-project server keys (`hangar-bridge-peers-<name>`)
+there is NO same-name collision with the global server, so the "precedence" sub-question is moot and
+Phase 0 NO LONGER GATES Phase 1. The only residual assumption — that a project-scoped `.mcp.json` `env`
+block reaches the spawned peer-agent at all — is standard documented Claude Code behaviour; it is confirmed
+once as a **驗收 sanity check** (operator/me, not the implementer, not blocking), NOT a live-relay precedence spike.
 - **Setup (exact):** `D=$(mktemp -d)`; `C=$(mktemp -d)`. Write `$C/config.json` =
   a valid peer-agent config (`relay_url` to the live relay `http://192.168.101.6:8443`, `token_path`
   → a real provisioned secret in `$C/secret`, presence on) + the secret (43-char base64url),
@@ -153,29 +174,39 @@ ON-DEVICE before any other phase — do not assume it.
 - Tear down: remove the `spike-proj` relay entry + restart, `rm -rf $D $C`.
 
 ### Phase 1 — Project-scoped MCP registration writer (size: L)
-- In `mcp-registration.ts`, add `writeProjectMcpJson({ dir, configDir })`: writes/merges
-  `${dir}/.mcp.json` with `mcpServers["hangar-bridge-peers"] = { command: process.execPath,
+- In `mcp-registration.ts`, add `writeProjectMcpJson({ dir, configDir, serverName })` where
+  `serverName` defaults to `hangar-bridge-peers-<name>` (per-project unique). It writes/merges
+  `${dir}/.mcp.json` with `mcpServers[serverName] = { command: process.execPath,
   args: [resolve(join(here, 'index.js'))], env: { HANGAR_CONFIG_DIR: <abs configDir> } }` —
   the `command`/`args` derivation copied EXACTLY from `ensureMcpRegistered` (`mcp-registration.ts:14-18`;
   `here = dirname(fileURLToPath(import.meta.url))`), only `env` added. If `${dir}/.mcp.json`
-  exists, parse it and set just the `mcpServers["hangar-bridge-peers"]` key (do not clobber
-  other servers); if absent, create `{ "mcpServers": { ... } }`.
+  exists, parse it and set just the `mcpServers[serverName]` key (do not clobber other servers);
+  if absent, create `{ "mcpServers": { ... } }`.
 - **Acceptance:** unit test writes to a tmp dir, asserts JSON has `command === process.execPath`,
-  `args[0]` ends with `index.js` (absolute), and `env.HANGAR_CONFIG_DIR` is the absolute dir passed;
-  a pre-existing unrelated server key in a seeded `.mcp.json` survives the merge.
+  `args[0]` ends with `index.js` (absolute), `env.HANGAR_CONFIG_DIR` is the absolute dir passed, and the
+  key is the per-project `serverName`; **a pre-existing unrelated server key in a seeded `.mcp.json`
+  survives the merge** (this merge-preservation assertion is required — qc R1 NB#3).
 
 ### Phase 2 — `init-project` CLI orchestrator (size: L)
-- `cli/init-project.ts`: parse `<name>` + `--relay <url>` (fallback `$HANGAR_RELAY`) +
-  optional `--handle` / `--config-dir` / `--dir <project-root, default cwd>` / `--force`.
-  **Validate `<name>` first:** reject any name containing a path separator (`/`, `\`) or `.`/`..`
-  segments before it is interpolated into `${root}/projects/<name>` (no path traversal); require
-  `<name>` to match `^[A-Za-z0-9._-]+$` minus `.`/`..`, else exit 2 with a clear message.
-  Compute config dir + handle per §2.5; set `process.env.HANGAR_CONFIG_DIR` to the project
-  config dir; run `runInit({ relayUrl, handle, force })`. Then **explicitly set modes** (§2.5):
+- `cli/init-project.ts`: parse `--relay <url>` (fallback `$HANGAR_RELAY`) + optional
+  `--name` / `--handle` / `--server-name` / `--config-dir` / `--dir <project-root, default cwd>` /
+  `--peers-file <path>` / `--force`.
+  **Derive `<name>` (§2.5):** default from `git remote get-url origin` → `<owner>-<repo>`, else cwd
+  basename; `--name` overrides. **Validate** the final `<name>`: reject path separators (`/`, `\`) and
+  `.`/`..` segments before interpolating into `${root}/projects/<name>` (no traversal); require
+  `^[A-Za-z0-9._-]+$` minus `.`/`..`, else exit 2.
+  **Collision gate (§2.5, MANDATORY, BEFORE any write):** exit with a clear error if the project config
+  dir exists (without `--force`) OR if the derived handle is already a key in a readable `peers.json`
+  (suggest a distinct `--name`); if `peers.json` unreadable, print a prominent verify-manually warning.
+  Then compute config dir + handle; set `process.env.HANGAR_CONFIG_DIR` to the project config dir; run
+  `runInit({ relayUrl, handle, force })`. Then **explicitly set modes** (§2.5):
   `chmodSync(projectDir, 0o700)`, `chmodSync(join(projectDir,'audit'), 0o700)`,
-  `chmodSync(join(projectDir,'config.json'), 0o600)` (secret already 0600 from `runInit`).
-  Then `writeProjectMcpJson({ dir: projectRoot, configDir: projectDir })`. Print: secret path,
-  the `peers.json` line (from `runInit`'s return), and the relay-restart reminder.
+  `chmodSync(join(projectDir,'config.json'), 0o600)` (secret already 0600 from `runInit`). **chmod
+  failures must NOT be silently swallowed** (qc R1 B2): on POSIX a failed `chmodSync` is fatal; only
+  tolerate it where the platform genuinely lacks mode support (e.g. wrap so `EPERM/ENOTSUP`-on-Windows
+  is the only ignored case). Then `writeProjectMcpJson({ dir: projectRoot, configDir: projectDir,
+  serverName: 'hangar-bridge-peers-<name>' })`. Print: secret path, the `peers.json` line, the
+  per-project `server:<name>` selector to launch with, and the relay-restart reminder.
 - Wire into `cli.ts` `init-project` branch. `argValue` is currently a private helper in `cli.ts:7-10`;
   **export it** (or lift it to a tiny `cli/args.ts`) and import it into `init-project.ts` — do NOT
   duplicate a second parser. Usage string on missing args, exit 2.
@@ -223,14 +254,13 @@ parallel). P4 after P0+P1+P2 (docs must match shipped flags + the P0 server-name
 - **Secret sprawl:** N projects × M hosts secrets/peers.json entries; each new project needs a relay
   restart (drops all SSE briefly). → Documented in PROJECT_ISOLATION.md; batch provisioning; out of
   scope to auto-hot-reload the relay.
-- **Handle collision:** `runInit` does NOT detect handle collisions — it only refuses to overwrite an
-  existing `secret` in the *current* config dir (`cli/init.ts:25-33`) and stores no handle
-  (`:39-47`). So: (a) re-running for the SAME `<name>` is safe-by-default because it targets the same
-  `projects/<name>` dir → `runInit` blocks without `--force`; but (b) two DIFFERENT names that sanitise
-  to the same handle are NOT auto-caught. Mitigation: `init-project` prints the derived `peers.json` key
-  prominently and `PROJECT_ISOLATION.md` instructs the operator to confirm the key is unused before
-  adding it + restarting the relay. Optional hardening (in scope if cheap): if the relay's `peers.json`
-  is locally readable, `init-project` reads it and aborts on a duplicate key before emitting anything.
+- **Handle collision (the fork/multi-checkout case — cookys's R7 catch):** repo name is NOT a unique key:
+  forks (`cookys/foo` vs `kevin/foo`) and two checkouts of the same repo can derive the same `<name>` →
+  same handle → would silently SHARE identity. Resolved two ways together: (1) the default `<name>` is
+  `<owner>-<repo>` from the git remote, so forks differ by owner automatically; (2) **mandatory collision
+  detection** (§2.5) makes the remaining case (two checkouts of the *same* fork → same `<name>`) a HARD
+  FAIL — `init-project` aborts before writing if the config dir exists or the handle is already in a
+  readable `peers.json`, telling the operator to pick a distinct `--name`. No silent identity-sharing.
 - **Inversion check (correct tripwire mapping):** the env-dropped / handle-reused risk lives in the
   project MCP registration + peer-agent config selection (`mcp-registration.ts`, `paths.ts:12-15`), so
   its tripwires are **Phase 0 Probe 2** (Claude actually applies project `.mcp.json` env + precedence)
@@ -295,3 +325,17 @@ parallel). P4 after P0+P1+P2 (docs must match shipped flags + the P0 server-name
   validates `<name>` against path traversal (`/`,`\`,`.`,`..`) before interpolation. Design assessment:
   PASS — handle-per-project is the right enforced-isolation boundary; per-session-interest correctly
   deferred. **Plan ready for agy (Gemini 3.5 Flash High) implementation.**
+- **Impl R1 (agy / Gemini 3.5 Flash High):** committed `072db63` — build + full test suite green
+  (peer-agent 84, relay 86, incl. both new tests). NOTE: required neutralizing `~/.gemini/GEMINI.md`
+  (a global "Tech Lead" persona that poisoned the first two headless dispatches into preamble/hallucination).
+- **qc-gate R1 (g55xh, gpt-5.5 xhigh): VERDICT FAIL**, 2 blocking + 3 non-blocking (reviewer independently
+  ran build+test green; tests judged real, not vacuous). B1 = same-name-precedence/Phase-0 not evidenced;
+  B2 = chmod failures silently swallowed. NB = loopback fixture churn / absolute doc links / merge-preservation
+  test gap.
+- **R7 DESIGN REVISION (cookys, Board):** the fork/multi-checkout collision (`cookys/foo` vs `kevin/foo`,
+  or two clones of one repo → same `<name>`) — neither earlier option handled it. Resolution: (a) **auto-derive
+  `<name>` = `<owner>-<repo>`** from git remote (forks differ by owner), `--name`/`--handle` override; (b)
+  **mandatory collision detection** (hard fail, no silent identity-sharing); (c) **per-project unique MCP server
+  name** `hangar-bridge-peers-<name>` → eliminates the same-name precedence question (clears qc B1, no live relay
+  spike needed). Plan updated (KR1, §2.5, Phase 0 downgraded to non-gating 驗收 sanity, Phases 1-2, §6).
+- _qc-gate R2: pending agy fix-dispatch (B2 + NB1-3 + the R7 design)._
