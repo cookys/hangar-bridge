@@ -263,6 +263,7 @@ Bearer tokens travel inside WireGuard, so they're encrypted end-to-end between t
   - [6. Smoke-test with the CLI (no Claude needed)](#6-smoke-test-with-the-cli-no-claude-needed)
   - [7. Add teammates](#7-add-teammates)
   - [8. Wire into Claude Code](#8-wire-into-claude-code)
+  - [9. Same-box cross-project isolation](#9-same-box-cross-project-isolation-optional)
 - [Troubleshooting](#troubleshooting)
 - [CLI reference](#cli-reference)
 - [Packages](#packages)
@@ -630,6 +631,13 @@ If alice's Claude then replies:
 ```
 
 …which arrives mid-turn in your context, and Claude can react to it or show it to you.
+
+
+### 9. Same-box cross-project isolation (Optional)
+
+If you are working on multiple projects on the same host and want to prevent messages from mixing between project session contexts, you can configure project-scoped identities.
+
+See [docs/PROJECT_ISOLATION.md](docs/PROJECT_ISOLATION.md) for a complete setup guide.
 
 ## Troubleshooting
 

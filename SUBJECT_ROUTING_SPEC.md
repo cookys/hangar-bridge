@@ -487,7 +487,7 @@ The relay runs on **muyan**. Per `COORDINATION.md`, adding/altering peers requir
 ## 12. Out-of-scope + accepted residual risks (stated honestly)
 
 ### 12.1 Out of scope
-- **Same-box cross-project isolation** — handled by project-scoped `.mcp.json` + a dedicated `HANGAR_CONFIG_DIR`/handle per project, NOT by this ACL. The ACL is a CROSS-BOX namespace gate; two projects on one box that share a handle are not separated by it.
+- **Same-box cross-project isolation** — implemented. Handled by project-scoped `.mcp.json` + a dedicated `HANGAR_CONFIG_DIR`/handle per project, NOT by this ACL. The ACL remains a CROSS-BOX namespace gate; two projects on one box that share a handle are not separated by it. See [docs/PROJECT_ISOLATION.md](docs/PROJECT_ISOLATION.md) for details.
 - **Separate publish vs subscribe ACL lists** — a single `owned` set governs both directions.
 - **Wildcards beyond trailing `>`** — no `*`, no mid-path globs, no namespace-prefix matching in ownership (exact only).
 - **Compromised-relay threat / forge-`from`** — the relay remains a v1 trust anchor; a compromised relay can forge `from`, forge `subject`, or re-inject stripped meta and bypass the gate. Unchanged from the current model (see MCP server instructions §3).
@@ -497,7 +497,7 @@ The relay runs on **muyan**. Per `COORDINATION.md`, adding/altering peers requir
 ### 12.2 Accepted residual risks (NOT solved — kept documented, do not attempt to fix)
 - **Ack/correlation channel is `subject=null`, hence outside the ACL.** Acks (`send_to_peer … in_reply_to`, `respond_to_permission`) are forced `subject=null` by the M4 schema invariant and hit the publish-gate null short-circuit, so they bypass the namespace gate. **Mitigation, not elimination:** the recipient-identity check on `subject=null` replies (§9.3) — the replier should be the original message's `to_handle`. A determined sender on the roster can still send a null-subject `chat` to any handle.
 - **Null-subject `@team` ambient CONTENT path.** `@team` is, by the direct-only rule, always null-subject and thus never namespace-gated; any roster member can broadcast content to all online peers. **Accepted because** under R1 *commands* now carry subjects and are per-owner gated DMs (so the command routing key IS gated, and `@team` is no longer a command channel at all), and `@team` is coordination/legacy content only — and it is **audited** (access-log + existing audit trail). It is an ambient channel, not a confidential one. NOTE: this is distinct from the now-RESOLVED `@team` COMMAND break (R1) and from the now-RESOLVED `meta.subject` confused deputy (B1) — both of those are fixed; only the ambient content path remains.
-- **Same-box cross-project isolation** — see §12.1; an ACL non-goal, restated as an accepted residual (MCP scoping is the only mitigation).
+- **Same-box cross-project isolation** — see §12.1; solved via project-scoped configuration directories and `.mcp.json` integration (see [docs/PROJECT_ISOLATION.md](docs/PROJECT_ISOLATION.md)).
 - **Intra-namespace blast radius** — restated: namespace ownership is all-or-nothing; any owner sees every subject under the namespace.
 - **Compromised-relay forge-`from`/forge-`subject`** — restated: the relay can forge identity OR the gated subject and bypass the gate; out of scope in v1's trust model. (Note: the B1 fix closes SENDER forgery of the gated subject via `meta`; it does not and cannot close a compromised RELAY forging the envelope `subject` itself — that is the v1 trust-anchor residual.)
 

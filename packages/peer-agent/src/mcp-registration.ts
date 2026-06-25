@@ -21,3 +21,33 @@ export function ensureMcpRegistered(): void {
   json.mcpServers = mcpServers
   writeFileSync(path, JSON.stringify(json, null, 2))
 }
+
+export interface WriteProjectMcpJsonOpts {
+  dir: string
+  configDir: string
+  serverName: string
+}
+
+export function writeProjectMcpJson(opts: WriteProjectMcpJsonOpts): void {
+  const path = join(opts.dir, '.mcp.json')
+  let json: Record<string, any> = {}
+  if (existsSync(path)) {
+    try {
+      json = JSON.parse(readFileSync(path, 'utf8')) as Record<string, any>
+    } catch {
+      json = {}
+    }
+  }
+  const mcpServers = (json.mcpServers as Record<string, any> | undefined) ?? {}
+  const here = dirname(fileURLToPath(import.meta.url))
+  const entry = {
+    command: process.execPath,
+    args: [resolve(join(here, 'index.js'))],
+    env: {
+      HANGAR_CONFIG_DIR: resolve(opts.configDir)
+    }
+  }
+  mcpServers[opts.serverName] = entry
+  json.mcpServers = mcpServers
+  writeFileSync(path, JSON.stringify(json, null, 2))
+}
