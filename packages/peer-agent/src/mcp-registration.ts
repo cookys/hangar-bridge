@@ -25,7 +25,7 @@ export function ensureMcpRegistered(): void {
 export interface WriteProjectMcpJsonOpts {
   dir: string
   configDir: string
-  mcpServerName?: string
+  serverName: string
 }
 
 export function writeProjectMcpJson(opts: WriteProjectMcpJsonOpts): void {
@@ -40,7 +40,6 @@ export function writeProjectMcpJson(opts: WriteProjectMcpJsonOpts): void {
   }
   const mcpServers = (json.mcpServers as Record<string, any> | undefined) ?? {}
   const here = dirname(fileURLToPath(import.meta.url))
-  const serverName = opts.mcpServerName ?? 'hangar-bridge-peers'
   const entry = {
     command: process.execPath,
     args: [resolve(join(here, 'index.js'))],
@@ -48,7 +47,7 @@ export function writeProjectMcpJson(opts: WriteProjectMcpJsonOpts): void {
       HANGAR_CONFIG_DIR: resolve(opts.configDir)
     }
   }
-  mcpServers[serverName] = entry
+  mcpServers[opts.serverName] = entry
   json.mcpServers = mcpServers
   writeFileSync(path, JSON.stringify(json, null, 2))
 }

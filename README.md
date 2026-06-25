@@ -637,7 +637,7 @@ If alice's Claude then replies:
 
 If you are working on multiple projects on the same host and want to prevent messages from mixing between project session contexts, you can configure project-scoped identities.
 
-See [docs/PROJECT_ISOLATION.md](file:///home/cookys/projects/hangar-bridge/docs/PROJECT_ISOLATION.md) for a complete setup guide.
+See [docs/PROJECT_ISOLATION.md](docs/PROJECT_ISOLATION.md) for a complete setup guide.
 
 ## Troubleshooting
 

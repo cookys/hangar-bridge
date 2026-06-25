@@ -9,28 +9,31 @@ loadEnvFiles()
 async function main(): Promise<void> {
   const [, , cmd, ...args] = process.argv
   if (cmd === 'init-project') {
-    const name = args[0]
+    const positional = args[0] && !args[0].startsWith('--') ? args[0] : undefined
     const relayUrl = argValue(args, '--relay') ?? process.env.HANGAR_RELAY
     const handle = argValue(args, '--handle')
+    const name = argValue(args, '--name') ?? positional
     const configDirOpt = argValue(args, '--config-dir')
     const dir = argValue(args, '--dir') ?? process.cwd()
     const force = args.includes('--force')
-    const mcpServerName = argValue(args, '--mcp-server-name')
+    const serverName = argValue(args, '--server-name') ?? argValue(args, '--mcp-server-name')
+    const peersFile = argValue(args, '--peers-file')
 
-    if (!name || name.startsWith('--') || !relayUrl) {
-      console.error('usage: hangar-bridge init-project <name> --relay <url> [--handle <handle>] [--config-dir <dir>] [--dir <project-root>] [--force] [--mcp-server-name <name>]')
+    if (!relayUrl) {
+      console.error('usage: hangar-bridge init-project [<name>|--name <name>] --relay <url> [--handle <handle>] [--config-dir <dir>] [--dir <project-root>] [--force] [--peers-file <path>] [--server-name <name>]')
       process.exit(2)
     }
 
     const { runInitProject } = await import('./cli/init-project.ts')
     const opts: InitProjectOpts = {
-      name,
       relayUrl: relayUrl,
+      ...(name !== undefined ? { name } : {}),
       ...(handle !== undefined ? { handle } : {}),
       ...(configDirOpt !== undefined ? { configDir: configDirOpt } : {}),
       ...(dir !== undefined ? { dir } : {}),
       ...(force !== undefined ? { force } : {}),
-      ...(mcpServerName !== undefined ? { mcpServerName } : {})
+      ...(serverName !== undefined ? { serverName } : {}),
+      ...(peersFile !== undefined ? { peersFile } : {})
     }
     await runInitProject(opts)
     return
