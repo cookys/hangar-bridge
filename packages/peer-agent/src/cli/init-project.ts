@@ -113,8 +113,9 @@ function abortCollision(name: string, handle: string, reason: string): never {
 }
 
 function findReadablePeersFile(peersFile?: string): string | undefined {
+  if (peersFile !== undefined) return peersFile
+
   const candidates = [
-    peersFile,
     process.env.HANGAR_PEERS_FILE,
     join(homedir(), '.config', 'hangar-bridge', 'peers.json'),
   ].filter((path): path is string => path !== undefined)

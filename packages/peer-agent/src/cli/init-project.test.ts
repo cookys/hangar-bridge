@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, readFileSync, existsSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,6 +31,7 @@ describe('runInitProject', () => {
   let tempProjectRoot = ''
   const ORIGINAL_XDG = process.env.XDG_CONFIG_HOME
   const ORIGINAL_CONFIG_DIR = process.env.HANGAR_CONFIG_DIR
+  const ORIGINAL_PEERS_FILE = process.env.HANGAR_PEERS_FILE
 
   beforeEach(() => {
     tempConfigHome = mkdtempSync(join(tmpdir(), 'hangar-xdg-'))
@@ -45,6 +46,8 @@ describe('runInitProject', () => {
     else process.env.XDG_CONFIG_HOME = ORIGINAL_XDG
     if (ORIGINAL_CONFIG_DIR === undefined) delete process.env.HANGAR_CONFIG_DIR
     else process.env.HANGAR_CONFIG_DIR = ORIGINAL_CONFIG_DIR
+    if (ORIGINAL_PEERS_FILE === undefined) delete process.env.HANGAR_PEERS_FILE
+    else process.env.HANGAR_PEERS_FILE = ORIGINAL_PEERS_FILE
   })
 
   it('creates project config structure and project-scoped .mcp.json', async () => {
@@ -129,6 +132,30 @@ describe('runInitProject', () => {
     const expectedConfigDir = join(tempConfigHome, 'hangar-bridge', 'projects', 'myproj')
     expect(existsSync(expectedConfigDir)).toBe(false)
     expect(existsSync(join(tempProjectRoot, '.mcp.json'))).toBe(false)
+  })
+
+  it('does not fall back to env peers file when explicit peers file is unreadable', async () => {
+    const explicitPeersFile = join(tempProjectRoot, 'missing-peers.json')
+    const envPeersFile = join(tempProjectRoot, 'env-peers.json')
+    writeFileSync(envPeersFile, JSON.stringify({ 'custom-handle': { secret_sha256_hex: 'a'.repeat(64) } }))
+    process.env.HANGAR_PEERS_FILE = envPeersFile
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      await expect(runInitProject({
+        name: 'myproj',
+        relayUrl: 'http://localhost:8443',
+        handle: 'custom-handle',
+        dir: tempProjectRoot,
+        peersFile: explicitPeersFile,
+      })).resolves.toBeUndefined()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`relay peers.json at ${explicitPeersFile} is not readable`))
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(existsSync(join(tempConfigHome, 'hangar-bridge', 'projects', 'myproj', 'config.json'))).toBe(true)
+    expect(existsSync(join(tempProjectRoot, '.mcp.json'))).toBe(true)
   })
 
   it('aborts before writing when the project config directory already exists without force', async () => {
