@@ -82,6 +82,40 @@ Two reasons it matters to the north star:
 ⇒ Implication for "what a clone is" (§5): a clone may be better modeled as a **role/loop that
 any capable model can fill**, not a fixed model instance.
 
+**Current realization is a stopgap with a real failure mode → MCP may be the actual fix
+(hypothesis).** The headless multi-model path (`agy -p`) has a **"won't loop" problem** — just
+observed: agy yields / won't sustain an iterative loop (the `-p` async-yield issue; agy
+edit-only + wrapper-commit workarounds). **Hypothesis (to validate):** routing a heterogeneous
+model through **MCP — hangar-bridge's peer-agent — instead of headless `-p`** may fix it,
+because each model then runs **its own native agent loop** and hangar-bridge merely carries the
+coordination messages, rather than a fragile one-shot headless wrapper trying to *own* the loop.
+If true, MCP-native participation is **not just portability — it is the mechanism that lets
+heterogeneous models sustain a loop at all.** Flagged as a hypothesis, not settled (the `(也許?)`
+is cookys's own — evidence-based humility in action; see §2).
+
+## 2.6 Bounded curiosity — exploration as option-value, with a convergence gate
+
+cookys is **deliberately willful**: sometimes he pursues a thing **not because it is the current
+optimum** but out of faith / curiosity / interest — *"I just want to see the result"*. He is
+**self-aware** that it is not the locally-best move; it is a **bet that a future trigger makes it
+useful** (option value / planting a seed). This willfulness is part of who he is — **a
+pure-optimizer clone that never takes curiosity bets is NOT cookys.**
+
+But he is equally aware that exploration **must converge at a stage** — the current state cannot
+sprawl forever; a non-optimal exploratory thread eventually has to close or be parked.
+
+⇒ The loop must replicate the **meta-control**, not just the doing: **permit curiosity-driven bets,
+tag them as option-value, and enforce a convergence gate** so the replica *ships / closes* instead
+of diverging endlessly. Connections:
+- **Arbitration (§3)**: exploratory work is **low-priority / interruptible / "can wait"** — exactly
+  what should yield when a higher-priority real demand arrives (the RTX example). Explore/exploit
+  maps directly onto the priority + interruptibility metadata of a resource request.
+- **Trigger-reactivation**: a parked exploration is **revived by a future trigger** (nikki/mnemos
+  hold the latent thread until its moment).
+- **Self-referential note**: *this very vision conversation* is such an exploration — and by
+  cookys's own rule it should **converge at a stage** rather than open threads forever. The review
+  loop below is that convergence checkpoint: dig until deep enough, then close.
+
 ## 3. hangar-bridge's role — autonomic resource arbitration
 
 Not a chat relay, not a job queue at heart: a **fleet resource-negotiation / arbitration
@@ -121,6 +155,12 @@ allocation) are what make it *not* fire-and-forget pub/sub.
 - **Safety-while-asleep**: the concrete rules for the autonomy/escalation boundary.
 - **Tech**: transport/broker/language (NATS vs Rust port vs custom vs keep-relay) — *direction (2),
   deliberately deferred until this intent converges.*
+  - **Stance (cookys, 2026-06-27):** NATS is the **acknowledged likely baseline / anchor** — he
+    *knows* it's probably the right base. Direction (2) is therefore **not** an open-ended search for
+    the optimum; it is a **deliberately-bounded curiosity scout** (per §2.6) — "see if there's
+    something new worth playing with" (incl. a Rust port, MCP-native coordination, novel
+    agent-substrates) — **then converge** (likely back to NATS, but with eyes open). The MCP-native
+    "won't-loop" fix hypothesis (§2.5) is the one genuinely-new thread worth scouting hard.
 
 ## 6. How to read this doc
 
