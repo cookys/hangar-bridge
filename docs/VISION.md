@@ -31,6 +31,35 @@ wants it, but it is incidental — the point is to multiply one curious mind wit
 > copies of cookys contend for the same GPUs. This is *why* fleet resource-arbitration is the
 > keystone, not a side feature (see §3).
 
+## 0.5 The deeper thesis — a trait-discovery & amplification engine (the real apex)
+
+Everything in this doc has been **cookys self-narrating** his own traits (evidence-humility §2,
+bounded curiosity §2.6, …). **But self-report is the weak link — the introspection bottleneck.**
+The real ambition is bigger than "replicate cookys":
+
+> **A system that discovers a person's traits *more reliably than they can introspect*, EXTRACTS
+> them, and AMPLIFIES them — then runs the amplified workflow.**
+
+- **Self-narration is a bootstrap scaffold, to be outgrown.** This very conversation (cookys
+  telling the system who he is) is the seed; the target is the system **surfacing latent traits
+  he isn't consciously aware of, from observing his actual work** — not from him telling it.
+- **"Replicate cookys" (§0) is then just the first application / dogfood.** The engine
+  generalizes: *anyone's* workflow can be captured, replicated, and amplified — **強者越強**
+  (the strong compound).
+- **codeforge is the seed of this faculty** (it already extracts coding-loop knowledge back to
+  mnemos) but must be **elevated from knowledge-extraction → trait-discovery + amplification**
+  (how you *work*, not just what you *learned*).
+
+**Eyes-open (dig-targets for the review, NOT objections):**
+1. *"Discover traits better than the person themselves"* is a strong claim. Systems genuinely
+   find behavioral patterns humans miss (process mining, behavioral analytics, ML feature
+   discovery) — but *"your true traits"* is slippery, and amplifying a mis-identified signal
+   **entrenches** it. The discovery step needs a validity/feedback check (does cookys, shown an
+   extracted trait, endorse it? does amplifying it actually improve outcomes?).
+2. **強者越強 is an explicit Matthew-effect flywheel** — powerful, and worth being deliberate
+   about *what* it amplifies (amplifying productive traits vs. amplifying biases/blind-spots at
+   the same rate). The amplification target is a values choice, not just a mechanism.
+
 ## 1. The replicated cognitive loop (a working metaphor — hold loosely)
 
 cookys's framing: these are projects he has *imagined* and is interested in; casting them as
