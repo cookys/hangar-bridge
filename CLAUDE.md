@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 It is a **fork of [pouriamrt/claude-mesh](https://github.com/pouriamrt/claude-mesh)** (MIT). The fork simplifies upstream's multi-tenant SaaS posture down to **single-tenant per-host shared-secret auth**, and adds `task_dispatch` / `task_result` envelope kinds for first-class cross-host task dispatch. Upstream is abandoned; treat inherited code as our own (no upstream sync planned).
 
 Source-of-truth docs:
+- **docs/architecture.md** — system + connection diagrams, inherited-vs-fork provenance audit, and the verified protocol deep-dive (membership, auth, envelope, subject-ACL, delivery, correlation). Start here for the big picture.
 - **README.md** — overview, fork rationale, security primitives, status (Phase-A self-loopback + Phase-B cross-host bring-up).
 - **SUBJECT_ROUTING_SPEC.md** — subject-routing / envelope-kind semantics.
 - **docs/PROJECT_ISOLATION.md** + **docs/plans/2026-06-25-cross-project-isolation.md** — same-box cross-project isolation (merged).
