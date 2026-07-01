@@ -1,3 +1,5 @@
+import { PRESENCE_TTL_MS } from '@hangar-bridge/shared'
+
 export interface PresenceSession {
   label: string
   cwd?: string
@@ -47,7 +49,27 @@ function toSession(s: SessionState): PresenceSession {
 export class PresenceRegistry {
   private state = new Map<string, Map<string, Map<string, SessionState>>>()
 
-  constructor(private now: () => Date = () => new Date()) {}
+  // ttlMs: a session whose last_seen is older than (now - ttlMs) is treated as gone
+  // and lazily evicted on the next read. This is what makes list_peers.online truthful
+  // without a background timer — the peer-agent heartbeat refreshes last_seen while its
+  // SSE stream is up, and an unclean disconnect (crash) ages out after ttlMs.
+  constructor(
+    private now: () => Date = () => new Date(),
+    private ttlMs: number = PRESENCE_TTL_MS,
+  ) {}
+
+  /**
+   * Drop sessions in `byLabel` whose last_seen is older than the TTL. Returns the
+   * number of live sessions remaining. Called on every read so a stale/crashed
+   * session never counts as online and memory does not accumulate dead sessions.
+   */
+  private prune(byLabel: Map<string, SessionState>): number {
+    const cutoff = this.now().getTime() - this.ttlMs
+    for (const [label, s] of byLabel) {
+      if (new Date(s.last_seen).getTime() < cutoff) byLabel.delete(label)
+    }
+    return byLabel.size
+  }
 
   set(team: string, handle: string, label: string, s: PresenceInput): void {
     let byHandle = this.state.get(team)
@@ -78,6 +100,10 @@ export class PresenceRegistry {
   get(team: string, handle: string): PresenceSnapshot | undefined {
     const byLabel = this.state.get(team)?.get(handle)
     if (!byLabel || byLabel.size === 0) return undefined
+    if (this.prune(byLabel) === 0) {
+      this.state.get(team)?.delete(handle)
+      return undefined
+    }
     const sessions = Array.from(byLabel.values())
     const first = sessions[0]!
     const last_seen = sessions.reduce(
@@ -96,7 +122,9 @@ export class PresenceRegistry {
     const byHandle = this.state.get(team)
     if (!byHandle) return []
     const out: PresenceSnapshot[] = []
-    for (const handle of byHandle.keys()) {
+    // Snapshot keys first: get() lazily evicts (deletes) fully-expired handles, so we
+    // must not mutate `byHandle` while iterating its live key view.
+    for (const handle of Array.from(byHandle.keys())) {
       const snap = this.get(team, handle)
       if (snap) out.push(snap)
     }

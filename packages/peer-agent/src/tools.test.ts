@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { registerTools } from './tools.ts'
+import { registerTools, buildPresenceBody } from './tools.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import type { RelayClient } from './outbound.ts'
@@ -33,6 +33,30 @@ describe('registerTools', () => {
     const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
     await callTool('set_summary', { summary: 'hacking' })
     expect(setPresence).toHaveBeenCalledWith({ summary: 'hacking' })
+  })
+})
+
+describe('buildPresenceBody — privacy gating', () => {
+  const ctx = { cwd: '/home/x/proj', branch: 'feat/y', repo: 'proj' }
+
+  it('attaches cwd/branch/repo when all flags on', () => {
+    const body = buildPresenceBody({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }, 's', ctx)
+    expect(body).toEqual({ summary: 's', cwd: '/home/x/proj', branch: 'feat/y', repo: 'proj' })
+  })
+
+  it('omits every optional field when all flags off', () => {
+    const body = buildPresenceBody({ auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false }, 's', ctx)
+    expect(body).toEqual({ summary: 's' })
+  })
+
+  it('gates each field independently', () => {
+    const body = buildPresenceBody({ auto_publish_cwd: true, auto_publish_branch: false, auto_publish_repo: true }, 's', ctx)
+    expect(body).toEqual({ summary: 's', cwd: '/home/x/proj', repo: 'proj' })
+  })
+
+  it('omits a flagged-on field the context does not provide', () => {
+    const body = buildPresenceBody({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }, 's', { cwd: '/only' })
+    expect(body).toEqual({ summary: 's', cwd: '/only' })
   })
 })
 

@@ -107,6 +107,31 @@ export interface PresenceOpts {
   auto_publish_repo: boolean
 }
 
+export interface PresenceBody {
+  summary: string
+  cwd?: string
+  branch?: string
+  repo?: string
+}
+
+/**
+ * Build a presence report body, attaching cwd/branch/repo ONLY when the operator's
+ * privacy flags allow AND the detected working context provides them. Shared by the
+ * manual `set_summary` tool and the auto-report-on-connect path (index.ts) so both
+ * honor the SAME privacy gating — cwd/branch/repo never leak past an opt-out flag.
+ */
+export function buildPresenceBody(
+  presence: PresenceOpts,
+  summary: string,
+  ctx: { cwd?: string; branch?: string; repo?: string },
+): PresenceBody {
+  const body: PresenceBody = { summary }
+  if (presence.auto_publish_cwd && ctx.cwd) body.cwd = ctx.cwd
+  if (presence.auto_publish_branch && ctx.branch) body.branch = ctx.branch
+  if (presence.auto_publish_repo && ctx.repo) body.repo = ctx.repo
+  return body
+}
+
 export function registerTools(
   client: RelayClient,
   presence: PresenceOpts,
@@ -148,11 +173,7 @@ export function registerTools(
     }
     if (name === 'set_summary') {
       const input = SummaryInput.parse(args)
-      const ctx = detectWorkingContext()
-      const body: { summary: string; cwd?: string; branch?: string; repo?: string } = { summary: input.summary }
-      if (presence.auto_publish_cwd && ctx.cwd) body.cwd = ctx.cwd
-      if (presence.auto_publish_branch && ctx.branch) body.branch = ctx.branch
-      if (presence.auto_publish_repo && ctx.repo) body.repo = ctx.repo
+      const body = buildPresenceBody(presence, input.summary, detectWorkingContext())
       await client.setPresence(body)
       return { content: [{ type: 'text', text: 'presence updated' }] }
     }
