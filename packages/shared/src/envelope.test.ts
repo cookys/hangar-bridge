@@ -164,9 +164,20 @@ describe('subject field (routing + ACL)', () => {
     const s = 'a' + '.b'.repeat(80) // > 128
     expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), to: 'bob', subject: s })).toThrow()
   })
-  it('DIRECT-ONLY: subject + to=@team is rejected', () => {
-    expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@team', subject: 'mple2.x' }))
-      .toThrow(/concrete handle/)
+  it('#3: subjected @team CHAT is accepted (subject-scoped broadcast)', () => {
+    const e = EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@team', kind: 'chat', subject: 'mple2.x' })
+    expect(e.subject).toBe('mple2.x')
+    expect(e.to).toBe('@team')
+  })
+  it('#3: subjected @team of a non-chat kind (task_dispatch) is rejected (R1)', () => {
+    expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@team', kind: 'task_dispatch', subject: 'mple2.x' }))
+      .toThrow(/only for chat/)
+  })
+  it('#3: a subjected @team chat still cannot be a reply (M4 ack channel preserved)', () => {
+    expect(() => EnvelopeSchema.parse({
+      ...validChatEnvelope(), to: '@team', kind: 'chat', subject: 'mple2.x',
+      in_reply_to: 'msg_01HRK7Y0000000000000000001',
+    })).toThrow(/subject=null/)
   })
   it('ACK CHANNEL: subject + in_reply_to is rejected', () => {
     const e = { ...validChatEnvelope(), to: 'bob', subject: 'mple2.x', in_reply_to: 'msg_01HRK7Y0000000000000000001' }
@@ -193,9 +204,13 @@ describe('OutboundMessageSchema subject', () => {
   it('null-subject @team broadcast is accepted (B2)', () => {
     expect(OutboundMessageSchema.parse({ to: '@team', kind: 'task_dispatch', content: 'x' })).toBeDefined()
   })
-  it('subject + @team is rejected', () => {
+  it('#3: subjected @team task_dispatch is rejected (commands stay direct, R1)', () => {
     expect(() => OutboundMessageSchema.parse({ to: '@team', kind: 'task_dispatch', content: 'x', subject: 'mple2.x' }))
-      .toThrow(/concrete handle/)
+      .toThrow(/only for chat/)
+  })
+  it('#3: subjected @team chat is accepted (subject-scoped broadcast)', () => {
+    const m = OutboundMessageSchema.parse({ to: '@team', kind: 'chat', content: 'x', subject: 'mple2.x' })
+    expect(m.subject).toBe('mple2.x')
   })
   it('subject + in_reply_to is rejected', () => {
     expect(() => OutboundMessageSchema.parse({

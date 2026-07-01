@@ -64,10 +64,28 @@ describe('subject ACL — publish gate', () => {
     expect(res.status).toBe(403)
   })
 
-  it('400 on subjected @team (direct-only invariant)', async () => {
+  it('400 on subjected @team task_dispatch (commands stay direct — R1)', async () => {
     own('alice', ['mple2'])
     const res = await post({ to: '@team', kind: 'task_dispatch', content: 'go', subject: 'mple2.x' })
     expect(res.status).toBe(400)
+  })
+
+  it('#3: 201 on subjected @team CHAT when publisher owns; recipient-ownership NOT required', async () => {
+    own('alice', ['mple2']) // note: NO recipient owns — @team has no single recipient
+    const res = await post({ to: '@team', kind: 'chat', content: 'heads up', subject: 'mple2.status' })
+    expect(res.status).toBe(201)
+    const e = await res.json() as { subject: string; to: string; delivered_at: string | null }
+    expect(e.subject).toBe('mple2.status')
+    expect(e.to).toBe('@team')
+    // subjected ⇒ NOT stamped on enqueue (stream write loop is the sole delivered_at writer)
+    expect(e.delivered_at).toBe(null)
+  })
+
+  it('#3: 403 on subjected @team CHAT when publisher does NOT own the namespace', async () => {
+    const res = await post({ to: '@team', kind: 'chat', content: 'x', subject: 'mple2.status' })
+    expect(res.status).toBe(403)
+    expect((await res.json() as { error: string }).error).toBe('forbidden_subject')
+    expect((db.prepare('SELECT COUNT(*) AS c FROM message').get() as { c: number }).c).toBe(0)
   })
 
   it('null-subject chat is unrestricted (back-compat), regardless of ownership', async () => {

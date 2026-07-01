@@ -182,14 +182,24 @@ export function matchesInterest(subject: string, interest: readonly string[]): b
 These are the **only** implementations. Both the relay live path and the relay backlog path call them; the peer-agent pre-context re-filter calls them too (fail-open, §9). No duplicated matching logic anywhere.
 
 ### 3.3 Direct-only constraint
-If `subject != null` then `to` MUST be a concrete handle, NEVER `@team`. Enforced in three places:
-1. `EnvelopeSchema.superRefine` (§2.1) — defense in depth.
-2. `OutboundMessageSchema.superRefine` (§2.1, nullish guard B2) — rejects client sends with 400.
-3. Relay messages route, explicit check before insert (§4.1) — returns a typed 400 so the failure is legible even if a schema path is bypassed.
 
-Because a subjected message has **exactly one** intended recipient, the single `delivered_at` column (envelope.ts:42, schema.sql:64) remains correct — this is the lever that lets us skip a per-recipient delivery table.
+> **AMENDED by fleet-coord stage 3 #3 (2026-07-02) — see the [§14 addendum](#14-addendum--subject-scoped-team-chat-broadcast-fleet-coord-stage-3-3).**
+> Direct-only is now relaxed for ONE case: a `chat`-kind `@team` message MAY carry a subject
+> (subject-scoped coordination broadcast). All other kinds — notably `task_dispatch` (commands) —
+> remain direct-only. The `delivered_at` semantics bifurcate: DIRECT subjected messages keep
+> exactly-one-recipient delivery; a subjected `@team` chat rides `@team`'s broadcast delivery
+> model (id-cursor redelivery; `delivered_at` is an ambient first-delivery flag). The paragraphs
+> below describe the ORIGINAL rule; read them together with §14.
 
-**`@team` stays `subject = null` = legacy/coordination broadcast, NEVER carries a subject, and is NOT authoritative for commands (R1).** A subjected `@team` send is a hard 400 (§4.1 step 3, backward-compat-matrix row §5).
+If `subject != null` then `to` MUST be a concrete handle, NEVER `@team` (**except a `chat`-kind
+`@team` broadcast, §14**). Enforced in three places:
+1. `EnvelopeSchema.superRefine` (§2.1) — defense in depth (now: rejects subjected `@team` of a non-`chat` kind).
+2. `OutboundMessageSchema.superRefine` (§2.1, nullish guard B2) — rejects client sends with 400 (same non-`chat` condition).
+3. Relay messages route (§4.1) — the recipient-ownership check is skipped for `@team` (no single recipient); publisher-ownership still fully gates who may broadcast on a namespace.
+
+Because a **direct** subjected message has **exactly one** intended recipient, the single `delivered_at` column (envelope.ts, schema.sql) remains correct for it — this is the lever that lets us skip a per-recipient delivery table. A subjected `@team` chat is NOT exactly-one-recipient; it deliberately reuses `@team`'s existing broadcast delivery contract instead (§14), so it does not require the per-recipient table either.
+
+**`@team` carries a subject ONLY for `chat` (§14); for every other kind it stays `subject = null` = legacy/coordination broadcast and is NOT authoritative for commands (R1).** A subjected `@team` `task_dispatch` is a hard 400 (§4.1 step 3, backward-compat-matrix row §5).
 
 ---
 
@@ -492,7 +502,7 @@ The relay runs on **muyan**. Per `COORDINATION.md`, adding/altering peers requir
 - **Wildcards beyond trailing `>`** — no `*`, no mid-path globs, no namespace-prefix matching in ownership (exact only).
 - **Compromised-relay threat / forge-`from`** — the relay remains a v1 trust anchor; a compromised relay can forge `from`, forge `subject`, or re-inject stripped meta and bypass the gate. Unchanged from the current model (see MCP server instructions §3).
 - **Intra-namespace blast radius** — any owner of a namespace sees all subjects under it; finer-grained per-subject authorization is not modeled.
-- **Per-recipient delivery table** — deliberately avoided via the direct-only constraint (decision 2 / §3.3); the single `delivered_at` flag is sufficient and correct only because subjected messages have exactly one recipient.
+- **Per-recipient delivery table** — deliberately avoided (decision 2 / §3.3); the single `delivered_at` flag is sufficient and correct for DIRECT subjected messages because they have exactly one recipient. **AMENDED by #3 (§14):** a subjected `@team` chat is NOT exactly-one-recipient — it reuses `@team`'s pre-existing broadcast delivery model (multi-recipient redelivery via the id-cursor `?since=` resume, delivery-agnostic per B3; `delivered_at` is an ambient first-delivery flag), so the per-recipient table stays avoided for it too. Subjected `@team` chat carries NO stronger delivery guarantee than 7-day cursor-based replay (retention is the hard upper bound).
 
 ### 12.2 Accepted residual risks (NOT solved — kept documented, do not attempt to fix)
 - **Ack/correlation channel is `subject=null`, hence outside the ACL.** Acks (`send_to_peer … in_reply_to`, `respond_to_permission`) are forced `subject=null` by the M4 schema invariant and hit the publish-gate null short-circuit, so they bypass the namespace gate. **Mitigation, not elimination:** the recipient-identity check on `subject=null` replies (§9.3) — the replier should be the original message's `to_handle`. A determined sender on the roster can still send a null-subject `chat` to any handle.
@@ -528,3 +538,63 @@ These deltas update `factor640/COORDINATION.md` so the command contract matches 
 
 ### 13.3 §源碼事實 addendum (keep the doc honest about the new contract)
 - Append: "v3 ACL:subjected 訊息一律直送(`subject!=null ⇒ to` 必為具體 handle,`@team` 為 400);發/收雙向都過 namespace ownership gate;真正的 gated subject 由 relay 蓋章、以 `gated_subject` channel 欄位呈現(sender 的 `meta.subject`/`meta.task_kind`/`meta.kind` 在發佈端被剝除、非權威,B1);`delivered_at` 只在 SSE 實際寫出後標記(非 enqueue);backlog 雙語意——`?since=` resume 用 `id>since`(delivery-agnostic,保住 @team 多收件者重送與 widened-interest 重播),cold-start 用 pending-only(`delivered_at IS NULL`)(B3)。"
+
+---
+
+## 14. ADDENDUM — Subject-scoped `@team` chat broadcast (fleet-coord stage 3 #3)
+
+**Date:** 2026-07-02. **Status:** SHIPPED. **Decorrelated spec_review:** NEEDS-CHANGES →
+conditions satisfied below (gpt-5.5 xhigh). This amends §3.3 and §12.1.
+
+### 14.1 What changed
+Direct-only is relaxed for exactly ONE case: a **`chat`-kind `@team`** message MAY carry a
+`subject` (a subject-scoped coordination BROADCAST). Motivation: P1 — `@team` was 無差別
+(reached every connected session); now a coordination chat can be scoped to a namespace and the
+relay fans it out ONLY to roster members who OWN that namespace AND match their interest filter.
+
+- `EnvelopeSchema` / `OutboundMessageSchema` superRefine: reject `subject != null && to == '@team'
+  && kind != 'chat'` (was: reject any `subject != null && to == '@team'`).
+- Publish route (`messages.ts`): for a subjected message, PUBLISHER-ownership is still required
+  (403 if the publisher does not own the namespace). The RECIPIENT-ownership check is skipped when
+  `to == '@team'` — there is no single recipient; each SSE subscriber is independently gated by its
+  own owned-set + interest in the stream `deliverable()` filter. `task_dispatch` (and every other
+  non-`chat` kind) to `@team` with a subject stays a hard 400 (schema).
+- No schema change, no fanout change, no new delivered-tracking. The per-subscriber ownership +
+  interest gate (`deliverable()`, applied to BOTH live fanout and backlog) already existed and is
+  reused verbatim.
+
+### 14.2 R1 preserved (commands never `@team`)
+`task_dispatch` remains direct-only + per-owner gated (§13.1 R1). Only coordination `chat` gains
+subject-scoped broadcast. Commands and broadcasts are complementary mechanisms, not substitutes.
+
+### 14.3 `delivered_at` semantics — bifurcated (review condition 1)
+- **DIRECT subjected message:** `delivered_at` = recipient delivery (exactly one recipient).
+  Unchanged. Stamped only after a successful SSE `writeSSE` (R4).
+- **Subjected `@team` chat:** delivery authority is the id-cursor `?since=` resume
+  (`fetchSince`, delivery-agnostic — B3), exactly as for null-subject `@team`. `delivered_at` is an
+  AMBIENT first-delivery flag (first successful subscriber write), NOT per-recipient delivery. It is
+  stamped later than the null-subject `@team` enqueue-stamp (which stamps if any peer is online), so
+  it is strictly no weaker for cursor replay. A subjected `@team` chat is NOT enqueue-stamped
+  (the `subject === null` online-optimization branch is skipped).
+
+### 14.4 Security / ACL (review condition — no leak, no spoof)
+- **No receive leak:** subjected `@team` chat flows through `deliverable()` on BOTH live fanout and
+  backlog; a subscriber that does not OWN the namespace (and match interest) never receives it
+  (fail-closed). Audited: the ONLY client-facing message-content read path is `GET /v1/stream`
+  (which applies `deliverable()`); `/metrics` exposes only a COUNT; `/v1/permission/respond` reads
+  only `kind='permission_request'` rows addressed to the caller (never a subjected `@team` chat);
+  the publish 201 echoes only the sender's own envelope. No read/admin/export path bypasses the gate.
+- **No publish spoof:** publisher-ownership is still enforced — a non-owner broadcasting on a
+  namespace gets 403 `forbidden_subject` (audited).
+
+### 14.5 Ack channel preserved (review condition 4)
+The `in_reply_to ⇒ subject = null` invariant (M4) is UNCHANGED: a subjected `@team` chat cannot be
+a reply (a subjected reply of any addressing is still 400).
+
+### 14.6 Interest-widening replay (review condition 3 — accepted policy)
+Backlog filtering uses the subscriber's CURRENT owned-set + interest (read once per connection).
+A subscriber that later widens its interest and resumes by `?since=<cursor>` can re-surface older
+subjected `@team` chats it now matches. This is consistent with `@team`'s delivery-agnostic cursor
+replay and is ACCEPTED (the same property already applies to null-subject `@team` and to
+widened-interest direct subjects). Retention/purge (7-day) is the hard upper bound on replay
+(review condition 5) — subjected `@team` chat implies no stronger guarantee.
