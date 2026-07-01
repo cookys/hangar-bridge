@@ -290,6 +290,23 @@ Reviewer confirmed:
 Decision: **#3 SHIPS (Option A)**, not escalated. The 5 conditions are folded into the
 SUBJECT_ROUTING_SPEC addendum + the audit step below.
 
+### Decorrelated code_review — full implementation diff (gpt-5.5 xhigh via codex, read-only)
+- Round 1: **FIX-THEN-SHIP** — `DELETE /v1/claim` carried the key in a request body; DELETE
+  bodies are dropped by some clients/proxies → a release could silently fail in production.
+- Fix (commit 42688ac): added canonical `POST /v1/claim/release`; peer-agent client uses it;
+  DELETE kept as compat; tests for both paths.
+- Round 2 (re-review of the fix): **SHIP-AS-IS**, findings none. Converged.
+
+## Implementation outcome (SHIPPED, not merged — CEO owns merge-back)
+Branch `feat/fleet-coord-stage3`, 4 commits from `origin/main` @ bc8fcf3:
+- 3f5a4bf feat(presence) #1 · 973d5ca feat(claim) #2 (schema v6) · bc0b784 feat(subject) #3
+  (SPEC §14) · 42688ac fix(claim) review round-1.
+- #1 DELIVERED · #2 DELIVERED · #3 DELIVERED (Option A — NOT escalated; the direct-only
+  break was review-approved for `chat`-only @team with all 5 NEEDS-CHANGES conditions met).
+- Full `pnpm -r test:ci` green: shared 75 / peer-agent 105 / relay 118 / e2e 13 (+2 skip).
+  Coverage above thresholds (shared 100/96.55, peer-agent 87.41/80.79, relay 87.83/86.77).
+- Schema migration version: **v6** (adds `claim` table; probe-guarded, idempotent).
+
 ## Doc updates required
 - `CLAUDE.md` — currently marks relay + peer-agent as "not started"; all three packages are fully
   implemented. Correct the status and add presence-TTL / claim / subject-broadcast to the surface.
