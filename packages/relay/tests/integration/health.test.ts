@@ -5,6 +5,7 @@ import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
 import { RELAY_VERSION } from '../../src/routes/health.ts'
+import { ClaimStore } from '../../src/claims/store.ts'
 
 describe('GET /health', () => {
   let db: Db
@@ -15,7 +16,7 @@ describe('GET /health', () => {
       db,
       store: new MessageStore(db),
       fanout: new Fanout(),
-      presence: new PresenceRegistry(),
+      presence: new PresenceRegistry(), claims: new ClaimStore(db),
       now: () => new Date(),
     })
   })

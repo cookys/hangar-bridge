@@ -4,6 +4,24 @@ export const MAX_META_KEY_LENGTH = 64
 export const MAX_META_VALUE_LENGTH = 2048
 export const PERMISSION_REQUEST_TTL_MS = 5 * 60 * 1000
 export const DISPATCH_REQUEST_TIMEOUT_MS = 30 * 60 * 1000
+// Presence liveness (fleet-coordination stage 3). A presence session is considered
+// live only if its last_seen is within PRESENCE_TTL_MS of now (lazy eviction on read
+// in PresenceRegistry). The peer-agent re-posts presence every PRESENCE_HEARTBEAT_MS
+// while its SSE stream is up; TTL is 3× the heartbeat so a single dropped heartbeat
+// (or brief reconnect) does not flap a peer offline. TTL is the correctness backstop
+// for an unclean disconnect (crash / killed process that never runs SSE cleanup).
+export const PRESENCE_HEARTBEAT_MS = 30 * 1000
+export const PRESENCE_TTL_MS = 90 * 1000
+// Claim/lock primitive (fleet-coordination stage 3, P4). Bounds on a claim's TTL and
+// the free-text note; the asset key reuses a bounded dotted/colon/slash charset.
+export const CLAIM_TTL_MIN_SECONDS = 1
+export const CLAIM_TTL_MAX_SECONDS = 24 * 60 * 60
+export const CLAIM_DEFAULT_TTL_SECONDS = 60 * 60
+export const MAX_CLAIM_KEY_LENGTH = 256
+export const MAX_CLAIM_NOTE_LENGTH = 512
+// Claim key: a bounded, printable asset identifier. Allows dotted/namespaced keys and
+// path-like keys (colon + slash) so callers can name e.g. "repo:foo:configs/bar.toml".
+export const CLAIM_KEY_REGEX = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/
 export const TEAM_BROADCAST_HANDLE = '@team' as const
 export const HANDLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/
 export const META_KEY_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/

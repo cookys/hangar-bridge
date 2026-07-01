@@ -47,8 +47,10 @@ export function messagesRoute(deps: Deps) {
     // A non-null subject is only meaningful on a command-carrying kind; a subjected
     // reactive/system kind (presence_update/permission_*/task_result) is rejected
     // outright, else a non-owner could smuggle a gated_subject via e.g. a subjected
-    // presence_update and bypass the ownership check entirely. subject!=null ⇒ `to`
-    // is a concrete handle (schema direct-only refine), so the cast below is safe.
+    // presence_update and bypass the ownership check entirely.
+    // #3: subject!=null ⇒ `to` is a concrete handle EXCEPT for a subjected @team `chat`
+    // (subject-scoped coordination broadcast). The schema already rejects a subjected
+    // @team of any non-chat kind (task_dispatch etc.) → 400 (R1: commands stay direct).
     if (data.subject != null) {
       if (data.kind !== 'chat' && data.kind !== 'task_dispatch') {
         return c.json({ error: 'invalid_message', message: 'subject_not_allowed_for_kind' }, 400)
@@ -58,10 +60,18 @@ export function messagesRoute(deps: Deps) {
         auditSubjectDenied(deps, peer.id, 'subject.publish_denied', { subject: data.subject, handle: peer.handle })
         return c.json({ error: 'forbidden_subject' }, 403)
       }
-      const ownedRcpt = loadOwnedSet(deps.db, HANGAR_TEAM_ID, data.to as string)
-      if (!ownsNamespace(data.subject, ownedRcpt)) {
-        auditSubjectDenied(deps, peer.id, 'subject.recipient_denied', { subject: data.subject, to: data.to as string })
-        return c.json({ error: 'recipient_not_owner' }, 409)
+      // Recipient-ownership applies only to a DIRECT subjected message (one concrete
+      // recipient). A subjected @team broadcast has no single recipient — each SSE
+      // subscriber is independently gated by its own owned-set + interest in the stream
+      // `deliverable` filter — so this check is skipped for @team (it would 409 anyway
+      // since @team owns no namespace). Publisher-ownership above still fully gates who
+      // may broadcast on the namespace.
+      if (data.to !== TEAM_BROADCAST_HANDLE) {
+        const ownedRcpt = loadOwnedSet(deps.db, HANGAR_TEAM_ID, data.to as string)
+        if (!ownsNamespace(data.subject, ownedRcpt)) {
+          auditSubjectDenied(deps, peer.id, 'subject.recipient_denied', { subject: data.subject, to: data.to as string })
+          return c.json({ error: 'recipient_not_owner' }, 409)
+        }
       }
     }
 

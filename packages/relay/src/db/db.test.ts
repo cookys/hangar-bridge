@@ -10,7 +10,7 @@ describe('openDatabase', () => {
   beforeEach(() => { db = openDatabase(':memory:') })
 
   it('applies schema and reports latest version', () => {
-    expect(getSchemaVersion(db)).toBe(5)
+    expect(getSchemaVersion(db)).toBe(6)
   })
 
   it('human table has last_active_at column (v2)', () => {
@@ -35,7 +35,7 @@ describe('openDatabase', () => {
       "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     ).all().map((r: any) => r.name)
     expect(names).toEqual(expect.arrayContaining([
-      'audit_log', 'human', 'idempotency_key', 'message',
+      'audit_log', 'claim', 'human', 'idempotency_key', 'message',
       'schema_version', 'team', 'token'
     ]))
   })
@@ -110,7 +110,7 @@ describe('migrateV3ToV4 (rebuild path)', () => {
 
   it('rebuilds message table to accept new kinds and preserves existing rows', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(5)
+    expect(getSchemaVersion(upgraded)).toBe(6)
     const legacy = upgraded.prepare("SELECT content FROM message WHERE id='msg_legacy_chat'").get() as { content: string } | undefined
     expect(legacy?.content).toBe('pre-migration')
     expect(() =>
@@ -124,9 +124,59 @@ describe('migrateV3ToV4 (rebuild path)', () => {
   it('is idempotent: second open does not rebuild again', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(5)
+    expect(getSchemaVersion(second)).toBe(6)
     const versions = second.prepare("SELECT version FROM schema_version ORDER BY version").all() as Array<{ version: number }>
-    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5])
+    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6])
+    second.close()
+  })
+})
+
+describe('migrateV5ToV6 (claim table)', () => {
+  let tmpDir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v6-'))
+    dbPath = join(tmpDir, 'v5.db')
+    // Seed a v5-shape DB by hand (subject routing present, but NO claim table).
+    const raw = new Database(dbPath)
+    raw.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+      CREATE TABLE team(id TEXT PRIMARY KEY, name TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 7, created_at TEXT NOT NULL);
+      CREATE TABLE human(id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id), handle TEXT NOT NULL, display_name TEXT NOT NULL, public_key BLOB, created_at TEXT NOT NULL, disabled_at TEXT, last_active_at TEXT, subjects TEXT, UNIQUE(team_id, handle));
+      CREATE TABLE token(id TEXT PRIMARY KEY, human_id TEXT NOT NULL REFERENCES human(id), token_hash BLOB NOT NULL UNIQUE, label TEXT NOT NULL, tier TEXT NOT NULL CHECK(tier IN ('human','admin')), created_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE TABLE message(id TEXT PRIMARY KEY, v INTEGER NOT NULL, team_id TEXT NOT NULL REFERENCES team(id), from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, in_reply_to TEXT, thread_root TEXT, kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')), content TEXT NOT NULL, meta_json TEXT NOT NULL DEFAULT '{}', sent_at TEXT NOT NULL, delivered_at TEXT, subject TEXT);
+      CREATE TABLE idempotency_key(key_hash BLOB PRIMARY KEY, token_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL REFERENCES team(id), at TEXT NOT NULL, actor_human_id TEXT, event TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
+      INSERT INTO schema_version(version) VALUES (1),(2),(3),(4),(5);
+      INSERT INTO team(id,name,retention_days,created_at) VALUES ('hangar','hangar',7,'2026-05-17T00:00:00Z');
+    `)
+    raw.close()
+  })
+
+  afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }) })
+
+  it('adds the claim table to an existing v5 DB and records version 6', () => {
+    const upgraded = openDatabase(dbPath)
+    expect(getSchemaVersion(upgraded)).toBe(6)
+    const has = upgraded.prepare(
+      "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='claim'"
+    ).get()
+    expect(has).toBeTruthy()
+    // The table is usable (round-trips a row).
+    upgraded.prepare(
+      "INSERT INTO claim(team_id,claim_key,owner_handle,created_at,expires_at) VALUES (?,?,?,?,?)"
+    ).run('hangar', 'k', 'alice', '2026-05-17T00:00:00Z', '2026-05-17T01:00:00Z')
+    const row = upgraded.prepare("SELECT owner_handle FROM claim WHERE claim_key='k'").get() as { owner_handle: string }
+    expect(row.owner_handle).toBe('alice')
+    upgraded.close()
+  })
+
+  it('is idempotent: re-open keeps version 6 and one claim table', () => {
+    openDatabase(dbPath).close()
+    const second = openDatabase(dbPath)
+    expect(getSchemaVersion(second)).toBe(6)
     second.close()
   })
 })

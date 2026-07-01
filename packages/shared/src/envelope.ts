@@ -62,18 +62,24 @@ export const EnvelopeSchema = z.object({
       message: 'task_result requires in_reply_to referencing the task_dispatch'
     })
   }
-  // Subjects are DIRECT-ONLY: a subjected message must target a concrete handle,
-  // never @team (keeps the single delivered_at flag correct; @team stays legacy
-  // null-subject fan-out). Nullish guard (B2): fire only when subject is set.
-  if (e.subject != null && e.to === TEAM_BROADCAST_HANDLE) {
+  // Subject + @team is allowed ONLY for `chat` (subject-scoped coordination BROADCAST,
+  // fleet-coord stage 3 #3): the relay fans it out only to roster members who OWN the
+  // namespace + match interest (per-subscriber `deliverable` gate). A subjected @team of
+  // any OTHER kind — notably `task_dispatch` — stays a hard reject: commands must be
+  // per-owner direct gated DMs (SUBJECT_ROUTING_SPEC §13.1 R1). Subjected @team chat
+  // inherits @team's broadcast delivery model (id-cursor redelivery; delivered_at is an
+  // ambient first-delivery flag), so it does NOT reintroduce a per-recipient delivery
+  // table. Nullish guard (B2): fire only when subject is set.
+  if (e.subject != null && e.to === TEAM_BROADCAST_HANDLE && e.kind !== 'chat') {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['subject'],
-      message: 'subjected messages must target a concrete handle, not @team'
+      message: 'subjected @team is allowed only for chat (commands must be direct, not @team)'
     })
   }
   // Acks/replies (in_reply_to set) are the null-subject channel; forcing this
   // makes the publish-gate null short-circuit what protects the ack channel (M4).
+  // UNCHANGED by #3 — a subjected @team chat still cannot be a reply.
   if (e.subject != null && e.in_reply_to != null) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -96,14 +102,15 @@ export const OutboundMessageSchema = z.object({
   meta: MetaSchema.optional(),
   in_reply_to: MessageIdSchema.nullable().optional()
 }).strict().superRefine((e, ctx) => {
-  // Same direct-only + ack-channel invariants as EnvelopeSchema, with nullish
-  // guards (B2): outbound subject is optional, so `!== null` would misfire on
+  // Same @team-subject + ack-channel invariants as EnvelopeSchema, with nullish
+  // guards (B2): outbound subject is optional, so `!= null` would misfire on
   // every omitted-subject send (acks, null-subject @team broadcasts) → 400.
-  if (e.subject != null && e.to === TEAM_BROADCAST_HANDLE) {
+  // Subjected @team is allowed only for chat (#3); other kinds (task_dispatch) → 400 R1.
+  if (e.subject != null && e.to === TEAM_BROADCAST_HANDLE && e.kind !== 'chat') {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['subject'],
-      message: 'subjected messages must target a concrete handle, not @team'
+      message: 'subjected @team is allowed only for chat (commands must be direct, not @team)'
     })
   }
   if (e.subject != null && e.in_reply_to != null) {

@@ -32,6 +32,12 @@ export interface StreamClientOpts {
   subjects?: string[]
   onEnvelope: (e: Envelope) => void
   onAuthError: () => void
+  // Fired after each successful stream open (200) and then repeatedly on the heartbeat
+  // interval while the stream is up. Used to auto-report presence on connect and keep it
+  // fresh under the relay's presence TTL. Failures are swallowed (best-effort liveness).
+  onConnect?: () => void | Promise<void>
+  // Heartbeat cadence for re-firing onConnect while connected. Omit/0 ⇒ connect-only.
+  heartbeatMs?: number
   reconnectBaseMs?: number
   reconnectMaxMs?: number
 }
@@ -40,8 +46,29 @@ export class StreamClient {
   private aborter: AbortController | null = null
   private stopped = false
   private attempt = 0
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(private opts: StreamClientOpts) {}
+
+  private fireConnect(): void {
+    if (!this.opts.onConnect) return
+    void Promise.resolve(this.opts.onConnect()).catch(err =>
+      logJson('warn', 'peer.presence.report_error', { err: String(err instanceof Error ? err.message : err) }),
+    )
+  }
+
+  private startHeartbeat(): void {
+    const ms = this.opts.heartbeatMs ?? 0
+    if (!this.opts.onConnect || ms <= 0) return
+    this.stopHeartbeat()
+    this.heartbeatTimer = setInterval(() => this.fireConnect(), ms)
+    // Do not keep the event loop alive solely for the heartbeat.
+    this.heartbeatTimer.unref?.()
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
+  }
 
   async start(): Promise<void> {
     while (!this.stopped) {
@@ -61,9 +88,13 @@ export class StreamClient {
         if (res.status !== 200 || !res.body) throw new Error(`stream http ${res.status}`)
         this.attempt = 0
         logJson('info', 'peer.stream.open', { since: since ?? '' })
+        this.fireConnect()
+        this.startHeartbeat()
         await this.readStream(res.body as unknown as ReadableStream<Uint8Array>)
       } catch (err) {
         logJson('warn', 'peer.stream.disconnect', { err: String(err instanceof Error ? err.message : err) })
+      } finally {
+        this.stopHeartbeat()
       }
       if (this.stopped) break
       const delay = Math.min(
@@ -74,7 +105,7 @@ export class StreamClient {
     }
   }
 
-  stop(): void { this.stopped = true; this.aborter?.abort() }
+  stop(): void { this.stopped = true; this.stopHeartbeat(); this.aborter?.abort() }
 
   private async readStream(body: ReadableStream<Uint8Array>): Promise<void> {
     const decoder = new TextDecoder()

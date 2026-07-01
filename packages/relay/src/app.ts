@@ -6,6 +6,7 @@ import { presenceRoute } from './routes/presence.ts'
 import { peersRoute } from './routes/peers.ts'
 import { metricsRoute } from './routes/metrics.ts'
 import { permissionRoute } from './routes/permission.ts'
+import { claimsRoute } from './routes/claims.ts'
 import { healthRoute } from './routes/health.ts'
 import { accessLog } from './middleware/access-log.ts'
 
@@ -22,5 +23,9 @@ export function buildApp(deps: Deps) {
   app.route('/v1/presence', presenceRoute(deps))
   app.route('/v1/peers', peersRoute(deps))
   app.route('/v1/permission', permissionRoute(deps))
+  // Cooperative asset-claim primitive (P4). POST/DELETE /v1/claim, GET /v1/claims;
+  // the same sub-app is mounted at both paths so GET works on either.
+  app.route('/v1/claim', claimsRoute(deps))
+  app.route('/v1/claims', claimsRoute(deps))
   return app
 }

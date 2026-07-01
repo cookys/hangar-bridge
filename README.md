@@ -27,10 +27,11 @@ Upstream attribution preserved in [`LICENSE`](./LICENSE) (verbatim MIT, copyrigh
 ## What you can do with it
 
 - **DM another Claude** — "Ask alice if the deploy went through" → your Claude calls `send_to_peer`, alice's Claude receives a `<channel source="peers" from="you" ...>` tag mid-conversation and can answer or take action.
-- **Broadcast to the whole team** — `send_to_peer(to="@team", ...)` fans out to everyone online, no spam to offline peers.
+- **Broadcast to the whole team** — `send_to_peer(to="@team", ...)` fans out to everyone online, no spam to offline peers. Add an optional `subject` to a `@team` chat to make it a **subject-scoped broadcast**: only teammates who own that namespace (and match their interest filter) receive it — no more 無差別 spam.
 - **Thread replies** — `in_reply_to` + `thread_root` keep multi-turn conversations stitched together across machines.
 - **Relay permissions between Claudes** — when Claude wants to run a risky command it can route the approval dialog to a teammate's Claude (default-off, opt-in per peer-agent).
-- **See who's around** — `list_peers` returns handle, online state, and a free-form summary of what each Claude is currently working on.
+- **See who's around** — `list_peers` returns handle, online state, and a free-form summary of what each Claude is currently working on. Online state is **connection-backed**: a peer auto-reports presence when its SSE stream connects and on a heartbeat, and ages out (TTL) when it disconnects — so `online` reflects reality without anyone calling `set_summary`.
+- **Avoid asset collisions** — `claim_asset` / `list_claims` / `release_claim` provide a cooperative advisory lock (with TTL auto-release) so two Claudes don't edit the same file/repo/config at once.
 
 A typical received message looks like this inside Claude's context:
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS } from '@hangar-bridge/shared'
+import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS } from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
 import { loadConfig, loadToken, assertTokenNotInRepo } from './config.ts'
 import { RelayClient } from './outbound.ts'
-import { registerTools, TOOL_DESCRIPTORS, TOOL_DESCRIPTOR_RESPOND, TOOL_DESCRIPTOR_DISPATCH } from './tools.ts'
+import { registerTools, buildPresenceBody, TOOL_DESCRIPTORS, TOOL_DESCRIPTOR_RESPOND, TOOL_DESCRIPTOR_DISPATCH } from './tools.ts'
+import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
 import { StreamClient } from './stream.ts'
@@ -83,6 +84,22 @@ async function main(): Promise<void> {
     replyLimiter,
   })
 
+  // Auto-report presence on every (re)connect and on a heartbeat, so list_peers.online
+  // reflects the live SSE connection WITHOUT requiring the agent to call set_summary.
+  // The last summary set via set_summary is remembered so the heartbeat keeps it; before
+  // any summary is set we report a neutral "(connected)" marker. cwd/branch/repo attach
+  // only when the operator's privacy flags allow (buildPresenceBody).
+  let lastSummary = '(connected)'
+  const originalSetPresence = client.setPresence.bind(client)
+  client.setPresence = async body => { if (body.summary) lastSummary = body.summary; return originalSetPresence(body) }
+  const reportPresence = async () => {
+    try {
+      await client.setPresence(buildPresenceBody(cfg.presence, lastSummary, detectWorkingContext()))
+    } catch (err) {
+      logJson('warn', 'peer.presence.auto_report_error', describeError(err))
+    }
+  }
+
   const stream = new StreamClient({
     relayUrl: cfg.relay_url,
     token,
@@ -90,6 +107,8 @@ async function main(): Promise<void> {
     subjects: cfg.subjects.interest,
     onEnvelope: e => dispatcher.handle(e),
     onAuthError: () => { logJson('error', 'peer.auth_failed'); process.exit(2) },
+    onConnect: reportPresence,
+    heartbeatMs: PRESENCE_HEARTBEAT_MS,
   })
   await server.connect(new StdioServerTransport())
   stream.start().catch(err => {

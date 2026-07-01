@@ -5,6 +5,7 @@ import { openDatabase } from '../db/db.ts'
 import { MessageStore } from '../messages/store.ts'
 import { Fanout } from '../fanout.ts'
 import { PresenceRegistry } from '../presence/registry.ts'
+import { ClaimStore } from '../claims/store.ts'
 import { startInactivitySweeper } from '../purge.ts'
 import { logJson } from '../logger.ts'
 
@@ -28,7 +29,8 @@ export function startServer(opts: ServeOpts) {
   const store = new MessageStore(db)
   const fanout = new Fanout()
   const presence = new PresenceRegistry()
-  const app = buildApp({ db, store, fanout, presence, now: () => new Date() })
+  const claims = new ClaimStore(db)
+  const app = buildApp({ db, store, fanout, presence, claims, now: () => new Date() })
   const server = serve({ fetch: app.fetch, port: opts.port, hostname: opts.host })
 
   const days = opts.inactive_days ?? 30

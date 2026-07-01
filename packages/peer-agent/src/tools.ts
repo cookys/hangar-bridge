@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import { ulid } from 'ulid'
-import { HANDLE_REGEX, TEAM_BROADCAST_HANDLE, SUBJECT_REGEX, MAX_SUBJECT_LENGTH, type OutboundMessage, type MessageId } from '@hangar-bridge/shared'
+import {
+  HANDLE_REGEX, TEAM_BROADCAST_HANDLE, SUBJECT_REGEX, MAX_SUBJECT_LENGTH,
+  CLAIM_KEY_REGEX, MAX_CLAIM_KEY_LENGTH, MAX_CLAIM_NOTE_LENGTH,
+  CLAIM_TTL_MIN_SECONDS, CLAIM_TTL_MAX_SECONDS, CLAIM_DEFAULT_TTL_SECONDS,
+  type OutboundMessage, type MessageId,
+} from '@hangar-bridge/shared'
 import type { RelayClient } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
@@ -27,6 +32,15 @@ const RespondInput = z.object({
   verdict: z.enum(['allow', 'deny']),
   reason: z.string().optional(),
 })
+const ClaimInput = z.object({
+  key: z.string().max(MAX_CLAIM_KEY_LENGTH).regex(CLAIM_KEY_REGEX),
+  ttl_seconds: z.number().int().min(CLAIM_TTL_MIN_SECONDS).max(CLAIM_TTL_MAX_SECONDS).optional(),
+  note: z.string().max(MAX_CLAIM_NOTE_LENGTH).optional(),
+}).strict()
+const ListClaimsInput = z.object({}).strict()
+const ReleaseClaimInput = z.object({
+  key: z.string().max(MAX_CLAIM_KEY_LENGTH).regex(CLAIM_KEY_REGEX),
+}).strict()
 const ULID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/i
 const DispatchInput = z.object({
   to: AddressSchema,
@@ -69,6 +83,33 @@ export const TOOL_DESCRIPTORS = [
       required: ['summary'],
     },
   },
+  {
+    name: 'claim_asset',
+    description: 'Acquire a cooperative advisory lock on a shared asset (e.g. a file, a repo path, a config) so teammates know you are working on it and avoid a collision (P4). Renews if you already hold it. Returns a conflict (with the current owner + expiry) if another teammate holds a live claim — back off or coordinate. Claims auto-expire after ttl_seconds so a crashed holder never wedges an asset.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'asset identifier, e.g. "repo:llm-playground:configs/foo.toml"' },
+        ttl_seconds: { type: 'number', description: `lock lifetime in seconds (default ${CLAIM_DEFAULT_TTL_SECONDS}); auto-releases after this` },
+        note: { type: 'string', description: 'optional reason shown to teammates' },
+      },
+      required: ['key'],
+    },
+  },
+  {
+    name: 'list_claims',
+    description: 'List all live (non-expired) asset claims across the team, with owner + expiry. Check this before starting work on a shared asset.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'release_claim',
+    description: 'Release an asset claim you hold (owner-only). Refused if the claim is held by another live owner.',
+    inputSchema: {
+      type: 'object',
+      properties: { key: { type: 'string', description: 'the asset key to release' } },
+      required: ['key'],
+    },
+  },
 ] as const
 
 export const TOOL_DESCRIPTOR_RESPOND = {
@@ -105,6 +146,31 @@ export interface PresenceOpts {
   auto_publish_cwd: boolean
   auto_publish_branch: boolean
   auto_publish_repo: boolean
+}
+
+export interface PresenceBody {
+  summary: string
+  cwd?: string
+  branch?: string
+  repo?: string
+}
+
+/**
+ * Build a presence report body, attaching cwd/branch/repo ONLY when the operator's
+ * privacy flags allow AND the detected working context provides them. Shared by the
+ * manual `set_summary` tool and the auto-report-on-connect path (index.ts) so both
+ * honor the SAME privacy gating — cwd/branch/repo never leak past an opt-out flag.
+ */
+export function buildPresenceBody(
+  presence: PresenceOpts,
+  summary: string,
+  ctx: { cwd?: string; branch?: string; repo?: string },
+): PresenceBody {
+  const body: PresenceBody = { summary }
+  if (presence.auto_publish_cwd && ctx.cwd) body.cwd = ctx.cwd
+  if (presence.auto_publish_branch && ctx.branch) body.branch = ctx.branch
+  if (presence.auto_publish_repo && ctx.repo) body.repo = ctx.repo
+  return body
 }
 
 export function registerTools(
@@ -148,13 +214,34 @@ export function registerTools(
     }
     if (name === 'set_summary') {
       const input = SummaryInput.parse(args)
-      const ctx = detectWorkingContext()
-      const body: { summary: string; cwd?: string; branch?: string; repo?: string } = { summary: input.summary }
-      if (presence.auto_publish_cwd && ctx.cwd) body.cwd = ctx.cwd
-      if (presence.auto_publish_branch && ctx.branch) body.branch = ctx.branch
-      if (presence.auto_publish_repo && ctx.repo) body.repo = ctx.repo
+      const body = buildPresenceBody(presence, input.summary, detectWorkingContext())
       await client.setPresence(body)
       return { content: [{ type: 'text', text: 'presence updated' }] }
+    }
+    if (name === 'claim_asset') {
+      const input = ClaimInput.parse(args)
+      const body: { key: string; ttl_seconds?: number; note?: string } = { key: input.key }
+      if (input.ttl_seconds !== undefined) body.ttl_seconds = input.ttl_seconds
+      if (input.note !== undefined) body.note = input.note
+      const r = await client.claim(body)
+      if (!r.ok) {
+        return { content: [{ type: 'text', text: `claim_conflict: "${input.key}" is held by ${r.conflict.owner} until ${r.conflict.expires_at}` }] }
+      }
+      const verb = r.renewed ? 'renewed' : 'claimed'
+      return { content: [{ type: 'text', text: `${verb} "${r.claim.claim_key}" until ${r.claim.expires_at}` }] }
+    }
+    if (name === 'list_claims') {
+      ListClaimsInput.parse(args)
+      const claims = await client.listClaims()
+      return { content: [{ type: 'text', text: JSON.stringify(claims, null, 2) }] }
+    }
+    if (name === 'release_claim') {
+      const input = ReleaseClaimInput.parse(args)
+      const r = await client.releaseClaim(input.key)
+      if (!r.ok) {
+        return { content: [{ type: 'text', text: `cannot release "${input.key}": held by ${r.owner}` }] }
+      }
+      return { content: [{ type: 'text', text: r.released ? `released "${input.key}"` : `no live claim on "${input.key}"` }] }
     }
     if (name === 'dispatch_task') {
       if (!dispatchTracker) throw new Error('dispatch_task disabled (no DispatchTracker wired)')

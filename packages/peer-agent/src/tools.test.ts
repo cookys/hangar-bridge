@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { registerTools } from './tools.ts'
+import { registerTools, buildPresenceBody } from './tools.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import type { RelayClient } from './outbound.ts'
@@ -33,6 +33,80 @@ describe('registerTools', () => {
     const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
     await callTool('set_summary', { summary: 'hacking' })
     expect(setPresence).toHaveBeenCalledWith({ summary: 'hacking' })
+  })
+})
+
+describe('buildPresenceBody — privacy gating', () => {
+  const ctx = { cwd: '/home/x/proj', branch: 'feat/y', repo: 'proj' }
+
+  it('attaches cwd/branch/repo when all flags on', () => {
+    const body = buildPresenceBody({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }, 's', ctx)
+    expect(body).toEqual({ summary: 's', cwd: '/home/x/proj', branch: 'feat/y', repo: 'proj' })
+  })
+
+  it('omits every optional field when all flags off', () => {
+    const body = buildPresenceBody({ auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false }, 's', ctx)
+    expect(body).toEqual({ summary: 's' })
+  })
+
+  it('gates each field independently', () => {
+    const body = buildPresenceBody({ auto_publish_cwd: true, auto_publish_branch: false, auto_publish_repo: true }, 's', ctx)
+    expect(body).toEqual({ summary: 's', cwd: '/home/x/proj', repo: 'proj' })
+  })
+
+  it('omits a flagged-on field the context does not provide', () => {
+    const body = buildPresenceBody({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }, 's', { cwd: '/only' })
+    expect(body).toEqual({ summary: 's', cwd: '/only' })
+  })
+})
+
+describe('registerTools — claim tools', () => {
+  const presence = { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false }
+  const baseClient = () => ({ send: vi.fn(), listPeers: vi.fn(async () => []), setPresence: vi.fn() })
+
+  it('claim_asset reports claimed/renewed on success', async () => {
+    const claim = vi.fn(async () => ({ ok: true, renewed: false, claim: { claim_key: 'k', expires_at: 't2' } }))
+    const client = { ...baseClient(), claim } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    const r = await callTool('claim_asset', { key: 'k', ttl_seconds: 60, note: 'x' })
+    expect(claim).toHaveBeenCalledWith({ key: 'k', ttl_seconds: 60, note: 'x' })
+    expect((r.content[0] as any).text).toContain('claimed "k"')
+  })
+
+  it('claim_asset surfaces conflict with owner + expiry', async () => {
+    const claim = vi.fn(async () => ({ ok: false, conflict: { owner: 'bob', expires_at: 't9' } }))
+    const client = { ...baseClient(), claim } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    const r = await callTool('claim_asset', { key: 'k' })
+    expect((r.content[0] as any).text).toContain('held by bob')
+  })
+
+  it('claim_asset rejects an invalid key', async () => {
+    const client = { ...baseClient(), claim: vi.fn() } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    await expect(callTool('claim_asset', { key: 'bad key!' })).rejects.toThrow()
+  })
+
+  it('list_claims returns the claim list JSON', async () => {
+    const listClaims = vi.fn(async () => [{ claim_key: 'k', owner_handle: 'alice' }])
+    const client = { ...baseClient(), listClaims } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    const r = await callTool('list_claims', {})
+    expect((r.content[0] as any).text).toContain('alice')
+  })
+
+  it('release_claim reports released / conflict', async () => {
+    const releaseClaim = vi.fn(async () => ({ ok: true, released: true }))
+    const client = { ...baseClient(), releaseClaim } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    const r = await callTool('release_claim', { key: 'k' })
+    expect((r.content[0] as any).text).toContain('released "k"')
+
+    const releaseClaim2 = vi.fn(async () => ({ ok: false, owner: 'bob' }))
+    const client2 = { ...baseClient(), releaseClaim: releaseClaim2 } as unknown as RelayClient
+    const { callTool: callTool2 } = registerTools(client2, presence)
+    const r2 = await callTool2('release_claim', { key: 'k' })
+    expect((r2.content[0] as any).text).toContain('held by bob')
   })
 })
 

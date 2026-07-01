@@ -5,6 +5,7 @@ import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
 import { seedPeerSecrets } from './_seed.ts'
+import { ClaimStore } from '../../src/claims/store.ts'
 
 // Read up to n SSE events (or until timeout). Short timeout for "must NOT arrive".
 async function readEvents(stream: ReadableStream<Uint8Array>, n: number, timeoutMs = 1500): Promise<string[]> {
@@ -44,11 +45,11 @@ describe('GET /v1/stream — subject ACL (receive half)', () => {
     const peers = seedPeerSecrets(db, ['alice', 'bob'])
     tokBob = peers.bob!.token
     store = new MessageStore(db)
-    app = buildApp({ db, store, fanout: new Fanout(), presence: new PresenceRegistry(), now: () => new Date() })
+    app = buildApp({ db, store, fanout: new Fanout(), presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date() })
   })
 
-  const openBob = (headers: Record<string, string> = {}) =>
-    app.request('/v1/stream', { headers: { authorization: `Bearer ${tokBob}`, ...headers } })
+  const openBob = (headers: Record<string, string> = {}, query = '') =>
+    app.request(`/v1/stream${query}`, { headers: { authorization: `Bearer ${tokBob}`, ...headers } })
 
   it('an owner receives a subjected message on cold-start', async () => {
     own('bob', ['mple2'])
@@ -76,6 +77,35 @@ describe('GET /v1/stream — subject ACL (receive half)', () => {
     const events = await readEvents(res.body!, 2)
     expect(events.some(e => e.includes('"content":"beat"'))).toBe(true)
     expect(events.some(e => e.includes('"content":"cmd"'))).toBe(false)
+  })
+
+  it('#3: a subjected @team CHAT reaches an owner+interested subscriber', async () => {
+    own('bob', ['mple2'])
+    store.insert('hangar', 'alice', { to: '@team', subject: 'mple2.status', kind: 'chat', content: 'BCAST' })
+    const res = await openBob()
+    const events = await readEvents(res.body!, 1)
+    expect(events.some(e => e.includes('"content":"BCAST"') && e.includes('"subject":"mple2.status"'))).toBe(true)
+  })
+
+  it('#3: a NON-owner does NOT receive a subjected @team CHAT (fanout gate is fail-closed)', async () => {
+    // bob owns nothing; a null-subject @team control must still arrive.
+    store.insert('hangar', 'alice', { to: '@team', subject: 'mple2.secret', kind: 'chat', content: 'LEAK' })
+    store.insert('hangar', 'alice', { to: '@team', kind: 'chat', content: 'ok-control' })
+    const res = await openBob()
+    const events = await readEvents(res.body!, 2)
+    expect(events.some(e => e.includes('ok-control'))).toBe(true)
+    expect(events.some(e => e.includes('LEAK') || e.includes('mple2.secret'))).toBe(false)
+  })
+
+  it('#3: since-cursor resume redelivers a subjected @team CHAT even after delivered_at is stamped (multi-recipient)', async () => {
+    own('bob', ['mple2'])
+    const c0 = store.insert('hangar', 'alice', { to: '@team', kind: 'chat', content: 'cursor-anchor' })
+    const m = store.insert('hangar', 'alice', { to: '@team', subject: 'mple2.status', kind: 'chat', content: 'BCAST2' })
+    store.markDelivered(m.id) // simulate a FIRST recipient already having consumed it
+    // bob resumes by id-cursor (delivery-agnostic) → still gets the broadcast (B3).
+    const res = await openBob({}, `?since=${c0.id}`)
+    const events = await readEvents(res.body!, 1)
+    expect(events.some(e => e.includes('"content":"BCAST2"'))).toBe(true)
   })
 
   it('cold-start drain reaches a deliverable row sitting BEHIND non-deliverable ones (B3)', async () => {

@@ -5,6 +5,7 @@ import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
 import { seedPeerSecrets } from './_seed.ts'
+import { ClaimStore } from '../../src/claims/store.ts'
 
 async function readNEvents(stream: ReadableStream<Uint8Array>, n: number, timeoutMs = 2000): Promise<string[]> {
   const reader = stream.getReader()
@@ -37,7 +38,7 @@ describe('GET /v1/stream', () => {
     db = openDatabase(':memory:')
     const peers = seedPeerSecrets(db, ['alice', 'bob'])
     tok = { alice: peers.alice!.token, bob: peers.bob!.token }
-    app = buildApp({ db, store: new MessageStore(db), fanout: new Fanout(), presence: new PresenceRegistry(), now: () => new Date() })
+    app = buildApp({ db, store: new MessageStore(db), fanout: new Fanout(), presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date() })
   })
 
   it('delivers a posted message to the target\'s open stream', async () => {

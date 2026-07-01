@@ -106,6 +106,11 @@ export function streamRoute(deps: Deps) {
       const cleanup = () => {
         deps.fanout.unsubscribe(sub)
         clearInterval(pingTimer)
+        // Reflect offline immediately on a clean disconnect rather than waiting out the
+        // presence TTL. Keyed on the same (team, handle, label) tuple presence.set uses;
+        // label is this SSE connection's token label. TTL remains the backstop for an
+        // unclean disconnect (crash) that never reaches this cleanup.
+        deps.presence.remove(team_id, handle, c.get('token').label)
       }
       c.req.raw.signal?.addEventListener('abort', cleanup)
 
