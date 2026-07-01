@@ -5,11 +5,12 @@ import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
 import { seedPeerSecrets } from './_seed.ts'
+import { ClaimStore } from '../../src/claims/store.ts'
 
 function appFor(db: Db) {
   return buildApp({
     db, store: new MessageStore(db), fanout: new Fanout(),
-    presence: new PresenceRegistry(), now: () => new Date(),
+    presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date(),
   })
 }
 

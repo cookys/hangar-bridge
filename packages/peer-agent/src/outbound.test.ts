@@ -36,4 +36,59 @@ describe('RelayClient', () => {
     const list = await c.listPeers()
     expect(list[0]!.handle).toBe('alice')
   })
+
+  it('claim: 201 → ok result with renewed flag', async () => {
+    const calls: string[] = []
+    const fakeFetch = vi.fn(async (url: string | URL) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify({
+        claim: { team_id: 'hangar', claim_key: 'k', owner_handle: 'alice', owner_label: 'l', note: null, created_at: 't', expires_at: 't2' },
+        renewed: false,
+      }), { status: 201 })
+    })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    const r = await c.claim({ key: 'k', ttl_seconds: 60 })
+    expect(calls[0]).toBe('https://x/v1/claim')
+    expect(r.ok).toBe(true)
+    if (r.ok) { expect(r.renewed).toBe(false); expect(r.claim.owner_handle).toBe('alice') }
+  })
+
+  it('claim: 409 → conflict result', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'claim_conflict', owner: 'bob', expires_at: 't2' }), { status: 409 }))
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    const r = await c.claim({ key: 'k' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.conflict.owner).toBe('bob')
+  })
+
+  it('claim: other status throws', async () => {
+    const fakeFetch = vi.fn(async () => new Response('boom', { status: 500 }))
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    await expect(c.claim({ key: 'k' })).rejects.toThrow(/claim failed: 500/)
+  })
+
+  it('listClaims calls GET /v1/claims', async () => {
+    const calls: string[] = []
+    const fakeFetch = vi.fn(async (url: string | URL) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify([{ claim_key: 'k', owner_handle: 'alice' }]), { status: 200 })
+    })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    const l = await c.listClaims()
+    expect(calls[0]).toBe('https://x/v1/claims')
+    expect(l[0]!.claim_key).toBe('k')
+  })
+
+  it('releaseClaim: 200 released / 409 conflict', async () => {
+    const okFetch = vi.fn(async () => new Response(JSON.stringify({ released: true }), { status: 200 }))
+    const c1 = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: okFetch as any })
+    const r1 = await c1.releaseClaim('k')
+    expect(r1).toEqual({ ok: true, released: true })
+
+    const conflictFetch = vi.fn(async () => new Response(JSON.stringify({ error: 'claim_conflict', owner: 'bob' }), { status: 409 }))
+    const c2 = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: conflictFetch as any })
+    const r2 = await c2.releaseClaim('k')
+    expect(r2).toEqual({ ok: false, owner: 'bob' })
+  })
 })

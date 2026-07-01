@@ -16,7 +16,35 @@ export function openDatabase(path: string): Db {
   migrateV2ToV3(db)
   migrateV3ToV4(db)
   migrateV4ToV5(db)
+  migrateV5ToV6(db)
   return db
+}
+
+/**
+ * Adds the `claim` table (cooperative advisory asset lock, P4). A NEW table needs no
+ * ALTER, so `CREATE TABLE IF NOT EXISTS` in schema.sql covers fresh DBs and this probe
+ * covers already-open v5 DBs (creates the table if missing, then records version 6).
+ */
+function migrateV5ToV6(db: Db): void {
+  const has = db.prepare(
+    "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='claim'"
+  ).get()
+  if (!has) {
+    db.exec(`
+      CREATE TABLE claim (
+        team_id      TEXT NOT NULL REFERENCES team(id),
+        claim_key    TEXT NOT NULL,
+        owner_handle TEXT NOT NULL,
+        owner_label  TEXT,
+        note         TEXT,
+        created_at   TEXT NOT NULL,
+        expires_at   TEXT NOT NULL,
+        PRIMARY KEY (team_id, claim_key)
+      )
+    `)
+    db.exec('CREATE INDEX IF NOT EXISTS idx_claim_expires ON claim(team_id, expires_at)')
+  }
+  db.exec('INSERT OR IGNORE INTO schema_version(version) VALUES (6)')
 }
 
 /**

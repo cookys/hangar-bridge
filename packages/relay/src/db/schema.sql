@@ -1,4 +1,4 @@
--- hangar-bridge relay schema v5
+-- hangar-bridge relay schema v6
 --
 -- D10 stub posture: single-tenant. `team_id` is constant `'hangar'` everywhere
 -- in application code. Schema retains the column + FK for minimal churn vs
@@ -86,11 +86,28 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_team_at ON audit_log(team_id, at);
 
+-- Cooperative advisory asset lock (v6, fleet-coordination stage 3 / P4). One live
+-- owner per (team, claim_key); expires_at gives TTL-based auto-release so a crashed
+-- claimer never wedges an asset forever (same philosophy as presence TTL). This is a
+-- roster-cooperative lock, NOT namespace-ACL-gated (any authenticated peer may claim).
+CREATE TABLE IF NOT EXISTS claim (
+  team_id      TEXT NOT NULL REFERENCES team(id),
+  claim_key    TEXT NOT NULL,
+  owner_handle TEXT NOT NULL,
+  owner_label  TEXT,
+  note         TEXT,
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,
+  PRIMARY KEY (team_id, claim_key)
+);
+CREATE INDEX IF NOT EXISTS idx_claim_expires ON claim(team_id, expires_at);
+
 INSERT OR IGNORE INTO schema_version(version) VALUES (1);
 INSERT OR IGNORE INTO schema_version(version) VALUES (2);
 INSERT OR IGNORE INTO schema_version(version) VALUES (3);
 INSERT OR IGNORE INTO schema_version(version) VALUES (4);
 INSERT OR IGNORE INTO schema_version(version) VALUES (5);
+INSERT OR IGNORE INTO schema_version(version) VALUES (6);
 
 -- D10: single fixed team row. All authenticated requests bind to this team.
 INSERT OR IGNORE INTO team(id, name, retention_days, created_at)

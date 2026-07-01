@@ -5,6 +5,7 @@ import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
 import { seedPeerSecrets } from './_seed.ts'
+import { ClaimStore } from '../../src/claims/store.ts'
 
 describe('POST /v1/messages', () => {
   let db: Db
@@ -14,7 +15,7 @@ describe('POST /v1/messages', () => {
     db = openDatabase(':memory:')
     const peers = seedPeerSecrets(db, ['alice', 'bob'])
     aliceToken = peers.alice!.token
-    app = buildApp({ db, store: new MessageStore(db), fanout: new Fanout(), presence: new PresenceRegistry(), now: () => new Date() })
+    app = buildApp({ db, store: new MessageStore(db), fanout: new Fanout(), presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date() })
   })
 
   async function post(body: unknown, headers: Record<string, string> = {}) {

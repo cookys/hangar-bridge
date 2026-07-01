@@ -5,6 +5,7 @@ import { Fanout } from '../../src/fanout.ts'
 import { PresenceRegistry } from '../../src/presence/registry.ts'
 import { buildApp } from '../../src/app.ts'
 import { seedPeerSecrets } from './_seed.ts'
+import { ClaimStore } from '../../src/claims/store.ts'
 
 // Read up to n SSE events (or until timeout). Short timeout for "must NOT arrive".
 async function readEvents(stream: ReadableStream<Uint8Array>, n: number, timeoutMs = 1500): Promise<string[]> {
@@ -44,7 +45,7 @@ describe('GET /v1/stream — subject ACL (receive half)', () => {
     const peers = seedPeerSecrets(db, ['alice', 'bob'])
     tokBob = peers.bob!.token
     store = new MessageStore(db)
-    app = buildApp({ db, store, fanout: new Fanout(), presence: new PresenceRegistry(), now: () => new Date() })
+    app = buildApp({ db, store, fanout: new Fanout(), presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date() })
   })
 
   const openBob = (headers: Record<string, string> = {}) =>
