@@ -34,7 +34,13 @@ describe('/v1/claim', () => {
   const list = (token: string) => app.request('/v1/claims', {
     headers: { authorization: `Bearer ${token}` },
   })
-  const release = (token: string, body: unknown) => app.request('/v1/claim', {
+  // Canonical release path: POST /v1/claim/release (body on POST is universally sent).
+  const release = (token: string, body: unknown) => app.request('/v1/claim/release', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const releaseViaDelete = (token: string, body: unknown) => app.request('/v1/claim', {
     method: 'DELETE',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -83,6 +89,13 @@ describe('/v1/claim', () => {
     expect(ok.status).toBe(200)
     expect((await ok.json() as any).released).toBe(true)
     expect((await (await list(aliceToken)).json() as any[]).length).toBe(0)
+  })
+
+  it('DELETE /v1/claim still works as a compat release path', async () => {
+    await claim(aliceToken, { key: 'k', ttl_seconds: 3600 })
+    const ok = await releaseViaDelete(aliceToken, { key: 'k' })
+    expect(ok.status).toBe(200)
+    expect((await ok.json() as any).released).toBe(true)
   })
 
   it('list hides expired claims', async () => {

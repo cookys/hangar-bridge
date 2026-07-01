@@ -100,10 +100,14 @@ export class RelayClient {
     return await res.json() as Claim[]
   }
 
-  /** Release a claim (owner-only). 200 ⇒ {released}; 409 ⇒ held by another live owner. */
+  /**
+   * Release a claim (owner-only). 200 ⇒ {released}; 409 ⇒ held by another live owner.
+   * Uses POST /v1/claim/release (not DELETE-with-body): a request body on POST is
+   * universally sent/parsed, whereas DELETE bodies are dropped by some proxies/clients.
+   */
   async releaseClaim(key: string): Promise<{ ok: true; released: boolean } | { ok: false; owner: string }> {
-    const res = await this.fetchImpl(new URL('/v1/claim', this.opts.relayUrl), {
-      method: 'DELETE', headers: this.authHeaders(), body: JSON.stringify({ key }),
+    const res = await this.fetchImpl(new URL('/v1/claim/release', this.opts.relayUrl), {
+      method: 'POST', headers: this.authHeaders(), body: JSON.stringify({ key }),
     })
     const text = await res.text()
     if (res.status === 200) return { ok: true, released: (JSON.parse(text) as { released: boolean }).released }

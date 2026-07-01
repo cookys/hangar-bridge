@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import {
   HANGAR_TEAM_ID,
@@ -48,8 +48,12 @@ export function claimsRoute(deps: Deps) {
     return c.json(deps.claims.list(HANGAR_TEAM_ID))
   })
 
-  // Release a claim (owner-only).
-  app.delete('/', async c => {
+  // Release a claim (owner-only). Two shapes, same handler:
+  //   POST /v1/claim/release  (CANONICAL — a request body on POST is universally sent/parsed)
+  //   DELETE /v1/claim         (compat — some clients/proxies drop DELETE bodies, so the POST
+  //                             form above is what the peer-agent uses; DELETE stays for callers
+  //                             that prefer REST verbs and can send a DELETE body reliably)
+  const release = async (c: Context<{ Variables: AuthContext }>) => {
     const parsed = ReleaseBody.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400)
     const owner = c.get('peer').handle
@@ -62,7 +66,9 @@ export function claimsRoute(deps: Deps) {
       }, 409)
     }
     return c.json({ released: r.released })
-  })
+  }
+  app.post('/release', release)
+  app.delete('/', release)
 
   return app
 }

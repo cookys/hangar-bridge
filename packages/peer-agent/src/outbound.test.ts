@@ -80,11 +80,18 @@ describe('RelayClient', () => {
     expect(l[0]!.claim_key).toBe('k')
   })
 
-  it('releaseClaim: 200 released / 409 conflict', async () => {
-    const okFetch = vi.fn(async () => new Response(JSON.stringify({ released: true }), { status: 200 }))
+  it('releaseClaim: 200 released / 409 conflict (POST /v1/claim/release)', async () => {
+    const calls: { url: string; method?: string }[] = []
+    const okFetch = vi.fn(async (url: string | URL, init: RequestInit) => {
+      calls.push({ url: String(url), method: init.method })
+      return new Response(JSON.stringify({ released: true }), { status: 200 })
+    })
     const c1 = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: okFetch as any })
     const r1 = await c1.releaseClaim('k')
     expect(r1).toEqual({ ok: true, released: true })
+    // Robustness: release must be a POST (DELETE bodies are dropped by some proxies).
+    expect(calls[0]!.url).toBe('https://x/v1/claim/release')
+    expect(calls[0]!.method).toBe('POST')
 
     const conflictFetch = vi.fn(async () => new Response(JSON.stringify({ error: 'claim_conflict', owner: 'bob' }), { status: 409 }))
     const c2 = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: conflictFetch as any })
