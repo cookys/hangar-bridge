@@ -46,3 +46,6 @@ coverage/
 .claude/improvement-queue.json
 .claude/knowledge/
 .qc/
+
+# git worktrees created by autopilot hetero/verify dispatch
+.claude/worktrees/

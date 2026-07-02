@@ -1,0 +1,12 @@
+{
+  "gentoo": {
+    "display_name": "Gentoo",
+    "owned": [],
+    "interest": ["mple2.status>"]
+  },
+  "openclaw": {
+    "display_name": "Openclaw",
+    "owned": [],
+    "interest": []
+  }
+}
