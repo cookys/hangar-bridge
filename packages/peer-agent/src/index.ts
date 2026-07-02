@@ -18,6 +18,7 @@ import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
 import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import { defaultDispatchStatePath } from './paths.ts'
+import { installLifecycleShutdown } from './lifecycle.ts'
 import { pathToFileURL } from 'node:url'
 import { logJson } from './logger.ts'
 
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
   })
 
   let client: PeerTransport
-  let stream: { start: () => Promise<void> }
+  let stream: { start: () => Promise<void>; stop: () => void | Promise<void> }
 
   if (cfg.transport === 'nats') {
     if (!selfHandle) throw new Error('self is required when transport is nats')
@@ -162,10 +163,21 @@ async function main(): Promise<void> {
     }
   }
   void refreshRoster()
-  setInterval(refreshRoster, 60_000)
+  // unref so this background timer never keeps the event loop alive on its own —
+  // the process should live and die with its stdio parent, not with this timer.
+  const rosterTimer = setInterval(refreshRoster, 60_000)
+  rosterTimer.unref?.()
 
   await server.connect(new StdioServerTransport())
-  await stream.start().catch(err => {
+  // Exit with the stdio parent (Claude Code). Without this the process orphans on
+  // parent death and keeps a stale transport connection alive under the same handle,
+  // which makes presence flap between duplicates. Works for both the SSE and NATS
+  // transports (both expose start()/stop()). See lifecycle.ts.
+  installLifecycleShutdown({
+    cleanup: () => { clearInterval(rosterTimer); void stream.stop() },
+    onShutdown: reason => logJson('info', 'peer.shutdown', { reason }),
+  })
+  stream.start().catch(err => {
     logJson('error', 'peer.stream.fatal', {
       err: String(err instanceof Error ? err.message : err),
     })
