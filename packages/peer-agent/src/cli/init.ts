@@ -40,6 +40,7 @@ export function runInit(opts: InitOpts): { handle: string; secret_sha256_hex: st
   const cfg = {
     relay_url: opts.relayUrl,
     token_path: secretPath,
+    self: opts.handle,
     permission_relay: { enabled: false, routing: 'never_relay' },
     presence: { auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true },
     audit_log: defaultAuditDir(),

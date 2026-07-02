@@ -1,7 +1,7 @@
 import type { Envelope } from '@hangar-bridge/shared'
 import { envelopeToChannelNotification, matchesInterest } from '@hangar-bridge/shared'
 import { SenderGate } from './gate.ts'
-import type { PermissionTracker } from './permission.ts'
+import type { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
 import { logJson } from './logger.ts'
@@ -17,6 +17,10 @@ export interface InboundDispatcherOpts {
   interest?: string[] | undefined
   permissionTracker?: PermissionTracker | undefined
   dispatchTracker?: DispatchTracker | undefined
+  // SEC-M1: authorizes inbound permission_verdicts against the outbound relay-target
+  // set. A verdict whose `from` is not a peer we relayed the request to is DROPPED
+  // (never applied) — closes the compromised-peer verdict-snipe under first-answer-wins.
+  permissionOutboundTracker?: PermissionOutboundTracker | undefined
   replyLimiter?: ReplyLimiter | undefined
 }
 
@@ -48,11 +52,32 @@ export class InboundDispatcher {
       const rid = e.meta.request_id ?? ''
       if (rid) this.opts.permissionTracker.recordIncoming(rid, e.id, e.from)
     }
+    // SEC-M1: a permission_verdict is a directive that (via first-answer-wins) can
+    // auto-approve a local tool call. Authenticate the RESPONDER, not just the
+    // request_id: only apply a verdict from a peer we actually relayed this request to.
+    // Fail-closed: no tracker (relay disabled) ⇒ we never asked ⇒ every verdict is
+    // unsolicited ⇒ drop. Advance the cursor so we don't re-process it, but do NOT emit.
+    if (e.kind === 'permission_verdict') {
+      const rid = e.meta.request_id ?? ''
+      if (!this.opts.permissionOutboundTracker
+          || !rid
+          || !this.opts.permissionOutboundTracker.isAuthorizedResponder(rid, e.from)) {
+        logJson('warn', 'peer.inbound.permission_verdict_unauthorized', {
+          from: e.from, msg_id: e.id, request_id: rid,
+        })
+        this.opts.setCursor(e.id)
+        return
+      }
+      logJson('info', 'peer.inbound.permission_verdict_authorized', {
+        from: e.from, msg_id: e.id, request_id: rid,
+      })
+    }
     if (e.kind === 'task_result' && this.opts.dispatchTracker) {
       const cid = e.meta.correlation_id ?? ''
       if (!cid || !this.opts.dispatchTracker.has(cid)) {
-        // Orphan task_result — either DispatchTracker was lost on restart (in-memory only),
-        // the dispatch TTL expired, or the peer is replying without a known correlation_id.
+        // Orphan task_result — the dispatch TTL expired, or the peer is replying without
+        // a known correlation_id. (A relay/peer-agent restart no longer orphans a live
+        // correlation: DispatchTracker is now disk-backed — see correlation.ts persistPath.)
         // Still emit the notification (caller sees it) but flag for forensics.
         logJson('warn', 'peer.inbound.dispatch_orphan', { from: e.from, msg_id: e.id, correlation_id: cid })
       } else {
