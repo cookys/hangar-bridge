@@ -18,7 +18,7 @@ implementer 家族),depth-0 只做 orchestration、執行 committed artifacts、
 
 | Phase | 內容 | 驗收 | 狀態 |
 |---|---|---|---|
-| P0 | NATS control plane:conf + roster + provision script + config-scanner | AC1/2/3/10/12 | pending |
+| P0 | NATS control plane:conf + roster + provision script + config-scanner | AC1/2/3/10/12 | ✅ `932bba1`(live-verified) |
 | P1 | peer-agent transport seam + anti-spoof + app-side ACL 搬遷 | AC4/8/2b/11/13 | pending |
 | P2 | two-tier delivery matrix | AC6 | pending |
 | P3 | KV permanent dedup | AC5/9 | pending |
@@ -48,4 +48,7 @@ implementer 家族),depth-0 只做 orchestration、執行 committed artifacts、
 ## 決策記錄(CEO log)
 
 - 2026-07-02:tree dual-run 跳過 — `tree.js` 將路徑硬解析至 autopilot repo root,無法指向本 repo(工具限制,非裁量)。TaskCreate 維持權威。
+- 2026-07-02:P0 `engine implement-review` 首發 fail-closed(`reviewer_qualified:false` — 環境缺 gpt-5.5-via-codex 的 qualification 記錄,round 0 即擋)。判定為登記缺口非能力缺口:本 session 稍早 /l5 跑中同一 reviewer 連做六輪對抗 review、抓五輪真實 ACL bug,能力已證。以 `--allow-unqualified-reviewer`(文件化 escape hatch)放行 — DOA 內戰術決策,此處記錄。
+- 2026-07-02:P0 首發 impl 失敗(`question_suspected`,實為 gpt-5.3-codex-spark context window 燒盡)— agent log 顯示它在 runtime 探索 JetStream provisioning 機制(狂打 `/jsz` monitoring endpoints、web search),零檔案。根因是 brief 把 provisioning 寫成「pick ONE mechanism」而 `nats` CLI 未裝。DOA 內策略改變(非 3 連敗、非 Board):裝 `nats` CLI v0.3.1、brief 釘死逐字 `nats` 指令 + 禁 runtime discovery + 精簡篇幅,重派。
 - 2026-07-02:verification-writer 家族選 Anthropic(native Agent)— l6 要求與 implementer(OpenAI)不同家族;agy/Gemini 寫檔有已知 bug(reviewer-only 可靠),故寫 harness 用 Claude、決相關 review 用 gpt-5.5/gemini(read-only 路徑)。
+- 2026-07-02:**P0 完成(`932bba1`)**。內部 gpt-5.5 迴圈 5 輪停在 FIX-THEN-SHIP(non_converged),且 implementer 自測 `nats-config.test.ts` collection 即 crash(自製 HOCON parser)——「內部綠」不可信,depth-0 權威閘(兩套去相關 harness + live nats-server provisioning)才是真閘。共抓修 5 個真 defect,其中 **2 個只有 live 執行抓得到**:provision reconcile 非 idempotent(`--defaults` 對 immutable 欄位失敗)、kv-add 因 admin 缺 `$JS.API.STREAM.NAMES`/`$JS.API.INFO` 而 deadline。移除 implementer 崩潰的自測,以 Claude 去相關 harness 為 canonical(36 assertions)。教訓:hetero implementer 的自測與內部 review 迴圈的「committed/verdict」都非權威,必須 depth-0 真跑。
