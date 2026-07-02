@@ -3,6 +3,7 @@ import type { OutboundMessage } from '@hangar-bridge/shared'
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { ApprovalRouter } from './approval-routing.ts'
 import type { RelayClient } from './outbound.ts'
+import type { PermissionOutboundTracker } from './permission.ts'
 import { logJson } from './logger.ts'
 
 /**
@@ -80,6 +81,12 @@ export interface OutboundPermissionRelayDeps {
   selfHandle: string
   /** How long the relayed request stays valid (mirrors PERMISSION_REQUEST_TTL_MS). */
   ttlMs: number
+  /**
+   * SEC-M1: records the authorized responder set per request_id so the inbound verdict
+   * path can reject a verdict from a peer we did NOT ask. Wired in production; optional
+   * so pure routing-gate tests can omit it.
+   */
+  outboundTracker?: Pick<PermissionOutboundTracker, 'recordRelay'> | undefined
   now?: () => Date
 }
 
@@ -90,13 +97,38 @@ export interface OutboundPermissionRelayDeps {
 export function makeOutboundPermissionHandler(deps: OutboundPermissionRelayDeps) {
   const now = deps.now ?? (() => new Date())
   return async function relay(params: OutboundPermissionRequestParams): Promise<{ relayedTo: string[] }> {
-    const targets = deps.approvalRouter.pick({ excludeSelf: deps.selfHandle })
-    if (!targets || targets.length === 0) return { relayedTo: [] }
-    const expiresAt = new Date(now().getTime() + deps.ttlMs).toISOString()
-    for (const to of targets) {
-      await deps.client.send(buildOutboundPermissionRequest(params, to, deps.selfHandle, expiresAt))
+    // SEC-M2: without a known self handle we cannot prove a picked target isn't
+    // ourselves (self-exclusion fails OPEN on the empty string). Fail closed — relay to
+    // nobody; the local terminal dialog still resolves the prompt. init.ts writes
+    // `self`; only a pre-`self` config reaches here, and re-init/adding `self` re-enables.
+    if (!deps.selfHandle) {
+      logJson('warn', 'peer.permission.relay_disabled', { request_id: params.request_id, reason: 'self_handle_unknown' })
+      return { relayedTo: [] }
     }
-    return { relayedTo: targets }
+    const picked = deps.approvalRouter.pick({ excludeSelf: deps.selfHandle })
+    if (!picked || picked.length === 0) return { relayedTo: [] }
+    // Defense in depth beyond ApprovalRouter: never relay a permission request to self.
+    const targets = picked.filter(t => t !== deps.selfHandle)
+    if (targets.length === 0) return { relayedTo: [] }
+    // SEC-M1: record the authorized responder set BEFORE sending, so a verdict that
+    // races back over SSE can never arrive before we've recorded who is allowed to answer.
+    deps.outboundTracker?.recordRelay(params.request_id, targets)
+    const expiresAt = new Date(now().getTime() + deps.ttlMs).toISOString()
+    // Per-peer resilience: a failed send to one target must not abort the rest (matters
+    // if a policy ever picks multiple concrete peers). A target we authorized but failed
+    // to reach simply won't answer — harmless, since it never received the request_id.
+    const relayed: string[] = []
+    for (const to of targets) {
+      try {
+        await deps.client.send(buildOutboundPermissionRequest(params, to, deps.selfHandle, expiresAt))
+        relayed.push(to)
+      } catch (err) {
+        logJson('warn', 'peer.permission.relay_send_error', {
+          request_id: params.request_id, to, err: String(err instanceof Error ? err.message : err),
+        })
+      }
+    }
+    return { relayedTo: relayed }
   }
 }
 

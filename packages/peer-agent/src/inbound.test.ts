@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { InboundDispatcher } from './inbound.ts'
 import { SenderGate } from './gate.ts'
 import { DispatchTracker } from './correlation.ts'
+import { PermissionOutboundTracker } from './permission.ts'
 import type { Envelope } from '@hangar-bridge/shared'
 
 const envelope = (overrides: Partial<Envelope> = {}): Envelope => ({
@@ -43,12 +44,73 @@ describe('InboundDispatcher', () => {
     expect(sent[0]!.method).toBe('notifications/claude/channel/permission_request')
   })
 
-  it('maps kind=permission_verdict to correct method', () => {
-    d.handle(envelope({
+  it('applies a permission_verdict ONLY from a peer we relayed the request to (SEC-M1)', () => {
+    const outbound = new PermissionOutboundTracker({ ttlMs: 60_000 })
+    outbound.recordRelay('abcde', ['alice']) // we asked alice
+    const d5 = new InboundDispatcher({
+      gate: new SenderGate(['alice', 'bob']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+      permissionOutboundTracker: outbound,
+    })
+    d5.handle(envelope({
+      from: 'alice',
       kind: 'permission_verdict',
       in_reply_to: 'msg_01HRK7Y0000000000000000001',
       meta: { request_id: 'abcde', behavior: 'allow' }
     }))
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.method).toBe('notifications/claude/channel/permission')
+  })
+
+  it('DROPS a permission_verdict from a peer we did NOT ask (compromised-peer snipe) (SEC-M1)', () => {
+    const outbound = new PermissionOutboundTracker({ ttlMs: 60_000 })
+    outbound.recordRelay('abcde', ['alice']) // we asked alice, NOT bob
+    const cursors: string[] = []
+    const d5 = new InboundDispatcher({
+      gate: new SenderGate(['alice', 'bob']), // bob is on the roster (passes SenderGate)
+      emit: n => { sent.push(n) },
+      setCursor: id => cursors.push(id),
+      permissionOutboundTracker: outbound,
+    })
+    // bob races an allow verdict for a request that was only relayed to alice.
+    d5.handle(envelope({
+      id: 'msg_01HRK7Y00000000000000000BB',
+      from: 'bob',
+      kind: 'permission_verdict',
+      in_reply_to: 'msg_01HRK7Y0000000000000000001',
+      meta: { request_id: 'abcde', behavior: 'allow' }
+    }))
+    expect(sent).toHaveLength(0)                               // never applied
+    expect(cursors).toEqual(['msg_01HRK7Y00000000000000000BB']) // but cursor advances
+  })
+
+  it('DROPS a permission_verdict when no outbound tracker exists (we never asked → fail-closed) (SEC-M1)', () => {
+    d.handle(envelope({
+      from: 'alice',
+      kind: 'permission_verdict',
+      in_reply_to: 'msg_01HRK7Y0000000000000000001',
+      meta: { request_id: 'abcde', behavior: 'allow' }
+    }))
+    expect(sent).toHaveLength(0)
+  })
+
+  it('authorizes any roster responder when the request was relayed to @team (SEC-M1)', () => {
+    const outbound = new PermissionOutboundTracker({ ttlMs: 60_000 })
+    outbound.recordRelay('abcde', ['@team'])
+    const d5 = new InboundDispatcher({
+      gate: new SenderGate(['alice', 'bob']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+      permissionOutboundTracker: outbound,
+    })
+    d5.handle(envelope({
+      from: 'bob',
+      kind: 'permission_verdict',
+      in_reply_to: 'msg_01HRK7Y0000000000000000001',
+      meta: { request_id: 'abcde', behavior: 'allow' }
+    }))
+    expect(sent).toHaveLength(1)
     expect(sent[0]!.method).toBe('notifications/claude/channel/permission')
   })
 

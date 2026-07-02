@@ -9,6 +9,9 @@ Deferred work, ideas, and known gaps. autopilot:next scans this file. Promote an
 ## Open
 - [ ] Phase-A self-loopback + Phase-B cross-host (openclaw↔cookys-gentoo) — finish bring-up per README status.  (size: L)
 - [ ] CLAUDE.md "Windows-specific notes" section may be stale — dev now on Linux (zsh); audit & trim.  (size: S)
+- [ ] Live-peer e2e for outbound permission relay — two real Claude sessions under `CLAUDE_DRIVER=cli` (CC v2.1.81+) confirming CC emits `notifications/claude/channel/permission_request` and applies the returned verdict; current coverage is unit-level only (P2.3).  (size: S)
+- [ ] DispatchTracker: clear a matched correlation on task_result instead of leaving it to TTL (`inbound.ts` dispatch-matched branch) — tightens the correlation window; today a matched entry lingers until DISPATCH_REQUEST_TIMEOUT_MS.  (size: S)
+- [ ] DispatchTracker persistence is a synchronous `writeFileSync` on the dispatch hot path — fine at current volume; revisit (async/batched) if dispatch throughput grows.  (size: S)
 
 ## Done
 _(move completed items here with the commit/date)_

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { OutboundMessage } from '@hangar-bridge/shared'
 import { ApprovalRouter } from './approval-routing.ts'
+import { PermissionOutboundTracker } from './permission.ts'
 import {
   buildOutboundPermissionRequest,
   makeOutboundPermissionHandler,
@@ -114,6 +115,46 @@ describe('makeOutboundPermissionHandler — routing gate', () => {
     expect(relayedTo).toEqual(['@team'])
     expect(sent[0]!.to).toBe('@team')
     expect(sent[0]!.subject).toBeNull()
+  })
+
+  it('SEC-M2: empty selfHandle fails CLOSED (cannot exclude self → relays to nobody)', async () => {
+    const { sent, client } = fakeClient()
+    const relay = makeOutboundPermissionHandler({
+      client,
+      approvalRouter: new ApprovalRouter({ routing: 'ask_specific_peer:bob' }),
+      selfHandle: '', // unknown self
+      ttlMs: 60_000,
+    })
+    const { relayedTo } = await relay(PARAMS)
+    expect(relayedTo).toEqual([])
+    expect(sent).toHaveLength(0)
+  })
+
+  it('a failed send is swallowed (no throw) and excluded from relayedTo', async () => {
+    const relay = makeOutboundPermissionHandler({
+      client: { send: async () => { throw new Error('relay down') } },
+      approvalRouter: new ApprovalRouter({ routing: 'ask_specific_peer:bob' }),
+      selfHandle: 'alice',
+      ttlMs: 60_000,
+    })
+    const { relayedTo } = await relay(PARAMS) // must not reject
+    expect(relayedTo).toEqual([])
+  })
+
+  it('SEC-M1: records the relay-target set on the outbound tracker BEFORE sending', async () => {
+    const { client } = fakeClient()
+    const tracker = new PermissionOutboundTracker({ ttlMs: 60_000 })
+    const relay = makeOutboundPermissionHandler({
+      client,
+      approvalRouter: new ApprovalRouter({ routing: 'ask_specific_peer:bob' }),
+      selfHandle: 'alice',
+      ttlMs: 60_000,
+      outboundTracker: tracker,
+    })
+    await relay(PARAMS)
+    // The exact responder set is now authorized; a non-target peer is not.
+    expect(tracker.isAuthorizedResponder('abcde', 'bob')).toBe(true)
+    expect(tracker.isAuthorizedResponder('abcde', 'mallory')).toBe(false)
   })
 })
 

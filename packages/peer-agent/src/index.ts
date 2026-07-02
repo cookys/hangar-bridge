@@ -9,7 +9,7 @@ import { registerTools, TOOL_DESCRIPTORS, TOOL_DESCRIPTOR_RESPOND, TOOL_DESCRIPT
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
 import { StreamClient } from './stream.ts'
-import { PermissionTracker } from './permission.ts'
+import { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
 import { registerOutboundPermissionRelay } from './permission-relay.ts'
@@ -28,6 +28,10 @@ async function main(): Promise<void> {
   const client = new RelayClient({ relayUrl: cfg.relay_url, token })
   const permissionTracker = permissionRelayEnabled
     ? new PermissionTracker({ ttlMs: PERMISSION_REQUEST_TTL_MS })
+    : undefined
+  // SEC-M1: outbound relay-target authorization for inbound permission_verdicts.
+  const permissionOutboundTracker = permissionRelayEnabled
+    ? new PermissionOutboundTracker({ ttlMs: PERMISSION_REQUEST_TTL_MS })
     : undefined
   const dispatchTracker = new DispatchTracker({
     ttlMs: DISPATCH_REQUEST_TIMEOUT_MS,
@@ -70,6 +74,7 @@ async function main(): Promise<void> {
       approvalRouter,
       selfHandle: cfg.self ?? '',
       ttlMs: PERMISSION_REQUEST_TTL_MS,
+      outboundTracker: permissionOutboundTracker,
     })
   }
 
@@ -99,6 +104,7 @@ async function main(): Promise<void> {
     interest: cfg.subjects.interest,
     permissionTracker,
     dispatchTracker,
+    permissionOutboundTracker,
     replyLimiter,
   })
 

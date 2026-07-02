@@ -1,4 +1,6 @@
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { logJson } from './logger.ts'
 
 export interface DispatchTrackerOpts {
   ttlMs: number
@@ -89,7 +91,15 @@ export class DispatchTracker {
           this.map.set(k, v)
         }
       }
-    } catch { /* corrupt/unreadable → start empty */ }
+    } catch (err) {
+      // PERSIST-m1: don't fail silently — a corrupt/unreadable state file is a real
+      // signal. Preserve the bad file (rename, best-effort) BEFORE the next persist
+      // overwrites it, so the evidence survives for forensics, then start empty.
+      logJson('warn', 'peer.dispatch_state.load_error', {
+        path, err: String(err instanceof Error ? err.message : err),
+      })
+      try { renameSync(path, `${path}.corrupt-${Date.now()}`) } catch { /* best-effort */ }
+    }
   }
 
   /**
@@ -101,12 +111,25 @@ export class DispatchTracker {
   private persist(): void {
     const path = this.opts.persistPath
     if (!path) return
+    // PERSIST-M1: per-process unique temp name (pid + random) so two peer-agents that
+    // happen to share a config dir can't collide on a fixed `${path}.tmp` mid-rename.
+    // (Sharing a config dir is itself an anti-pattern — project isolation gives each a
+    // distinct dir — but the temp name must not be the thing that corrupts a write.)
+    const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
     try {
       const obj: Record<string, Entry> = {}
       for (const [k, v] of this.map) obj[k] = v
-      const tmp = `${path}.tmp`
       writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 })
       renameSync(tmp, path)
-    } catch { /* best-effort durability */ }
+    } catch (err) {
+      // Best-effort durability: a write failure must not break the live in-memory
+      // tracker or the dispatch that triggered it — but no longer swallow it silently.
+      logJson('warn', 'peer.dispatch_state.persist_error', {
+        path, err: String(err instanceof Error ? err.message : err),
+      })
+      // Don't leak the temp file if write succeeded but rename failed (unique names
+      // would otherwise accumulate orphaned .tmp files over repeated failures).
+      try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* best-effort */ }
+    }
   }
 }

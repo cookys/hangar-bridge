@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DispatchTracker } from './correlation.ts'
@@ -99,11 +99,15 @@ describe('DispatchTracker — durable persistence (survives restart)', () => {
     expect(after.size()).toBe(0)
   })
 
-  it('starts empty (no throw) when the state file is corrupt', () => {
+  it('starts empty (no throw) when the state file is corrupt, and preserves the bad file (PERSIST-m1)', () => {
     writeFileSync(statePath, 'not json {{{')
     const t = new DispatchTracker({ ttlMs: 1000, persistPath: statePath })
     expect(t.size()).toBe(0)
-    // and recovers — a subsequent write is well-formed JSON
+    // The corrupt file is preserved (renamed) for forensics, not silently overwritten.
+    const corrupt = readdirSync(dir).filter(f => f.startsWith('dispatch-state.json.corrupt-'))
+    expect(corrupt).toHaveLength(1)
+    expect(readFileSync(join(dir, corrupt[0]!), 'utf8')).toBe('not json {{{')
+    // and recovers — a subsequent write is well-formed JSON at the canonical path
     t.recordOutgoing('cid-new', 'msg_n', 'bob')
     expect(JSON.parse(readFileSync(statePath, 'utf8'))['cid-new'].peer_handle).toBe('bob')
   })
