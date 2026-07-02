@@ -1,6 +1,6 @@
 # Plan — relay→NATS migration (Direction A)
 
-> **Status:** 🟡 DRAFT — pending loop review
+> **Status:** 🟡 IN LOOP-REVIEW — g55xh (gpt-5.5 xhigh) blocking trajectory 7→… (R1 fixed).
 > **Owner:** cookys (Board)
 > **Repo / Branch:** `cookys/hangar-bridge` · base `develop` · impl branch `feat/relay-to-nats-migration`
 > **Frame:** retire relay transport/infra → `nats-server` (core NATS + JetStream + KV); converge to envelope schema + MCP peer-agent + future arbitration substrate
@@ -26,7 +26,7 @@ The `packages/shared/src/ulid.ts` monotonic factory and the relay resume cursor 
 | `packages/relay/src/db/schema.sql` (message/idempotency/delivery persistence) | `packages/shared/src/channel.ts` `<channel>` notification renderer and escaped-body injection gate (`</channel>` must never appear literally in escaped bodies) |
 | `packages/relay/src/messages/store.ts` durable message store + `id` cursor semantics | `packages/peer-agent/src/instructions.ts` prompt-injection instructions string (explicitly UNCHANGED, security-critical) |
 | `packages/relay/src/auth/middleware.ts` bearer middleware + `from` rewrite | `packages/shared/src/ulid.ts` retained as shared utility until all transport paths are re-based on stream sequence/KV revision |
-| `packages/relay/src/auth/peers-file.ts` static peers bootstrap gate | `packages/relay/src/auth/peers-file.ts` retired file no longer consulted for transport auth; subject ownership and ACL logic moves to NATS config |
+| `packages/relay/src/auth/peers-file.ts` static peers bootstrap gate (retired; replaced by the NATS credential/ACL artifact `packages/operations/nats/nats-server.conf` for transport auth) | **App-side envelope-subject ACL** (fail-closed namespace ownership — publisher-owns + recipient-owns, `subject`-vs-`@team` direct-only, subjected reactive-kind rejection) relocated into `packages/peer-agent/src/` per SUBJECT_ROUTING_SPEC.md — NATS subject permissions gate `fleet.<handle>.>` but CANNOT inspect `Envelope.subject`, so this logic stays app-side (see AC11) |
 
 ## 1. Problem
 
@@ -39,7 +39,8 @@ The immediate objective is to retire relay transport/infra now, not later, witho
 - **Objective:** complete migration to NATS-backed transport + JetStream + KV while keeping envelope protocol, six-kind wire semantics, and security invariants intact; keep relay source as transitional compatibility path until final phase.
 - **KR1 (Direction A closure):** all transport-level functionality in `@hangar-bridge/relay` is retired by final phase and replaced by operationally equivalent NATS paths with testable gates.
 - **AC1 — JetStream single-node and durable fsync:** `nats-server` deployed as single-node R1 streams with `replicas: 1` and `sync_interval: always` in the shipped config.
-- **AC2 — Static NKey auth and deny-by-default subject publish ACL:** publishes outside `fleet.<handle>.>` are denied; `subject` prefix enforcement is transport-level only.
+- **AC2 — Static NKey auth and deny-by-default subject publish ACL:** every fleet user authenticates by `nkey` only (no password/token fallback), publish allow is EXACTLY `fleet.<handle>.>`, deny-by-default. This transport-level subject-prefix ACL bounds WHERE a peer may publish; it is DISTINCT from the app-side envelope-subject namespace ACL (AC11) — NATS cannot inspect `Envelope.subject`. Gate: a named config test asserts each user block has an `nkey`, no `password`/`token`/`user` fallback line exists, and `publish.allow` is exactly `["fleet.<handle>.>"]` with deny-by-default.
+- **AC11 — App-side envelope-subject ACL preserved (SUBJECT_ROUTING_SPEC.md fail-closed namespace ownership).** The fork's subject-ACL (publisher-owns AND recipient-owns the namespace; `subject != null ⇒ concrete `to`, never `@team`; subjected reactive/system kinds rejected; ack-channel `subject=null`) CANNOT be enforced by NATS subject permissions (which see only the wire subject, not the JSON `Envelope.subject`). It MUST relocate into the peer-agent (app-side), with the sender identity derived from the authenticated `fleet.<handle>.>` publish subject (AC2b), never from envelope `from`. Gate: executable tests for (a) publisher-not-owner rejected, (b) recipient-not-owner rejected, (c) `subject != null && in_reply_to != null` rejected, (d) subjected `presence_update`/`permission_*` rejected, (e) `subject != null && to == @team` rejected — reproducing `routes/messages.ts` + `routes/stream.ts` chokepoint semantics app-side. The single shared matcher (`namespaceOf`/`ownsNamespace`/`matchesInterest`) stays the sole implementation.
 - **AC2b — Subject-derived sender identity (anti-spoof):** peer-agent MUST derive trusted sender from authenticated publish subject (`fleet.<handle>.>`), never from envelope `from`; spoofed `from` in envelope is rejected or overridden.
 - **AC3 — `$SYS` account separation:** `$SYS` becomes an explicit admin account, not implicit/default anonymous.
 - **AC4 — Reconnect overflow is never silent:** publishes during disconnect/buffer overflow must surface explicit failure or be queued to durable app outbox semantics.
@@ -71,7 +72,7 @@ The immediate objective is to retire relay transport/infra now, not later, witho
 - Preserve peer-agent envelope parsing path via `packages/shared/src/channel.ts` in all inbound paths.
 - Coverage thresholds remain shared 95%, relay 85%, peer-agent 80%; do not lower any threshold to pass tests.
 - Do not modify `docs/plans/2026-06-25-cross-project-isolation.md` scope.
-- No task may reduce security assumptions to transport-only identity; subject-level identity must be enforced application-side where required.
+- No task may reduce security assumptions to transport-only identity; subject-level identity must be enforced application-side where required. The NATS `fleet.<handle>.>` publish permission bounds the transport prefix ONLY; the envelope-subject namespace ACL (publisher-owns + recipient-owns, fail-closed) and the subject-derived `from` MUST be enforced app-side in the peer-agent (AC2b + AC11) — the relay's `routes/messages.ts`/`routes/stream.ts` chokepoint semantics are preserved, not dropped.
 
 ## 3. File-structure map
 
@@ -92,7 +93,9 @@ The immediate objective is to retire relay transport/infra now, not later, witho
 | `packages/peer-agent/src/correlation.ts` | replace/extend | task correlation for `task_dispatch`/`task_result` + `in_reply_to` enforcement checks |
 | `packages/peer-agent/src/instructions.ts` | unchanged | security wording, anti-injection posture remains unchanged |
 | `packages/peer-agent/src/inbound.ts` | update call sites | continues peer message injection via shared `channel.ts` serializer |
-| `docs/VISION.md` / `docs/architecture.md` | keep as source of truth; no schema drift |
+| `packages/operations/nats/nats-server.conf` | **add (new)** | the hardened NATS config — single-node R1, `sync_interval: always`, static NKey users with `publish.allow=["fleet.<handle>.>"]` deny-by-default, isolated `$SYS` account with dedicated credentials, NO `leafnodes` block. The load-bearing artifact behind AC1/AC2/AC3/AC10 config-scanner tests. |
+| `packages/operations/nats/nats-config.test.ts` (or e2e) | **add (new)** | CI config-scanner asserting `replicas: 1`, `sync_interval: always`, every user has `nkey` + no password/token fallback, exact `fleet.<handle>.>` publish allow, `$SYS` isolated, no anonymous `$SYS`-only bypass, no `leafnodes`. |
+| `docs/VISION.md`, `docs/architecture.md` | keep as source of truth | no schema drift; architecture.md updated at Phase 5 cutover to describe the NATS topology |
 | `docs/plans/2026-07-02-relay-to-nats-survey.md` | reference-only | keep as decision source for this plan only |
 | `packages/operations/systemd/hangar-bridge-relay.service` | replace/join | new hardened NATS unit lifecycle, no transport relay service as primary path |
 | `packages/operations/systemd/install-relay.sh` | extend | installs/reloads nats-server unit and optionally relay for rollback |
@@ -107,23 +110,27 @@ The immediate objective is to retire relay transport/infra now, not later, witho
 ### Phase 0 — NATS control-plane foundation in parallel with relay (size: H)
 Goal: ship a hardened NATS control plane while keeping relay running for rollback.
 
-Done when: `packages/operations/systemd/hangar-bridge-relay.service` and `packages/operations/systemd/install-relay.sh` can run a NATS unit side-by-side, and AC1, AC2, AC3, AC10 gates are proven in CI; relay remains untouched for production traffic during this phase.
+Done when: `packages/operations/systemd/hangar-bridge-relay.service` and `packages/operations/systemd/install-relay.sh` can run a NATS unit side-by-side against the new `packages/operations/nats/nats-server.conf`, and AC1, AC2, AC3, AC10 gates are proven in CI (`nats-config.test.ts`); relay remains untouched for production traffic during this phase.
+
+Resolved operational decisions (were open questions): **NKey secret storage** — each host's NKey seed lives at `~/.config/hangar-bridge/nats/<handle>.nk` mode `0600` (mirrors the existing `~/.config/hangar-bridge/secret` storage in architecture §4); the server config references public NKeys only (private seeds never leave the host, per the NKeys challenge-response model). **Rotation** — rotate by generating a new seed, updating the user's public `nkey` in `nats-server.conf`, and `systemctl reload` (a reload drops live connections cleanly, mirroring the relay re-seed discipline). A CI test asserts the config references no private seed material and no plaintext credential.
 
 Rollback trigger and step: if any hardening gate fails, stop NATS rollout and continue relay-only operation by uninstalling/disable the new unit. No source-path changes are introduced in this phase.
 
 ### Phase 1 — Peer-agent transport seam and anti-spoof hardening (size: H)
 Goal: replace SSE stream/client path in `packages/peer-agent/src/stream.ts` with a NATS transport seam that preserves envelope serialization via `packages/shared/src/channel.ts`.
 
-Done when: AC4, AC8, AC2b are passing, and inbound/outbound code paths show equivalent behavior with deterministic `subject` and `from` handling.
+Done when: AC4, AC8, AC2b, and AC11 (app-side envelope-subject ACL relocated from the retired `routes/messages.ts`/`routes/stream.ts` chokepoints into the peer-agent, using the single shared matcher) are passing, and inbound/outbound code paths show equivalent behavior with deterministic `subject` and `from` handling.
 
 Rollback trigger and step: any regression in normal tool flow (dispatch/task/listening) reverts peer-agent transport config flag to SSE/relay path, leaving relay route available as the live fallback.
 
 ### Phase 2 — Two-tier delivery matrix and kind routing (size: L)
 Goal: classify every one of six envelope kinds and enforce the delivery map.
 
-Done when: AC6 matrix is implemented and validated with integration tests proving `task_dispatch`/`task_result` backfill via JetStream and `chat`/`presence_update` no-backfill on core NATS; `permission_request` + `permission_verdict` explicitly assigned to reactive core NATS path with preserved `in_reply_to` for both.
+Done when: AC6 matrix is implemented and validated with integration tests proving `task_dispatch`/`task_result` backfill via JetStream and `chat`/`presence_update` no-backfill on core NATS; `permission_request` + `permission_verdict` are assigned to the reactive core-NATS path. Per the `superRefine` invariant, `in_reply_to` is REQUIRED only on `permission_verdict` and `task_result` (→ their originating request/dispatch); `permission_request` does NOT require `in_reply_to`. Tests assert `permission_verdict` and `task_result` always carry a valid `in_reply_to`, and that a `permission_verdict`/`task_result` missing it is rejected by the shared schema.
 
-Rollback trigger and step: if matrix causes type regressions, keep all peer traffic on request-reply core NATS temporarily and park JetStream routing behind feature flag until matrix is corrected.
+Resolved (was an open question): the JetStream stream for `task_dispatch`/`task_result` is **strict `WorkQueuePolicy` retention only** (a message is removed once acked by its single consumer) — no history/audit-replay metadata stream in this plan. Audit-replay tooling is explicitly out-of-scope (§7). Test asserts the stream is created with `retention: workqueue` and `replicas: 1` (AC1).
+
+Rollback trigger and step: if matrix causes type regressions, keep all peer traffic on request-reply core NATS temporarily and park JetStream routing behind a feature flag until matrix is corrected.
 
 ### Phase 3 — KV substrate for permanent dedup and correlation retention (size: H)
 Goal: introduce durable key-tracked task dedup and CAS-backed repeat suppression independent of `Nats-Msg-Id`.
@@ -148,17 +155,18 @@ Rollback trigger and step: if operational cutover fails, keep relay artifact and
 
 ## 5. Test / validation
 
-- **AC1 (JetStream hardening):** config assertion (unit test or integration smoke) checks `sync_interval: always` and every relevant stream has `replicas: 1`. A R1 simulation path is part of the same assertion suite.
-- **AC2 (static auth + fail-closed negatives):** negative integration tests publish on `fleet.bad-handle.>` and verify deny; same test suite includes a fixture representing `$SYS`-only accounts and asserts anonymous/unauthenticated connect attempts are rejected.
+- **AC1 (JetStream hardening):** `nats-config.test.ts` scans `packages/operations/nats/nats-server.conf` and asserts `sync_interval: always`; an integration smoke asserts every JetStream stream is created with `replicas: 1` (single-node R1). Backed by the config file, not prose.
+- **AC2 (static NKey auth + fail-closed negatives):** (a) `nats-config.test.ts` asserts every user block has an `nkey`, NO `password`/`token`/`user` fallback exists, and `publish.allow` is exactly `["fleet.<handle>.>"]` deny-by-default; (b) negative integration tests publish on `fleet.bad-handle.>` and verify deny; (c) a fixture in the GHSA-fr2g-9hjm-wr23 `$SYS`-only-accounts shape asserts anonymous/unauthenticated connect attempts are REJECTED (fail-closed verified by test, never trusted from config appearance).
 - **AC2b (application anti-spoof):** negative test posts an envelope with `from: spoofed` under `fleet.<real_handle>.>` and expects peer-agent to reject or rewrite sender identity to the authenticated handle; assertions also verify no task or message is accepted as from the spoofed handle.
-- **AC3 (`$SYS` segregation):** auth test proves non-`$SYS` user cannot access `$SYS.>` subjects and only an explicit `$SYS` principal can subscribe/publish there.
+- **AC3 (`$SYS` segregation):** `nats-config.test.ts` asserts `$SYS` has a dedicated credential; an auth test proves a non-`$SYS` user cannot access `$SYS.>` subjects and only the explicit `$SYS` principal can subscribe/publish there.
 - **AC4 (reconnect overflow):** disconnect/reconnect harness drives publish bursts above reconnect buffer; test asserts explicit error event or durable app-level outbox entry for all dropped publishes.
 - **AC5 (permanent dedup):** repeat same `task_dispatch` with same correlation ID after a mocked clock advances past 2-minute `Nats-Msg-Id` window; test expects one active dispatch entry only (KV CAS win).
 - **AC6 (kind matrix + backfill behavior):** matrix test verifies all six kinds are assigned exactly once; offline `task_dispatch` replays on reconnect via JetStream, offline `chat` does not. A second test proves `permission_verdict` and `task_result` always retain valid `in_reply_to`.
 - **AC7 (presence hybrid):** test harness drops `$SYS` stream and proves heartbeat-only path still marks peers correctly; stale heartbeat scenario proves offline state from TTL expiry overrides any cached `$SYS` CONNECT impression.
 - **AC8 (nats.js v3):** dependency-check test or lockfile check ensures `@nats-io/transport-node`, `@nats-io/jetstream`, `@nats-io/kv` are present and no monolithic `nats` package is used in transport package manifests.
-- **AC9 (no KV TTL lease):** design test verifies the substrate only uses CAS/revision with heartbeat and staleness checks; no expiry-based correctness path is asserted. A reclaim test validates stale holder recovery via revision-staleness or documents explicit protocol defer point.
-- **AC10 (no leafnodes + no request-info trust):** config scanner test asserts no `leafnodes` block exists in shipped NATS config and no runtime auth flow trusts `Nats-Request-Info` values as identity.
+- **AC9 (no KV TTL lease + KV known-issues handled):** executable tests, not prose. (a) A dedup/CAS test proves suppression is keyed on KV revision/CAS, NEVER on TTL expiry (grep-assert no `ttl`/expiry field drives correctness in the dedup module). (b) A `history=1` test proves the watcher path tolerates a silently-skipped revision (a consumer re-reads current revision via `get` and does not assume every revision is observed via `watch` — mitigates #4643/#4710/#4803). (c) A stale-holder reclaim test drives a holder past its heartbeat and proves reclamation via revision-staleness CAS (a losing CAS is retried/failed explicitly, never silently). No "documents a defer point" escape hatch — each is a passing test in Phase 3.
+- **AC10 (no leafnodes + no request-info trust):** config-scanner test (`packages/operations/nats/nats-config.test.ts`) asserts the shipped `packages/operations/nats/nats-server.conf` contains no `leafnodes` block; a peer-agent test asserts no runtime auth/identity flow reads `Nats-Request-Info` as a trust source.
+- **AC11 (app-side envelope-subject ACL):** executable tests reproducing the relay chokepoints app-side — publisher-not-owner rejected, recipient-not-owner rejected, `subject != null && in_reply_to != null` rejected, subjected `presence_update`/`permission_request`/`permission_verdict` rejected, `subject != null && to == @team` rejected; sender identity taken from the authenticated `fleet.<handle>.>` subject (AC2b), never envelope `from`. The single shared `namespaceOf`/`ownsNamespace`/`matchesInterest` matcher remains the only implementation.
 
 ### Coverage-gate disposition
 
@@ -181,13 +189,16 @@ Rollback trigger and step: if operational cutover fails, keep relay artifact and
 - Leafnode federation is deferred and blocked by AC10 until a separate threat-model and identity plan is approved.
 - nsc/JWT full auth machinery is out-of-scope; static NKeys are accepted for fixed 2–5 host fleet.
 - Multi-node JetStream clustering is out-of-scope; AC1 fixes single-node R1 for this phase.
+- **Audit-replay / message-history tooling** on top of JetStream is out-of-scope; the task stream is strict `WorkQueuePolicy` (Phase 2). A future durable-history stream is a separate plan.
 
-## 8. Open questions
+## 8. Open questions (Board only)
 
-- Should the same NATS subject namespace (`fleet.<handle>.>`) include per-kind or per-function suffixing beyond current team/handle conventions?
-- Should initial JetStream retention/window be strict WorkQueue only or include message history metadata for future audit replay tooling?
-- What is the first-phase operational policy for NATS secrets rotation cadence and storage location policy for peer credentials?
+- Subject-namespace granularity: keep `fleet.<handle>.>` as the sole transport prefix (this plan's assumption), or introduce per-kind suffixes (`fleet.<handle>.task.>`, `fleet.<handle>.chat.>`) for finer NATS-side ACLs? (Deferred; the envelope-subject ACL — AC11 — already gives per-namespace authority app-side, so this is an optimization, not a correctness gap.)
+- Cutover sequencing across the live fleet: big-bang vs. per-host rolling (both hosts must agree on transport per envelope). Operational judgment for the Board at Phase 5.
+
+_(Resolved and folded into the plan: NKey secret storage + rotation → Phase 0; JetStream retention = strict WorkQueue → Phase 2; audit-replay → §7 out-of-scope.)_
 
 ## Review log
 
-- R0 author: `docs/plans/2026-07-02-relay-to-nats-migration.md` drafted from survey findings + `docs/VISION.md` + `docs/architecture.md` + `SUBJECT_ROUTING_SPEC.md` + `CLAUDE.md`; status remains `🟡 DRAFT — pending loop review`.
+- **R0 author (gpt-5.3-codex-spark, hetero dispatch):** drafted from the survey findings + `docs/VISION.md` + `docs/architecture.md` + `SUBJECT_ROUTING_SPEC.md` + `CLAUDE.md`. Brief itself was spec-reviewed (g55xh, 6 blocking) before dispatch — folding in AC2b (subject-derived `from`), AC6 six-kind matrix, AC9 no-KV-TTL-lease, AC10 no-leafnodes, `channel.ts` escaping preservation.
+- **R1 (g55xh loop-review, gpt-5.5 xhigh): VERDICT REVISE, 7 blocking.** Fixed all 7: (1) envelope-subject ACL cannot move to NATS config (NATS can't see `Envelope.subject`) → added **AC11** app-side subject-ACL with publisher/recipient-owner + direct-only + reactive-kind tests, corrected the retirement boundary + §2.5; (2) `peers-file.ts` no longer listed in both columns; (3) added the concrete `packages/operations/nats/nats-server.conf` + `nats-config.test.ts` to the file map as the load-bearing config artifact; (4) AC2 now a named NKey-only config test (no password/token fallback, exact `fleet.<handle>.>` allow); (5) AC9 KV known-issues (#4643/#4710/#4803, `history=1`) are executable tests, removed the "documents a defer point" escape hatch; (6) Phase 2 `in_reply_to` corrected — required only on `permission_verdict`/`task_result`, not `permission_request`; (7) resolved the load-bearing open questions (NKey secret storage+rotation → Phase 0; JetStream retention = strict WorkQueue → Phase 2; audit-replay → §7 out-of-scope). Non-blocking confirmations: AC2b anti-spoof + §7 deferrals were assessed satisfied.
