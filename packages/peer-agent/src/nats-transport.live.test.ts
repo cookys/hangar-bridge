@@ -1,79 +1,193 @@
-// TEMPORARY depth-0 live verification (deleted after run). Proves the NATS transport
-// seam works end-to-end against a real nats-server: anti-spoof from-stamp + team self-drop.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import { NatsTransport } from './nats-transport.ts'
-import type { RosterMap } from './subject-acl.ts'
 import type { Envelope } from '@hangar-bridge/shared'
 
-const NATS = process.env.NATS_SERVER_BIN ?? join(homedir(), '.local/bin/nats-server')
-const NK = process.env.NATS_BIN ?? join(homedir(), '.local/bin/nats')
+const NATS_SERVER = process.env.NATS_SERVER_BIN ?? join(homedir(), '.local/bin/nats-server')
+const NATS = process.env.NATS_BIN ?? join(homedir(), '.local/bin/nats')
 const PORT = 34333
 const URL = `nats://127.0.0.1:${PORT}`
 
-function mintSeed(): { seed: string; pub: string } {
-  const seed = execFileSync(NK, ['auth', 'nkey', 'gen', 'user'], { encoding: 'utf8' }).match(/S[A-Z0-9]{40,}/)![0]
-  const f = join(dir, `${Math.random().toString(36).slice(2)}.nk`)
-  writeFileSync(f, seed + '\n'); chmodSync(f, 0o600)
-  const pub = execFileSync(NK, ['auth', 'nkey', 'show', f], { encoding: 'utf8' }).match(/U[A-Z0-9]{40,}/)![0]
-  return { seed, pub }
+type SeedBundle = { seed: string; pub: string; seedPath: string }
+
+function mintSeed(dir: string): SeedBundle {
+  const seed = execFileSync(NATS, ['auth', 'nkey', 'gen', 'user'], { encoding: 'utf8' }).match(/S[A-Z0-9]{40,}/)![0]
+  const seedPath = join(dir, `seed-${Math.random().toString(36).slice(2)}.nk`)
+  writeFileSync(seedPath, `${seed}\n`)
+  chmodSync(seedPath, 0o600)
+  const pub = execFileSync(NATS, ['auth', 'nkey', 'show', seedPath], { encoding: 'utf8' }).match(/U[A-Z0-9]{40,}/)![0]
+  return { seed, pub, seedPath }
 }
 
-let dir: string, srv: ChildProcess, alpha: NatsTransport, beta: NatsTransport
+function runNatsCommand(adminSeedPath: string, args: string[]): void {
+  execFileSync(NATS, ['--server', URL, '--nkey', adminSeedPath, '--inbox-prefix', '_INBOX.admin', ...args], {
+    encoding: 'utf8',
+    stdio: 'ignore',
+  })
+}
+
+function writeServerConfig(
+  dir: string,
+  alphaPub: string,
+  betaPub: string,
+  adminPub: string,
+): string {
+  const conf = `
+port: ${PORT}
+jetstream {
+  store_dir: ${JSON.stringify(join(dir, 'js-store'))}
+}
+accounts {
+  HANGAR {
+    jetstream: enabled
+    users: [
+      {
+        nkey: ${alphaPub}
+        permissions: {
+          publish: { allow: ["fleet.alpha.>", "$JS.>", "_INBOX.alpha.>"] }
+          subscribe: { allow: ["fleet.*.to.alpha.>", "fleet.*.to.team.>", "$JS.>", "_INBOX.alpha.>"] }
+        }
+      },
+      {
+        nkey: ${betaPub}
+        permissions: {
+          publish: { allow: ["fleet.beta.>", "$JS.>", "_INBOX.beta.>"] }
+          subscribe: { allow: ["fleet.*.to.beta.>", "fleet.*.to.team.>", "$JS.>", "_INBOX.beta.>"] }
+        }
+      },
+      {
+        nkey: ${adminPub}
+        permissions: {
+          publish: { allow: ["$JS.>", "_INBOX.>"] }
+          subscribe: { allow: ["$JS.>", "_INBOX.>"] }
+        }
+      }
+    ]
+  }
+}
+`
+  const confPath = join(dir, 'c.conf')
+  writeFileSync(confPath, conf)
+  return confPath
+}
+
+function provisionJetstream(adminSeedPath: string): void {
+  const subjects = [
+    'fleet.*.to.alpha.task_dispatch',
+    'fleet.*.to.alpha.task_result',
+    'fleet.*.to.beta.task_dispatch',
+    'fleet.*.to.beta.task_result',
+  ].join(',')
+
+  runNatsCommand(adminSeedPath, ['stream', 'add', 'HANGAR_TASKS', '--subjects', subjects, '--retention', 'work', '--replicas', '1', '--storage', 'file', '--defaults'])
+  runNatsCommand(adminSeedPath, ['consumer', 'add', 'HANGAR_TASKS', 'alpha', '--filter', 'fleet.*.to.alpha.>', '--pull', '--defaults'])
+  runNatsCommand(adminSeedPath, ['consumer', 'add', 'HANGAR_TASKS', 'beta', '--filter', 'fleet.*.to.beta.>', '--pull', '--defaults'])
+}
+
+async function makeTransport(
+  handle: 'alpha' | 'beta',
+  seed: string,
+  onEnvelope: (env: Envelope) => void,
+): Promise<NatsTransport> {
+  const transport = new NatsTransport({
+    selfHandle: handle,
+    natsUrl: URL,
+    nkeySeed: seed,
+    roster: {
+      alpha: { owned: ['proj'], interest: ['proj.>'] },
+      beta: { owned: ['proj'], interest: ['proj.>'] },
+    },
+    inboxPrefix: `_INBOX.${handle}`,
+    onEnvelope,
+    onAuthError: () => {},
+  })
+
+  return transport
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+let dir: string
+let srv: ChildProcess
+let alphaSeed: SeedBundle
+let betaSeed: SeedBundle
+let alpha: NatsTransport
 let serverUp = false
 
-const roster: RosterMap = { alpha: { owned: [], interest: [] }, beta: { owned: [], interest: [] } }
-
 beforeAll(async () => {
-  dir = mkdtempSync(join(tmpdir(), 'p1live.'))
-  let A, B
-  try { A = mintSeed(); B = mintSeed() } catch { return }
-  const userBlock = (h: string, pub: string) => `{ nkey: ${pub}, permissions: {
-      publish: { allow: ["fleet.${h}.>", "_INBOX.${h}.>"] },
-      subscribe: { allow: ["fleet.*.to.${h}.>", "fleet.*.to.team.>", "_INBOX.${h}.>"] } } }`
-  const conf = join(dir, 'c.conf')
-  writeFileSync(conf, `port: ${PORT}\naccounts { HANGAR { users: [ ${userBlock('alpha', A.pub)}, ${userBlock('beta', B.pub)} ] } }\n`)
-  srv = spawn(NATS, ['-c', conf], { stdio: 'ignore' })
-  await new Promise(r => setTimeout(r, 1500))
   try {
-    alpha = new NatsTransport({ selfHandle: 'alpha', natsUrl: URL, nkeySeed: A.seed, roster, inboxPrefix: '_INBOX.alpha', onEnvelope: () => {}, onAuthError: () => {} })
-    beta = new NatsTransport({ selfHandle: 'beta', natsUrl: URL, nkeySeed: B.seed, roster, inboxPrefix: '_INBOX.beta', onEnvelope: () => {}, onAuthError: () => {} })
-    await alpha.start(); await beta.start()
+    dir = mkdtempSync(join(tmpdir(), 'p1live-'))
+    alphaSeed = mintSeed(dir)
+    const beta = mintSeed(dir)
+    const admin = mintSeed(dir)
+    betaSeed = beta
+
+    const adminPublic = execFileSync(NATS, ['auth', 'nkey', 'show', admin.seedPath], { encoding: 'utf8' }).match(/U[A-Z0-9]{40,}/)![0]
+    const confPath = writeServerConfig(dir, alphaSeed.pub, beta.pub, adminPublic)
+
+    srv = spawn(NATS_SERVER, ['-c', confPath], { stdio: 'ignore' })
+    await wait(1200)
+
+    provisionJetstream(admin.seedPath)
+
+    alpha = await makeTransport('alpha', alphaSeed.seed, () => {})
+    await alpha.start()
     serverUp = true
-  } catch { serverUp = false }
+  } catch {
+    serverUp = false
+  }
 })
 
 afterAll(async () => {
-  try { await alpha?.stop(); await beta?.stop() } catch {}
+  try { await alpha?.stop() } catch {}
   srv?.kill()
 })
 
 describe('P1 live transport round-trip', () => {
-  it('delivers alpha→beta chat with subject-derived from (anti-spoof)', async () => {
-    if (!serverUp) { console.warn('SKIP: nats-server unavailable'); return }
-    const got: Envelope[] = []
-    ;(beta as any).opts.onEnvelope = (e: Envelope) => got.push(e)
-    // spoof attempt: envelope body from='evil' — the wire subject says alpha
-    await alpha.send({ to: 'beta', kind: 'chat', content: 'hello-beta', meta: {} } as any)
-    await new Promise(r => setTimeout(r, 400))
-    expect(got.length).toBe(1)
-    expect(got[0].from).toBe('alpha')      // derived from wire subject, not body
-    expect(got[0].content).toBe('hello-beta')
-    expect(got[0].to).toBe('beta')
+  it('replays offline beta task_dispatch/task_result via JetStream on reconnect', async ({ skip }) => {
+    if (!serverUp) skip('SKIP: nats-server unavailable or live setup failed')
+
+    const received: Envelope[] = []
+    const beta = await makeTransport('beta', betaSeed.seed, env => received.push(env))
+
+    await alpha.send({ to: 'beta', kind: 'task_dispatch', content: 'offline-task', meta: {} } as any)
+    // in_reply_to MUST be a valid msg_<ULID> (EnvelopeSchema rejects otherwise —
+    // the receive-side parseInboundEnvelope would drop a malformed task_result).
+    await alpha.send({ to: 'beta', kind: 'task_result', content: 'offline-result', in_reply_to: 'msg_01ARZ3NDEKTSV4RRFFQ69G5FAV', meta: {} } as any)
+    await wait(300)
+
+    await beta.start()
+    await wait(500)
+
+    expect(received).toHaveLength(2)
+    expect(received[0].from).toBe('alpha')
+    expect(received[0].to).toBe('beta')
+    expect(received[0].kind).toBe('task_dispatch')
+    expect(received[1].kind).toBe('task_result')
+
+    await beta.stop()
   })
 
-  it('team broadcast reaches beta but NOT the sender (self-drop)', async () => {
-    if (!serverUp) { console.warn('SKIP: nats-server unavailable'); return }
-    const betaGot: Envelope[] = [], alphaGot: Envelope[] = []
-    ;(beta as any).opts.onEnvelope = (e: Envelope) => betaGot.push(e)
-    ;(alpha as any).opts.onEnvelope = (e: Envelope) => alphaGot.push(e)
-    await alpha.send({ to: '@team', kind: 'chat', content: 'broadcast', meta: {} } as any)
-    await new Promise(r => setTimeout(r, 400))
-    expect(betaGot.map(e => e.content)).toContain('broadcast')
-    expect(betaGot[0].from).toBe('alpha')
-    expect(alphaGot.length).toBe(0)        // self-drop
+  it('does not replay offline core-NATS kinds while beta is down', async ({ skip }) => {
+    if (!serverUp) skip('SKIP: nats-server unavailable or live setup failed')
+
+    const received: Envelope[] = []
+    const beta = await makeTransport('beta', betaSeed.seed, env => received.push(env))
+
+    await alpha.send({ to: 'beta', kind: 'chat', content: 'offline-chat', meta: {} } as any)
+    await alpha.send({ to: 'beta', kind: 'presence_update', content: 'offline-presence', meta: {} } as any)
+    await wait(300)
+
+    await beta.start()
+    await wait(500)
+
+    expect(received).toHaveLength(0)
+
+    await beta.stop()
   })
 })

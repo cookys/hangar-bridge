@@ -1,6 +1,7 @@
 import { ulid } from 'ulid'
 import { EnvelopeSchema, TEAM_BROADCAST_HANDLE, type Envelope, type OutboundMessage } from '@hangar-bridge/shared'
 import { connect, nkeyAuthenticator, type NatsConnection } from '@nats-io/transport-node'
+import { jetstream, type JetStreamClient } from '@nats-io/jetstream'
 import { checkDeliver, checkPublish, type RosterMap } from './subject-acl.ts'
 import { buildFleetSubject, deriveFrom, parseFleetSubject } from './fleet-subject.ts'
 import type { PeerTransport } from './outbound.ts'
@@ -29,6 +30,7 @@ interface NatsTransportOpts {
   outboxCap?: number
   onOverflow?: (dropped: number) => void
   connector?: (opts: ConnectOpts) => Promise<NatsConnection>
+  jsFactory?: (nc: NatsConnection) => JetStreamClient
 }
 
 interface OutboxEntry {
@@ -36,8 +38,29 @@ interface OutboxEntry {
   payload: Uint8Array
 }
 
+interface ParsedIncomingMessage {
+  subject: string
+  data: Uint8Array
+}
+
+interface JetStreamTaskMessage {
+  subject: string
+  data: Uint8Array
+  ack: () => Promise<void> | void
+  nak: () => Promise<void> | void
+  term: () => Promise<void> | void
+}
+
+interface JetStreamTaskIterable extends AsyncIterable<JetStreamTaskMessage> {
+  return?: () => Promise<void> | void
+  stop?: () => Promise<void> | void
+  close?: () => Promise<void> | void
+}
+
 const TEAM_RECIPIENT_TOKEN = 'team'
 const TEAM_LANE_ALLOWED_KINDS = new Set(['chat', 'presence_update'])
+const TASK_MESSAGE_KINDS = new Set<Envelope['kind']>(['task_dispatch', 'task_result'])
+const TASK_STREAM = 'HANGAR_TASKS'
 
 export class NatsTransport implements PeerTransport {
   private nc: NatsConnection | undefined
@@ -45,9 +68,15 @@ export class NatsTransport implements PeerTransport {
   private connected = false
   private outbox: OutboxEntry[] = []
   private statusTask: Promise<void> | undefined
+  private jetstreamTask: Promise<void> | undefined
+  private jetstreamIterator: AsyncIterator<JetStreamTaskMessage> | undefined
+  private jetstreamMessages: JetStreamTaskIterable | undefined
+  private js: JetStreamClient | undefined
   private subscriptions: NatsSubscription[] = []
   private decoder = new TextDecoder()
   private encoder = new TextEncoder()
+  private jetstreamStopSignal: Promise<void> = Promise.resolve()
+  private jetstreamStopSignalResolver: (() => void) | undefined
 
   constructor(private readonly opts: NatsTransportOpts) {}
 
@@ -56,6 +85,8 @@ export class NatsTransport implements PeerTransport {
   }
 
   async start(): Promise<void> {
+    this.stopped = false
+    this.resetJetstreamStopSignal()
     const connector = this.opts.connector ?? connect
     const connectOpts: ConnectOpts = {
       servers: this.opts.natsUrl,
@@ -73,16 +104,25 @@ export class NatsTransport implements PeerTransport {
     }
 
     this.connected = true
+    this.js = (this.opts.jsFactory ?? jetstream)(this.nc)
     this.statusTask = this.watchStatus()
     this.subscribe(`fleet.*.to.${this.opts.selfHandle}.>`)
     this.subscribe(`fleet.*.to.${TEAM_RECIPIENT_TOKEN}.>`)
+    this.jetstreamTask = this.consumeTaskStream()
     await this.flushOutbox()
   }
 
   async stop(): Promise<void> {
     this.stopped = true
+    this.signalJetstreamStop()
+    const jetstreamTask = this.jetstreamTask
     this.subscriptions.forEach(sub => sub.unsubscribe())
     this.subscriptions = []
+    this.jetstreamTask = undefined
+    await this.stopJetstreamMessages()
+    this.jetstreamIterator = undefined
+    this.jetstreamMessages = undefined
+    if (jetstreamTask) await jetstreamTask.catch(() => {})
     if (this.nc) await this.nc.drain()
     this.connected = false
   }
@@ -118,15 +158,10 @@ export class NatsTransport implements PeerTransport {
       msg.kind,
     )
     const payload = this.encoder.encode(JSON.stringify(envelope))
-    if (!this.connected || !this.nc) {
-      this.enqueueOutbox(wireSubject, payload)
-      return envelope
-    }
-
-    try {
-      this.nc.publish(wireSubject, payload)
-    } catch {
-      this.enqueueOutbox(wireSubject, payload)
+    if (TASK_MESSAGE_KINDS.has(msg.kind)) {
+      await this.publishJetstream(wireSubject, payload)
+    } else {
+      await this.publishCore(wireSubject, payload)
     }
 
     return envelope
@@ -156,17 +191,82 @@ export class NatsTransport implements PeerTransport {
     this.outbox.push({ subject, payload })
   }
 
+  private isTaskSubject(subject: string): boolean {
+    const parsed = parseFleetSubject(subject)
+    return parsed !== null && TASK_MESSAGE_KINDS.has(parsed.kind)
+  }
+
+  private async publishCore(subject: string, payload: Uint8Array): Promise<boolean> {
+    if (!this.connected || !this.nc) {
+      this.enqueueOutbox(subject, payload)
+      return false
+    }
+
+    try {
+      this.nc.publish(subject, payload)
+      return true
+    } catch {
+      this.enqueueOutbox(subject, payload)
+      return false
+    }
+  }
+
+  private async publishJetstream(subject: string, payload: Uint8Array): Promise<boolean> {
+    if (!this.connected || !this.nc || !this.js) {
+      this.enqueueOutbox(subject, payload)
+      return false
+    }
+
+    try {
+      await this.js.publish(subject, payload)
+      return true
+    } catch {
+      this.enqueueOutbox(subject, payload)
+      return false
+    }
+  }
+
+  private async publishCoreForFlush(subject: string, payload: Uint8Array): Promise<boolean> {
+    if (!this.nc) return false
+    try {
+      this.nc.publish(subject, payload)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private async publishJetstreamForFlush(subject: string, payload: Uint8Array): Promise<boolean> {
+    if (!this.nc || !this.js) return false
+    try {
+      await this.js.publish(subject, payload)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   private async flushOutbox(): Promise<void> {
     if (!this.nc || this.stopped || !this.connected) return
-    while (this.outbox.length > 0 && this.connected && !this.stopped) {
-      const entry = this.outbox.shift()
-      if (entry === undefined) break
-      try {
-        this.nc.publish(entry.subject, entry.payload)
-      } catch {
-        this.outbox.unshift(entry)
-        this.connected = false
-        break
+    // Durable-task completeness: flush JetStream task entries FIRST, so a stuck
+    // core publish can never head-of-line-block queued task_dispatch/task_result
+    // even when JetStream itself is available (separate tiers, tasks prioritised).
+    const pending = this.outbox
+    this.outbox = []
+    const tasks = pending.filter(e => this.isTaskSubject(e.subject))
+    const core = pending.filter(e => !this.isTaskSubject(e.subject))
+    for (const group of [tasks, core]) {
+      for (let i = 0; i < group.length; i++) {
+        const entry = group[i]!
+        if (this.stopped || !this.connected) { this.outbox.push(...group.slice(i)); break }
+        const flushed = this.isTaskSubject(entry.subject)
+          ? await this.publishJetstreamForFlush(entry.subject, entry.payload)
+          : await this.publishCoreForFlush(entry.subject, entry.payload)
+        if (!flushed) {
+          this.connected = false
+          this.outbox.push(...group.slice(i))
+          break
+        }
       }
     }
   }
@@ -216,31 +316,162 @@ export class NatsTransport implements PeerTransport {
         if (this.stopped) break
         const parsed = parseFleetSubject(msg.subject)
         if (!parsed) continue
+        if (TASK_MESSAGE_KINDS.has(parsed.kind)) continue
         if (parsed.recipient !== this.opts.selfHandle && parsed.recipient !== TEAM_RECIPIENT_TOKEN) continue
         if (parsed.recipient === TEAM_RECIPIENT_TOKEN && parsed.sender === this.opts.selfHandle) continue
         if (parsed.recipient === TEAM_RECIPIENT_TOKEN && !TEAM_LANE_ALLOWED_KINDS.has(parsed.kind)) continue
 
-        const from = deriveFrom(msg.subject)
-        if (!from) continue
-
-        let env: Envelope
-        try {
-          env = EnvelopeSchema.parse(JSON.parse(this.decoder.decode(msg.data)))
-        } catch {
-          continue
-        }
-
-        if (env.kind !== parsed.kind) continue
-        const to = parsed.recipient === TEAM_RECIPIENT_TOKEN ? TEAM_BROADCAST_HANDLE : parsed.recipient
-        if (env.to !== to) continue
-        if (to === TEAM_BROADCAST_HANDLE && env.subject !== null) continue
-        const derived: Envelope = { ...env, from, to }
-        if (!checkDeliver(derived, this.opts.selfHandle, this.opts.roster)) continue
-        this.opts.onEnvelope(derived)
+        const envelope = this.parseInboundEnvelope(msg)
+        if (!envelope) continue
+        if (!checkDeliver(envelope, this.opts.selfHandle, this.opts.roster)) continue
+        this.opts.onEnvelope(envelope)
       }
     } catch {
       if (this.stopped) return
       // NATS iterators can terminate when subscriptions are drained.
+    }
+  }
+
+  private async consumeTaskStream(): Promise<void> {
+    const retryMs = 250
+    while (!this.stopped) {
+      if (!this.connected || !this.js || !this.nc) {
+        await new Promise<void>(resolve => setTimeout(resolve, retryMs))
+        continue
+      }
+
+      let iterator: AsyncIterator<JetStreamTaskMessage> | undefined
+      try {
+        const consumer = await this.awaitJetstreamConsumer(this.js.consumers.get(TASK_STREAM, this.opts.selfHandle))
+        const messages = (await this.awaitJetstreamMessages(consumer.consume())) as JetStreamTaskIterable
+        this.jetstreamMessages = messages
+        // Teardown race: if stop() fired before we acquired the consumer, its
+        // stopJetstreamMessages() ran against an undefined handle — close the
+        // freshly-acquired iterable now so the consumer isn't leaked.
+        if (this.stopped) { await this.stopJetstreamMessages(); this.jetstreamMessages = undefined; return }
+        iterator = messages[Symbol.asyncIterator]()
+      } catch (error) {
+        if (this.stopped) return
+        if (this.isAuthError(error)) this.opts.onAuthError()
+        await new Promise<void>(resolve => setTimeout(resolve, retryMs))
+        continue
+      }
+
+      if (!iterator) continue
+      this.jetstreamIterator = iterator
+      try {
+        while (!this.stopped) {
+          const next = await Promise.race<IteratorResult<JetStreamTaskMessage>>([
+            iterator.next(),
+            this.jetstreamStopSignal.then(() => ({ value: undefined as never, done: true })),
+          ])
+          if (next.done) break
+          const msg = next.value
+
+          if (this.stopped) break
+
+          const parsed = parseFleetSubject(msg.subject)
+          if (!parsed || !TASK_MESSAGE_KINDS.has(parsed.kind) || parsed.recipient !== this.opts.selfHandle) {
+            await this.termIfPossible(msg)
+            continue
+          }
+
+          const envelope = this.parseInboundEnvelope(msg)
+          if (!envelope) {
+            await this.termIfPossible(msg)
+            continue
+          }
+
+          if (!checkDeliver(envelope, this.opts.selfHandle, this.opts.roster)) {
+            await this.termIfPossible(msg)
+            continue
+          }
+
+          try {
+            this.opts.onEnvelope(envelope)
+            await Promise.resolve(msg.ack())
+          } catch {
+            await Promise.resolve(msg.nak())
+          }
+        }
+      } catch {
+        if (this.stopped) return
+        await new Promise<void>(resolve => setTimeout(resolve, retryMs))
+      } finally {
+        if (this.jetstreamIterator === iterator) this.jetstreamIterator = undefined
+      }
+
+      if (!this.stopped) await new Promise<void>(resolve => setTimeout(resolve, retryMs))
+    }
+  }
+
+  private resetJetstreamStopSignal(): void {
+    this.jetstreamStopSignal = new Promise<void>(resolve => {
+      this.jetstreamStopSignalResolver = resolve
+    })
+  }
+
+  private signalJetstreamStop(): void {
+    if (this.jetstreamStopSignalResolver) {
+      this.jetstreamStopSignalResolver()
+      this.jetstreamStopSignalResolver = undefined
+    }
+  }
+
+  private async stopJetstreamMessages(): Promise<void> {
+    if (!this.jetstreamMessages) return
+    const source = this.jetstreamMessages as JetStreamTaskIterable & { return?: () => unknown; stop?: () => unknown; close?: () => unknown }
+    const methods: Array<(() => unknown) | undefined> = [source.stop, source.close, source.return]
+    for (const method of methods) {
+      if (typeof method !== 'function') continue
+      await Promise.race([
+        Promise.resolve(method.call(source)).then(() => {}, () => {}),
+        new Promise(resolve => setTimeout(resolve, 50)),
+      ])
+      break
+    }
+  }
+
+  private awaitJetstreamConsumer<T>(promise: Promise<T>): Promise<T> {
+    return Promise.race<T>([
+      promise,
+      this.jetstreamStopSignal.then<T>(() => {
+        throw new Error('stopping')
+      }),
+    ])
+  }
+
+  private awaitJetstreamMessages<T>(promise: Promise<T>): Promise<T> {
+    return this.awaitJetstreamConsumer(promise)
+  }
+
+  private parseInboundEnvelope(msg: ParsedIncomingMessage): Envelope | null {
+    const parsed = parseFleetSubject(msg.subject)
+    if (!parsed) return null
+
+    const from = deriveFrom(msg.subject)
+    if (!from) return null
+
+    let envelope: Envelope
+    try {
+      envelope = EnvelopeSchema.parse(JSON.parse(this.decoder.decode(msg.data)))
+    } catch {
+      return null
+    }
+
+    if (envelope.kind !== parsed.kind) return null
+    const to = parsed.recipient === TEAM_RECIPIENT_TOKEN ? TEAM_BROADCAST_HANDLE : parsed.recipient
+    if (envelope.to !== to) return null
+    if (to === TEAM_BROADCAST_HANDLE && envelope.subject !== null) return null
+
+    return { ...envelope, from }
+  }
+
+  private async termIfPossible(message: JetStreamTaskMessage): Promise<void> {
+    try {
+      await Promise.resolve(message.term())
+    } catch {
+      // keep message eligible for terminal handling by caller in this process
     }
   }
 
