@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { DispatchTracker } from './correlation.ts'
 
 describe('DispatchTracker', () => {
@@ -47,5 +50,68 @@ describe('DispatchTracker', () => {
     expect(t2.has('a')).toBe(false)
     expect(t2.has('b')).toBe(false)
     expect(t2.has('c')).toBe(true)
+  })
+})
+
+describe('DispatchTracker — durable persistence (survives restart)', () => {
+  let dir = ''
+  let statePath = ''
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'hangar-dispatch-'))
+    statePath = join(dir, 'dispatch-state.json')
+  })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('a matching task_result still correlates after a simulated restart', () => {
+    const cid = '01HR0000000000000000000099'
+    const msgId = 'msg_01HR0000000000000000000001'
+
+    // Register a dispatch on the pre-restart instance.
+    const before = new DispatchTracker({ ttlMs: 30 * 60_000, persistPath: statePath })
+    before.recordOutgoing(cid, msgId, 'alice')
+    expect(existsSync(statePath)).toBe(true)
+
+    // Simulate a relay/peer-agent restart: a brand-new tracker reloads from disk.
+    const after = new DispatchTracker({ ttlMs: 30 * 60_000, persistPath: statePath })
+    // This is exactly what inbound.ts checks when a late task_result arrives.
+    expect(after.has(cid)).toBe(true)
+    expect(after.msgIdFor(cid)).toBe(msgId)
+    expect(after.peerFor(cid)).toBe('alice')
+  })
+
+  it('persists every live entry and reloads them all', () => {
+    const before = new DispatchTracker({ ttlMs: 30 * 60_000, persistPath: statePath })
+    before.recordOutgoing('01HR0000000000000000000001', 'msg_a', 'alice')
+    before.recordOutgoing('01HR0000000000000000000002', 'msg_b', '@team')
+
+    const after = new DispatchTracker({ ttlMs: 30 * 60_000, persistPath: statePath })
+    expect(after.size()).toBe(2)
+    expect(after.peerFor('01HR0000000000000000000002')).toBe('@team')
+  })
+
+  it('does NOT reload entries that expired while the process was down', async () => {
+    const before = new DispatchTracker({ ttlMs: 10, persistPath: statePath })
+    before.recordOutgoing('cid-short', 'msg_x', 'alice')
+    await new Promise(r => setTimeout(r, 30))
+
+    const after = new DispatchTracker({ ttlMs: 10, persistPath: statePath })
+    expect(after.has('cid-short')).toBe(false)
+    expect(after.size()).toBe(0)
+  })
+
+  it('starts empty (no throw) when the state file is corrupt', () => {
+    writeFileSync(statePath, 'not json {{{')
+    const t = new DispatchTracker({ ttlMs: 1000, persistPath: statePath })
+    expect(t.size()).toBe(0)
+    // and recovers — a subsequent write is well-formed JSON
+    t.recordOutgoing('cid-new', 'msg_n', 'bob')
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))['cid-new'].peer_handle).toBe('bob')
+  })
+
+  it('is backward-compatible: no persistPath ⇒ pure in-memory, no file written', () => {
+    const t = new DispatchTracker({ ttlMs: 1000 })
+    t.recordOutgoing('cid', 'msg', 'alice')
+    expect(existsSync(statePath)).toBe(false)
+    expect(t.has('cid')).toBe(true)
   })
 })

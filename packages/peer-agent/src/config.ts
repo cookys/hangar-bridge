@@ -1,13 +1,17 @@
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
-import { NAMESPACE_REGEX, INTEREST_REGEX } from '@hangar-bridge/shared'
+import { NAMESPACE_REGEX, INTEREST_REGEX, HANDLE_REGEX } from '@hangar-bridge/shared'
 import { readTokenFile } from './cli/token-file.ts'
 import { defaultConfigPath, defaultAuditDir } from './paths.ts'
 
 export const ConfigSchema = z.object({
   relay_url: z.string().url(),
   token_path: z.string(),
+  // This peer's own handle. Optional/back-compat: only used to exclude self when the
+  // outbound-permission ApprovalRouter policy is `ask_specific_peer:<self>`. The relay
+  // remains the authority on identity (`from` is server-stamped); this is a local hint.
+  self: z.string().regex(HANDLE_REGEX).optional(),
   // Subject routing. `interest` (exact or trailing '>') is sent to the relay as the
   // narrowing filter (x-hangar-subjects header). `owned` is informational on the peer
   // side — the relay DB (human.subjects) is the authoritative ACL. Both default empty.

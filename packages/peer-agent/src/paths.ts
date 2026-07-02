@@ -26,3 +26,11 @@ export function defaultSecretPath(): string {
 export function defaultAuditDir(): string {
   return join(configDir(), 'audit')
 }
+
+/**
+ * Disk-backed store for the DispatchTracker's in-flight {correlation_id → dispatch}
+ * correlations, so a peer-agent restart doesn't orphan a late task_result.
+ */
+export function defaultDispatchStatePath(): string {
+  return join(configDir(), 'dispatch-state.json')
+}

@@ -12,7 +12,9 @@ import { StreamClient } from './stream.ts'
 import { PermissionTracker } from './permission.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
+import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
+import { defaultDispatchStatePath } from './paths.ts'
 import { pathToFileURL } from 'node:url'
 import { logJson } from './logger.ts'
 
@@ -27,7 +29,10 @@ async function main(): Promise<void> {
   const permissionTracker = permissionRelayEnabled
     ? new PermissionTracker({ ttlMs: PERMISSION_REQUEST_TTL_MS })
     : undefined
-  const dispatchTracker = new DispatchTracker({ ttlMs: DISPATCH_REQUEST_TIMEOUT_MS })
+  const dispatchTracker = new DispatchTracker({
+    ttlMs: DISPATCH_REQUEST_TIMEOUT_MS,
+    persistPath: defaultDispatchStatePath(),
+  })
   const approvalRouter = new ApprovalRouter({ routing: cfg.permission_relay.routing as RoutingPolicy })
   const originalSend = client.send.bind(client)
   client.send = async (msg, opts) => {
@@ -53,6 +58,20 @@ async function main(): Promise<void> {
       return { content: [{ type: 'text', text: `error: ${message}` }], isError: true }
     }
   })
+
+  // OUTBOUND permission relay (Claude Code → peer). Only wired when permission_relay is
+  // enabled — same gate as the `claude/channel/permission` capability, so Claude Code
+  // won't even send these notifications otherwise. The ApprovalRouter is a second gate:
+  // routing=never_relay (the default) picks no peer, so nothing is forwarded and the
+  // local dialog stays the sole authority. Never auto-approves.
+  if (permissionRelayEnabled) {
+    registerOutboundPermissionRelay(server, {
+      client,
+      approvalRouter,
+      selfHandle: cfg.self ?? '',
+      ttlMs: PERMISSION_REQUEST_TTL_MS,
+    })
+  }
 
   logJson('info', 'peer.startup', { relay_url: cfg.relay_url })
 

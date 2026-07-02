@@ -51,8 +51,9 @@ export class InboundDispatcher {
     if (e.kind === 'task_result' && this.opts.dispatchTracker) {
       const cid = e.meta.correlation_id ?? ''
       if (!cid || !this.opts.dispatchTracker.has(cid)) {
-        // Orphan task_result — either DispatchTracker was lost on restart (in-memory only),
-        // the dispatch TTL expired, or the peer is replying without a known correlation_id.
+        // Orphan task_result — the dispatch TTL expired, or the peer is replying without
+        // a known correlation_id. (A relay/peer-agent restart no longer orphans a live
+        // correlation: DispatchTracker is now disk-backed — see correlation.ts persistPath.)
         // Still emit the notification (caller sees it) but flag for forensics.
         logJson('warn', 'peer.inbound.dispatch_orphan', { from: e.from, msg_id: e.id, correlation_id: cid })
       } else {
