@@ -6,6 +6,13 @@ import { readTokenFile } from './cli/token-file.ts'
 import { defaultConfigPath, defaultAuditDir } from './paths.ts'
 
 export const ConfigSchema = z.object({
+  transport: z.enum(['sse', 'nats']).default('sse'),
+  nats: z.object({
+    url: z.string(),
+    nkey_seed_path: z.string(),
+    roster_path: z.string(),
+    inbox_prefix: z.string().optional(),
+  }).optional(),
   relay_url: z.string().url(),
   token_path: z.string(),
   // This peer's own handle. Optional/back-compat: only used to exclude self when the
@@ -31,6 +38,14 @@ export const ConfigSchema = z.object({
     auto_publish_repo: z.boolean().default(true)
   }).default({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }),
   audit_log: z.string().default(() => defaultAuditDir())
+}).superRefine((value, ctx) => {
+  if (value.transport === 'nats' && !value.nats) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['nats'],
+      message: "nats block is required when transport is 'nats'",
+    })
+  }
 })
 export type HangarConfig = z.infer<typeof ConfigSchema>
 

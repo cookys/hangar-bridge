@@ -6,6 +6,14 @@ export interface RelayClientOpts {
   token: string
 }
 
+export interface PeerTransport {
+  send(msg: OutboundMessage, opts?: { idempotency_key?: string }): Promise<Envelope>
+  listPeers(): Promise<PeerSummary[]>
+  setPresence(body: { summary: string; cwd?: string; branch?: string; repo?: string }): Promise<void>
+  start(): Promise<void>
+  stop(): Promise<void>
+}
+
 interface Injected { fetch?: typeof globalThis.fetch }
 
 export interface PeerSummary {
@@ -17,7 +25,7 @@ export interface PeerSummary {
   sessions: Array<{ label: string; cwd?: string; branch?: string; repo?: string }>
 }
 
-export class RelayClient {
+export class RelayClient implements PeerTransport {
   private fetchImpl: typeof globalThis.fetch
 
   constructor(private opts: RelayClientOpts, inj: Injected = {}) {
@@ -55,5 +63,15 @@ export class RelayClient {
       body: JSON.stringify(body),
     })
     if (res.status !== 200) throw new Error(`presence failed: ${res.status}`)
+  }
+
+  async start(): Promise<void> {
+    // SSE transport client does not require an explicit start state machine.
+    return undefined
+  }
+
+  async stop(): Promise<void> {
+    // SSE transport client does not retain long-lived transport state.
+    return undefined
   }
 }

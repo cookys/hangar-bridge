@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { OutboundMessage } from '@hangar-bridge/shared'
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { ApprovalRouter } from './approval-routing.ts'
-import type { RelayClient } from './outbound.ts'
+import type { PeerTransport } from './outbound.ts'
 import type { PermissionOutboundTracker } from './permission.ts'
 import { logJson } from './logger.ts'
 
@@ -75,7 +75,7 @@ export function buildOutboundPermissionRequest(
 }
 
 export interface OutboundPermissionRelayDeps {
-  client: Pick<RelayClient, 'send'>
+  client: Pick<PeerTransport, 'send'>
   approvalRouter: ApprovalRouter
   /** This peer's own handle, so ask_specific_peer:<self> never relays to itself. */
   selfHandle: string

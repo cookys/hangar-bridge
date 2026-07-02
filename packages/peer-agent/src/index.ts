@@ -4,7 +4,10 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS } from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
 import { loadConfig, loadToken, assertTokenNotInRepo } from './config.ts'
-import { RelayClient } from './outbound.ts'
+import { readTokenFile } from './cli/token-file.ts'
+import { loadRoster } from './subject-acl.ts'
+import { RelayClient, type PeerTransport } from './outbound.ts'
+import { NatsTransport } from './nats-transport.ts'
 import { registerTools, TOOL_DESCRIPTORS, TOOL_DESCRIPTOR_RESPOND, TOOL_DESCRIPTOR_DISPATCH } from './tools.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
@@ -20,12 +23,17 @@ import { logJson } from './logger.ts'
 
 async function main(): Promise<void> {
   const cfg = loadConfig()
-  assertTokenNotInRepo(cfg.token_path)
-  const token = loadToken(cfg.token_path)
+  let token: string | undefined
+
+  if (cfg.transport === 'sse') {
+    assertTokenNotInRepo(cfg.token_path)
+    token = loadToken(cfg.token_path)
+  }
+
+  const selfHandle = cfg.self ?? ''
 
   const permissionRelayEnabled = cfg.permission_relay.enabled
   const { server } = createMcpServer({ permissionRelay: permissionRelayEnabled })
-  const client = new RelayClient({ relayUrl: cfg.relay_url, token })
   const permissionTracker = permissionRelayEnabled
     ? new PermissionTracker({ ttlMs: PERMISSION_REQUEST_TTL_MS })
     : undefined
@@ -38,6 +46,68 @@ async function main(): Promise<void> {
     persistPath: defaultDispatchStatePath(),
   })
   const approvalRouter = new ApprovalRouter({ routing: cfg.permission_relay.routing as RoutingPolicy })
+  const replyLimiter = new ReplyLimiter({ windowMs: 10_000, maxReplies: 2 })
+
+  const gate = new SenderGate([])
+  const onAuthError = () => {
+    logJson('error', 'peer.auth_failed')
+    process.exit(2)
+  }
+
+  let cursor: string | undefined
+  const dispatcher = new InboundDispatcher({
+    gate,
+    emit: n => { void server.notification(n as never) },
+    setCursor: id => { cursor = id },
+    interest: cfg.subjects.interest,
+    permissionTracker,
+    dispatchTracker,
+    permissionOutboundTracker,
+    replyLimiter,
+  })
+
+  let client: PeerTransport
+  let stream: { start: () => Promise<void> }
+
+  if (cfg.transport === 'nats') {
+    if (!selfHandle) throw new Error('self is required when transport is nats')
+    if (!cfg.nats) throw new Error(`nats transport requires a nats config block`)
+    const nkeySeedPath = cfg.nats.nkey_seed_path
+    const rosterPath = cfg.nats.roster_path
+    if (!nkeySeedPath) throw new Error(`nats.nkey_seed_path is required when transport is nats`)
+    if (!rosterPath) throw new Error(`nats.roster_path is required when transport is nats`)
+    const roster = loadRoster(rosterPath)
+    const nkeySeed = readTokenFile(nkeySeedPath)
+    const natsTransport = new NatsTransport({
+      selfHandle,
+      natsUrl: cfg.nats.url ?? cfg.relay_url,
+      nkeySeed,
+      roster,
+      // exactOptionalPropertyTypes: only pass inboxPrefix when set (NatsTransport
+      // defaults it to `_INBOX.<selfHandle>` otherwise).
+      ...(cfg.nats.inbox_prefix ? { inboxPrefix: cfg.nats.inbox_prefix } : {}),
+      onEnvelope: e => dispatcher.handle(e),
+      onAuthError,
+      onOverflow: dropped => {
+        logJson('warn', 'peer.nats.outbox_overflow', { dropped })
+      },
+      reconnectBaseMs: 500,
+    })
+    client = natsTransport
+    stream = natsTransport
+  } else {
+    if (!token) throw new Error('sse transport requires token_path')
+    client = new RelayClient({ relayUrl: cfg.relay_url, token })
+    stream = new StreamClient({
+      relayUrl: cfg.relay_url,
+      token,
+      sinceCursor: () => cursor,
+      subjects: cfg.subjects.interest,
+      onEnvelope: e => dispatcher.handle(e),
+      onAuthError,
+    })
+  }
+
   const originalSend = client.send.bind(client)
   client.send = async (msg, opts) => {
     if (msg.kind === 'chat' && typeof msg.to === 'string' && msg.to !== '@team') {
@@ -45,9 +115,8 @@ async function main(): Promise<void> {
     }
     return originalSend(msg, opts)
   }
-  const replyLimiter = new ReplyLimiter({ windowMs: 10_000, maxReplies: 2 })
-  const { callTool } = registerTools(client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker)
 
+  const { callTool } = registerTools(client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker)
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...TOOL_DESCRIPTORS,
@@ -67,12 +136,12 @@ async function main(): Promise<void> {
   // enabled — same gate as the `claude/channel/permission` capability, so Claude Code
   // won't even send these notifications otherwise. The ApprovalRouter is a second gate:
   // routing=never_relay (the default) picks no peer, so nothing is forwarded and the
-  // local dialog stays the sole authority. Never auto-approves.
+  // local dialog stays the sole authority.
   if (permissionRelayEnabled) {
     registerOutboundPermissionRelay(server, {
       client,
       approvalRouter,
-      selfHandle: cfg.self ?? '',
+      selfHandle,
       ttlMs: PERMISSION_REQUEST_TTL_MS,
       outboundTracker: permissionOutboundTracker,
     })
@@ -81,9 +150,8 @@ async function main(): Promise<void> {
   logJson('info', 'peer.startup', { relay_url: cfg.relay_url })
 
   // Seed the roster. Failing here used to crash the peer-agent hard, breaking
-  // every Claude Code session if the relay happened to be down. Now: start
-  // with an empty roster, let the refresh loop recover once the relay is back.
-  const gate = new SenderGate([])
+  // every Claude Code session if transport is down. Now: start
+  // with an empty roster, let the refresh loop recover once transport starts.
   const refreshRoster = async () => {
     try {
       const peers = await client.listPeers()
@@ -96,28 +164,8 @@ async function main(): Promise<void> {
   void refreshRoster()
   setInterval(refreshRoster, 60_000)
 
-  let cursor: string | undefined
-  const dispatcher = new InboundDispatcher({
-    gate,
-    emit: n => { void server.notification(n as never) },
-    setCursor: id => { cursor = id },
-    interest: cfg.subjects.interest,
-    permissionTracker,
-    dispatchTracker,
-    permissionOutboundTracker,
-    replyLimiter,
-  })
-
-  const stream = new StreamClient({
-    relayUrl: cfg.relay_url,
-    token,
-    sinceCursor: () => cursor,
-    subjects: cfg.subjects.interest,
-    onEnvelope: e => dispatcher.handle(e),
-    onAuthError: () => { logJson('error', 'peer.auth_failed'); process.exit(2) },
-  })
   await server.connect(new StdioServerTransport())
-  stream.start().catch(err => {
+  await stream.start().catch(err => {
     logJson('error', 'peer.stream.fatal', {
       err: String(err instanceof Error ? err.message : err),
     })

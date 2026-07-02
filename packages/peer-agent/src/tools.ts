@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { ulid } from 'ulid'
 import { HANDLE_REGEX, TEAM_BROADCAST_HANDLE, SUBJECT_REGEX, MAX_SUBJECT_LENGTH, type OutboundMessage, type MessageId } from '@hangar-bridge/shared'
-import type { RelayClient } from './outbound.ts'
+import type { PeerTransport } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
@@ -108,7 +108,7 @@ export interface PresenceOpts {
 }
 
 export function registerTools(
-  client: RelayClient,
+  client: PeerTransport,
   presence: PresenceOpts,
   permissionTracker?: PermissionTracker,
   replyLimiter?: ReplyLimiter,

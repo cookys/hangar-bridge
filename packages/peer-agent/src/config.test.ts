@@ -26,6 +26,54 @@ describe('loadConfig', () => {
     writeFileSync(p, JSON.stringify({ relay_url: 'x' }))
     expect(() => loadConfig(p)).toThrow()
   })
+
+  it('requires nats config block when transport is nats', () => {
+    const p = join(workdir, 'nats-missing.json')
+    writeFileSync(p, JSON.stringify({
+      transport: 'nats', relay_url: 'nats://localhost:4222', token_path: join(workdir, 'tok'),
+      permission_relay: { enabled: false, routing: 'never_relay' },
+      presence: { auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true },
+      audit_log: join(workdir, 'audit'),
+    }))
+    expect(() => loadConfig(p)).toThrow()
+  })
+
+  it('accepts nats transport when nats block is present', () => {
+    const p = join(workdir, 'nats-valid.json')
+    writeFileSync(p, JSON.stringify({
+      transport: 'nats',
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      nats: {
+        url: 'nats://localhost:4222',
+        nkey_seed_path: join(workdir, 'seed'),
+        roster_path: join(workdir, 'fleet-roster.json'),
+        inbox_prefix: '_INBOX.alice',
+      },
+      permission_relay: { enabled: false, routing: 'never_relay' },
+      presence: { auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true },
+      audit_log: join(workdir, 'audit'),
+    }))
+    const cfg = loadConfig(p)
+    expect(cfg.transport).toBe('nats')
+    expect(cfg.nats).toEqual({
+      url: 'nats://localhost:4222',
+      nkey_seed_path: join(workdir, 'seed'),
+      roster_path: join(workdir, 'fleet-roster.json'),
+      inbox_prefix: '_INBOX.alice',
+    })
+  })
+
+  it('defaults transport to sse when omitted', () => {
+    const p = join(workdir, 'sse-default.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok'),
+      permission_relay: { enabled: false, routing: 'never_relay' },
+      presence: { auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true },
+      audit_log: join(workdir, 'audit'),
+    }))
+    expect(loadConfig(p).transport).toBe('sse')
+  })
 })
 
 describe('loadToken', () => {
