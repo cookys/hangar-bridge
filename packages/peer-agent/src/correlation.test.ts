@@ -112,6 +112,23 @@ describe('DispatchTracker — durable persistence (survives restart)', () => {
     expect(JSON.parse(readFileSync(statePath, 'utf8'))['cid-new'].peer_handle).toBe('bob')
   })
 
+  it('creates a missing parent dir so durability works even before init ran', () => {
+    // peer-agent started before `init`, or ~/.config/hangar-bridge/ was deleted:
+    // the state path lives under a nested dir that does NOT exist yet.
+    const nested = join(dir, 'does', 'not', 'exist', 'yet', 'dispatch-state.json')
+    expect(existsSync(join(dir, 'does'))).toBe(false)
+
+    const before = new DispatchTracker({ ttlMs: 30 * 60_000, persistPath: nested })
+    before.recordOutgoing('01HR0000000000000000000042', 'msg_z', 'alice')
+    // The dir was created and the state actually landed on disk (not silently in-memory).
+    expect(existsSync(nested)).toBe(true)
+
+    // And it survives a restart — proves durability holds when the dir was absent.
+    const after = new DispatchTracker({ ttlMs: 30 * 60_000, persistPath: nested })
+    expect(after.has('01HR0000000000000000000042')).toBe(true)
+    expect(after.peerFor('01HR0000000000000000000042')).toBe('alice')
+  })
+
   it('is backward-compatible: no persistPath ⇒ pure in-memory, no file written', () => {
     const t = new DispatchTracker({ ttlMs: 1000 })
     t.recordOutgoing('cid', 'msg', 'alice')

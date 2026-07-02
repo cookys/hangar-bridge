@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, existsSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { logJson } from './logger.ts'
 
@@ -119,6 +120,11 @@ export class DispatchTracker {
     try {
       const obj: Record<string, Entry> = {}
       for (const [k, v] of this.map) obj[k] = v
+      // Ensure the parent dir exists first. If the peer-agent starts before `init` ran
+      // (or ~/.config/hangar-bridge/ was deleted), writeFileSync would ENOENT → caught
+      // below → durability would SILENTLY degrade to in-memory, defeating the whole
+      // restart-survival point (P2.3 gap-a). Creating it here keeps durability working.
+      mkdirSync(dirname(path), { recursive: true })
       writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 })
       renameSync(tmp, path)
     } catch (err) {
