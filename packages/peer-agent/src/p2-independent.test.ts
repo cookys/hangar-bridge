@@ -505,6 +505,12 @@ describe('P2 AC6 · LIVE two-tier durability (JetStream replay vs core loss)', (
           filter_subject: 'fleet.*.to.beta.>',
           ack_policy: jsmod.AckPolicy.Explicit,
         })
+        // The transport-under-test opens the HANGAR_DEDUP KV bucket on start() (P3).
+        // Provision it here so that open resolves fast instead of deadlining on a
+        // missing bucket (env completion for the transport's real infra dependency;
+        // no assertion changes).
+        const { Kvm } = await import('@nats-io/kv')
+        await new Kvm(admin).create('HANGAR_DEDUP')
       } catch (e) {
         await cleanup()
         return ctx.skip()

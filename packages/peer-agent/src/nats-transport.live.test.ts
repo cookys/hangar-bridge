@@ -47,15 +47,15 @@ accounts {
       {
         nkey: ${alphaPub}
         permissions: {
-          publish: { allow: ["fleet.alpha.>", "$JS.>", "_INBOX.alpha.>"] }
-          subscribe: { allow: ["fleet.*.to.alpha.>", "fleet.*.to.team.>", "$JS.>", "_INBOX.alpha.>"] }
+          publish: { allow: ["fleet.alpha.>", "$JS.>", "$KV.>", "_INBOX.alpha.>"] }
+          subscribe: { allow: ["fleet.*.to.alpha.>", "fleet.*.to.team.>", "$JS.>", "$KV.>", "_INBOX.alpha.>"] }
         }
       },
       {
         nkey: ${betaPub}
         permissions: {
-          publish: { allow: ["fleet.beta.>", "$JS.>", "_INBOX.beta.>"] }
-          subscribe: { allow: ["fleet.*.to.beta.>", "fleet.*.to.team.>", "$JS.>", "_INBOX.beta.>"] }
+          publish: { allow: ["fleet.beta.>", "$JS.>", "$KV.>", "_INBOX.beta.>"] }
+          subscribe: { allow: ["fleet.*.to.beta.>", "fleet.*.to.team.>", "$JS.>", "$KV.>", "_INBOX.beta.>"] }
         }
       },
       {
@@ -85,6 +85,8 @@ function provisionJetstream(adminSeedPath: string): void {
   runNatsCommand(adminSeedPath, ['stream', 'add', 'HANGAR_TASKS', '--subjects', subjects, '--retention', 'work', '--replicas', '1', '--storage', 'file', '--defaults'])
   runNatsCommand(adminSeedPath, ['consumer', 'add', 'HANGAR_TASKS', 'alpha', '--filter', 'fleet.*.to.alpha.>', '--pull', '--defaults'])
   runNatsCommand(adminSeedPath, ['consumer', 'add', 'HANGAR_TASKS', 'beta', '--filter', 'fleet.*.to.beta.>', '--pull', '--defaults'])
+  // Permanent-dedup KV bucket (P3/AC5).
+  runNatsCommand(adminSeedPath, ['kv', 'add', 'HANGAR_DEDUP', '--replicas', '1', '--storage', 'file'])
 }
 
 async function makeTransport(
@@ -187,6 +189,29 @@ describe('P1 live transport round-trip', () => {
     await wait(500)
 
     expect(received).toHaveLength(0)
+
+    await beta.stop()
+  })
+
+  it('AC5: KV permanently dedups a repeat task_dispatch (same correlation_id, distinct wire msgs)', async ({ skip }) => {
+    if (!serverUp) skip('SKIP: nats-server unavailable or live setup failed')
+
+    const received: Envelope[] = []
+    const beta = await makeTransport('beta', betaSeed.seed, env => received.push(env))
+    await beta.start()
+    await wait(200)
+
+    // Two SEPARATE JetStream publishes (distinct stream sequence, so the 2-minute
+    // Nats-Msg-Id window would NOT collapse them) carrying the SAME correlation_id.
+    // Only the KV `create` on `beta.<correlation_id>` can suppress the second.
+    await alpha.send({ to: 'beta', kind: 'task_dispatch', content: 'dup-1', meta: { correlation_id: 'corr-dup-1' } } as any)
+    await alpha.send({ to: 'beta', kind: 'task_dispatch', content: 'dup-2', meta: { correlation_id: 'corr-dup-1' } } as any)
+    await wait(600)
+
+    // Processed exactly once — the permanent KV dedup caught the repeat.
+    expect(received).toHaveLength(1)
+    expect(received[0].kind).toBe('task_dispatch')
+    expect(received[0].from).toBe('alpha')
 
     await beta.stop()
   })

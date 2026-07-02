@@ -4,6 +4,8 @@ import { connect, nkeyAuthenticator, type NatsConnection } from '@nats-io/transp
 import { jetstream, type JetStreamClient } from '@nats-io/jetstream'
 import { checkDeliver, checkPublish, type RosterMap } from './subject-acl.ts'
 import { buildFleetSubject, deriveFrom, parseFleetSubject } from './fleet-subject.ts'
+import { openTaskDedup, correlationIdOf, type TaskDedup } from './task-dedup.ts'
+import { logJson } from './logger.ts'
 import type { PeerTransport } from './outbound.ts'
 
 interface NatsSubscription {
@@ -31,6 +33,7 @@ interface NatsTransportOpts {
   onOverflow?: (dropped: number) => void
   connector?: (opts: ConnectOpts) => Promise<NatsConnection>
   jsFactory?: (nc: NatsConnection) => JetStreamClient
+  dedup?: TaskDedup
 }
 
 interface OutboxEntry {
@@ -72,6 +75,7 @@ export class NatsTransport implements PeerTransport {
   private jetstreamIterator: AsyncIterator<JetStreamTaskMessage> | undefined
   private jetstreamMessages: JetStreamTaskIterable | undefined
   private js: JetStreamClient | undefined
+  private dedup: TaskDedup | undefined
   private subscriptions: NatsSubscription[] = []
   private decoder = new TextDecoder()
   private encoder = new TextEncoder()
@@ -105,6 +109,18 @@ export class NatsTransport implements PeerTransport {
 
     this.connected = true
     this.js = (this.opts.jsFactory ?? jetstream)(this.nc)
+    // Permanent dedup is OPTIONAL infra and its KV-open must NEVER block/slow the
+    // task-consume startup: a missing/ungranted bucket makes `kvm.open` deadline for
+    // seconds. So open it in the BACKGROUND (bounded) — the consume loop uses it once
+    // ready and, until then / if it never opens, relies on JetStream's own ~2-minute
+    // Nats-Msg-Id window. Not silent: an unavailable bucket is logged.
+    if (this.opts.dedup) {
+      this.dedup = this.opts.dedup
+    } else {
+      void this.openDedupBounded()
+        .then(d => { this.dedup = d })
+        .catch(() => { logJson('warn', 'peer.nats.dedup_unavailable', { handle: this.opts.selfHandle }) })
+    }
     this.statusTask = this.watchStatus()
     this.subscribe(`fleet.*.to.${this.opts.selfHandle}.>`)
     this.subscribe(`fleet.*.to.${TEAM_RECIPIENT_TOKEN}.>`)
@@ -387,6 +403,23 @@ export class NatsTransport implements PeerTransport {
             continue
           }
 
+          // AC5 permanent dedup: suppress a re-delivered/re-dispatched task even after
+          // the JetStream Nats-Msg-Id window has expired. A dedup INFRA error must NOT
+          // silently drop the task — leave it un-acked (nak) so it is retried.
+          if (this.dedup) {
+            let duplicate: boolean
+            try {
+              duplicate = await this.dedup.seen(correlationIdOf(envelope.meta, envelope.id))
+            } catch {
+              await Promise.resolve(msg.nak())
+              continue
+            }
+            if (duplicate) {
+              await Promise.resolve(msg.ack()) // already processed ⇒ remove from WorkQueue, skip delivery
+              continue
+            }
+          }
+
           try {
             this.opts.onEnvelope(envelope)
             await Promise.resolve(msg.ack())
@@ -415,6 +448,22 @@ export class NatsTransport implements PeerTransport {
     if (this.jetstreamStopSignalResolver) {
       this.jetstreamStopSignalResolver()
       this.jetstreamStopSignalResolver = undefined
+    }
+  }
+
+  private async openDedupBounded(): Promise<TaskDedup | undefined> {
+    if (!this.nc) return undefined
+    const DEADLINE_MS = 1500
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        openTaskDedup(this.nc, this.opts.selfHandle),
+        new Promise<undefined>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('dedup open timeout')), DEADLINE_MS)
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 
