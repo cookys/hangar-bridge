@@ -193,6 +193,35 @@ describe('P1 live transport round-trip', () => {
     await beta.stop()
   })
 
+  it('AC7: heartbeat-driven presence — a peer shows online while heartbeating, offline after its TTL lapses', async ({ skip }) => {
+    if (!serverUp) skip('SKIP: nats-server unavailable or live setup failed')
+
+    const mk = (h: 'alpha' | 'beta', seed: string, opts: Record<string, unknown>) => new NatsTransport({
+      selfHandle: h, natsUrl: URL, nkeySeed: seed,
+      roster: { alpha: { owned: ['proj'], interest: ['proj.>'] }, beta: { owned: ['proj'], interest: ['proj.>'] } },
+      inboxPrefix: `_INBOX.${h}`, onEnvelope: () => {}, onAuthError: () => {}, ...opts,
+    })
+    // watcher alpha: short TTL so a lapsed heartbeat flips beta offline quickly.
+    const watcher = mk('alpha', alphaSeed.seed, { presenceTtlMs: 700, heartbeatMs: 100_000 })
+    // beta: heartbeats fast.
+    const heartbeater = mk('beta', betaSeed.seed, { heartbeatMs: 150 })
+    await watcher.start()
+    await heartbeater.start()
+    await wait(400) // let a couple of beta heartbeats reach alpha
+
+    const online = await watcher.listPeers()
+    expect(online.find(p => p.handle === 'beta')?.online, 'beta should be online while heartbeating').toBe(true)
+    expect(online.find(p => p.handle === 'beta')?.last_seen).not.toBeNull()
+
+    await heartbeater.stop() // beta stops heartbeating
+    await wait(900)          // exceed alpha's 700ms presence TTL
+
+    const after = await watcher.listPeers()
+    expect(after.find(p => p.handle === 'beta')?.online, 'beta should be offline once its heartbeat TTL lapses').toBe(false)
+
+    await watcher.stop()
+  })
+
   it('AC5: KV permanently dedups a repeat task_dispatch (same correlation_id, distinct wire msgs)', async ({ skip }) => {
     if (!serverUp) skip('SKIP: nats-server unavailable or live setup failed')
 

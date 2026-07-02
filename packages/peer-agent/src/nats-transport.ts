@@ -5,6 +5,7 @@ import { jetstream, type JetStreamClient } from '@nats-io/jetstream'
 import { checkDeliver, checkPublish, type RosterMap } from './subject-acl.ts'
 import { buildFleetSubject, deriveFrom, parseFleetSubject } from './fleet-subject.ts'
 import { openTaskDedup, correlationIdOf, type TaskDedup } from './task-dedup.ts'
+import { createPresenceTracker, type PresenceTracker } from './presence-tracker.ts'
 import { logJson } from './logger.ts'
 import type { PeerTransport } from './outbound.ts'
 
@@ -34,6 +35,10 @@ interface NatsTransportOpts {
   connector?: (opts: ConnectOpts) => Promise<NatsConnection>
   jsFactory?: (nc: NatsConnection) => JetStreamClient
   dedup?: TaskDedup
+  /** Presence: heartbeat TTL (ms) and interval (ms); injectable clock for tests. */
+  presenceTtlMs?: number
+  heartbeatMs?: number
+  now?: () => number
 }
 
 interface OutboxEntry {
@@ -76,13 +81,21 @@ export class NatsTransport implements PeerTransport {
   private jetstreamMessages: JetStreamTaskIterable | undefined
   private js: JetStreamClient | undefined
   private dedup: TaskDedup | undefined
+  private readonly presence: PresenceTracker
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined
   private subscriptions: NatsSubscription[] = []
   private decoder = new TextDecoder()
   private encoder = new TextEncoder()
   private jetstreamStopSignal: Promise<void> = Promise.resolve()
   private jetstreamStopSignalResolver: (() => void) | undefined
 
-  constructor(private readonly opts: NatsTransportOpts) {}
+  constructor(private readonly opts: NatsTransportOpts) {
+    this.presence = createPresenceTracker(opts.presenceTtlMs ?? 90_000)
+  }
+
+  private nowMs(): number {
+    return this.opts.now ? this.opts.now() : Date.now()
+  }
 
   get outboxDepth(): number {
     return this.outbox.length
@@ -126,10 +139,16 @@ export class NatsTransport implements PeerTransport {
     this.subscribe(`fleet.*.to.${TEAM_RECIPIENT_TOKEN}.>`)
     this.jetstreamTask = this.consumeTaskStream()
     await this.flushOutbox()
+    // AC7: publish our own presence_update heartbeat on an interval (the SoT other peers
+    // track). unref() so the timer never keeps the process alive on its own.
+    const heartbeatMs = this.opts.heartbeatMs ?? 30_000
+    this.heartbeatTimer = setInterval(() => { void this.emitHeartbeat() }, heartbeatMs)
+    this.heartbeatTimer.unref?.()
   }
 
   async stop(): Promise<void> {
     this.stopped = true
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = undefined }
     this.signalJetstreamStop()
     const jetstreamTask = this.jetstreamTask
     this.subscriptions.forEach(sub => sub.unsubscribe())
@@ -184,18 +203,37 @@ export class NatsTransport implements PeerTransport {
   }
 
   async listPeers(): Promise<Array<{ handle: string; display_name: string; online: boolean; summary: string; last_seen: string | null; sessions: Array<{ label: string; cwd?: string; branch?: string; repo?: string }> }>> {
-    return Object.entries(this.opts.roster).map(([handle, value]) => ({
-      handle,
-      display_name: handle,
-      online: false,
-      summary: '',
-      last_seen: null,
-      sessions: [],
-    }))
+    const now = this.nowMs()
+    return Object.keys(this.opts.roster).map(handle => {
+      const seen = this.presence.lastSeen(handle)
+      return {
+        handle,
+        display_name: handle,
+        // AC7: online derived from the heartbeat SoT (a peer's own handle is never "online" to itself).
+        online: handle === this.opts.selfHandle ? false : this.presence.isOnline(handle, now),
+        summary: '',
+        last_seen: seen === null ? null : new Date(seen).toISOString(),
+        sessions: [],
+      }
+    })
   }
 
-  async setPresence(_body: { summary: string; cwd?: string; branch?: string; repo?: string }): Promise<void> {
-    return undefined
+  async setPresence(body: { summary: string; cwd?: string; branch?: string; repo?: string }): Promise<void> {
+    // Publishing a presence_update to the team lane IS this peer's heartbeat.
+    const meta: Record<string, string> = { summary: body.summary }
+    if (body.cwd) meta.cwd = body.cwd
+    if (body.branch) meta.branch = body.branch
+    if (body.repo) meta.repo = body.repo
+    await this.send({ to: TEAM_BROADCAST_HANDLE, kind: 'presence_update', subject: null, content: body.summary, meta })
+  }
+
+  /** Emit this peer's own presence_update heartbeat (best-effort; a publish failure is queued/logged, not fatal). */
+  private async emitHeartbeat(): Promise<void> {
+    try {
+      await this.send({ to: TEAM_BROADCAST_HANDLE, kind: 'presence_update', subject: null, content: '', meta: {} })
+    } catch {
+      // send() already routes to the outbox / overflow signal; a heartbeat miss is non-fatal.
+    }
   }
 
   private enqueueOutbox(subject: string, payload: Uint8Array): void {
@@ -340,6 +378,9 @@ export class NatsTransport implements PeerTransport {
         const envelope = this.parseInboundEnvelope(msg)
         if (!envelope) continue
         if (!checkDeliver(envelope, this.opts.selfHandle, this.opts.roster)) continue
+        // AC7: a presence_update IS the heartbeat — record it against the anti-spoof
+        // authenticated sender (wire subject), the presence source-of-truth.
+        if (envelope.kind === 'presence_update') this.presence.onHeartbeat(parsed.sender, this.nowMs())
         this.opts.onEnvelope(envelope)
       }
     } catch {
