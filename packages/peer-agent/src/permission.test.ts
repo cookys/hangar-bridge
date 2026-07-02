@@ -53,6 +53,24 @@ describe('PermissionOutboundTracker (SEC-M1 responder authorization)', () => {
     expect(t.isAuthorizedResponder('abcde', 'dave')).toBe(true)
   })
 
+  it('revoke removes one target but keeps the others (partial send failure)', () => {
+    t.recordRelay('abcde', ['alice', 'bob'])
+    t.revoke('abcde', 'bob') // send to bob failed
+    expect(t.isAuthorizedResponder('abcde', 'alice')).toBe(true)
+    expect(t.isAuthorizedResponder('abcde', 'bob')).toBe(false)
+  })
+
+  it('revoking the last target empties the set → fail-closed for that request_id', () => {
+    t.recordRelay('abcde', ['alice'])
+    t.revoke('abcde', 'alice') // the only send failed
+    expect(t.isAuthorizedResponder('abcde', 'alice')).toBe(false)
+    expect(t.isAuthorizedResponder('abcde', 'anyone')).toBe(false)
+  })
+
+  it('revoke on an unknown request_id is a no-op', () => {
+    expect(() => t.revoke('never1', 'alice')).not.toThrow()
+  })
+
   it('drops authorization after ttl', async () => {
     const t2 = new PermissionOutboundTracker({ ttlMs: 10 })
     t2.recordRelay('abcde', ['alice'])

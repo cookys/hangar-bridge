@@ -141,6 +141,21 @@ describe('makeOutboundPermissionHandler — routing gate', () => {
     expect(relayedTo).toEqual([])
   })
 
+  it('a failed send REVOKES that target\'s authorization (actually-relayed invariant)', async () => {
+    const tracker = new PermissionOutboundTracker({ ttlMs: 60_000 })
+    const relay = makeOutboundPermissionHandler({
+      client: { send: async () => { throw new Error('relay down') } },
+      approvalRouter: new ApprovalRouter({ routing: 'ask_specific_peer:bob' }),
+      selfHandle: 'alice',
+      ttlMs: 60_000,
+      outboundTracker: tracker,
+    })
+    await relay(PARAMS)
+    // bob was recorded before the send, but the send failed → bob must NOT stay
+    // authorized to apply a later verdict.
+    expect(tracker.isAuthorizedResponder('abcde', 'bob')).toBe(false)
+  })
+
   it('SEC-M1: records the relay-target set on the outbound tracker BEFORE sending', async () => {
     const { client } = fakeClient()
     const tracker = new PermissionOutboundTracker({ ttlMs: 60_000 })

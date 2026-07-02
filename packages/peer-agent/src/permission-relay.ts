@@ -86,7 +86,7 @@ export interface OutboundPermissionRelayDeps {
    * path can reject a verdict from a peer we did NOT ask. Wired in production; optional
    * so pure routing-gate tests can omit it.
    */
-  outboundTracker?: Pick<PermissionOutboundTracker, 'recordRelay'> | undefined
+  outboundTracker?: Pick<PermissionOutboundTracker, 'recordRelay' | 'revoke'> | undefined
   now?: () => Date
 }
 
@@ -123,6 +123,11 @@ export function makeOutboundPermissionHandler(deps: OutboundPermissionRelayDeps)
         await deps.client.send(buildOutboundPermissionRequest(params, to, deps.selfHandle, expiresAt))
         relayed.push(to)
       } catch (err) {
+        // "actually relayed" invariant: we recorded this target BEFORE sending (race
+        // safety), so if the send FAILED we must revoke it — a peer we never reached
+        // must not stay authorized to apply a later verdict. If every target fails the
+        // request_id's set empties out → any verdict is then fail-closed dropped.
+        deps.outboundTracker?.revoke(params.request_id, to)
         logJson('warn', 'peer.permission.relay_send_error', {
           request_id: params.request_id, to, err: String(err instanceof Error ? err.message : err),
         })

@@ -77,6 +77,21 @@ export class PermissionOutboundTracker {
     this.gc()
   }
 
+  /**
+   * Revoke one target from a request_id's authorized set — called when the outbound
+   * send to that peer FAILED, so the "authorize only peers we actually relayed to"
+   * invariant holds (a peer we recorded-before-send but never reached must not be able
+   * to apply a later verdict). If the set becomes empty (all sends failed) the entry is
+   * dropped entirely → any subsequent verdict for that request_id is fail-closed dropped.
+   */
+  revoke(request_id: string, target: string): void {
+    const key = request_id.toLowerCase()
+    const v = this.map.get(key)
+    if (!v) return
+    v.targets.delete(target)
+    if (v.targets.size === 0) this.map.delete(key)
+  }
+
   /** True iff we relayed this request_id AND `from` is one of the peers we relayed to. */
   isAuthorizedResponder(request_id: string, from: string): boolean {
     const key = request_id.toLowerCase()
