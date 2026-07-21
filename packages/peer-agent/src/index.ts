@@ -3,33 +3,162 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS } from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
-import { loadConfig, loadToken, assertTokenNotInRepo } from './config.ts'
-import { RelayClient } from './outbound.ts'
-import { registerTools, buildPresenceBody, TOOL_DESCRIPTORS, TOOL_DESCRIPTOR_RESPOND, TOOL_DESCRIPTOR_DISPATCH } from './tools.ts'
+import { loadConfig, loadToken, assertTokenNotInRepo, assertSecretFilePrivate } from './config.ts'
+import { readTokenFile } from './cli/token-file.ts'
+import { loadRoster } from './subject-acl.ts'
+import { RelayClient, type ClaimClient, type PeerTransport } from './outbound.ts'
+import { NatsTransport } from './nats-transport.ts'
+import { createNatsAuditWriter } from './audit-log.ts'
+import {
+  registerTools, buildPresenceBody, TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS,
+  TOOL_DESCRIPTOR_RESPOND, dispatchToolDescriptor,
+} from './tools.ts'
 import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
 import { StreamClient } from './stream.ts'
-import { PermissionTracker } from './permission.ts'
+import { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
+import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
+import { defaultDispatchStatePath } from './paths.ts'
+import { installLifecycleShutdown } from './lifecycle.ts'
+import { FileNatsInstanceGuard } from './nats-instance-lock.ts'
+import { verifyClaimCompatibility } from './claims-compat.ts'
 import { pathToFileURL } from 'node:url'
 import { logJson } from './logger.ts'
 
 async function main(): Promise<void> {
   const cfg = loadConfig()
-  assertTokenNotInRepo(cfg.token_path)
-  const token = loadToken(cfg.token_path)
+  let token: string | undefined
+  let claimClient: ClaimClient | undefined
+
+  if (cfg.transport === 'sse') {
+    assertTokenNotInRepo(cfg.token_path)
+    token = loadToken(cfg.token_path)
+  } else {
+    // During the reversible NATS cutover (P5), the relay remains available. Reuse
+    // its authenticated coordination API for claim_asset/list_claims/release_claim
+    // when the legacy token is still present, without making NATS transport startup
+    // depend on that optional compatibility path. P6 must port or retire claims
+    // before the relay can be deleted.
+    try {
+      assertTokenNotInRepo(cfg.token_path)
+      const candidate = new RelayClient({
+        relayUrl: cfg.relay_url,
+        token: loadToken(cfg.token_path),
+        requestTimeoutMs: 1_500,
+      })
+      // Tool advertisement is a capability promise. Prove both reachability and
+      // authentication with a bounded, read-only request before exposing claim tools.
+      claimClient = await verifyClaimCompatibility(candidate)
+    } catch (err) {
+      logJson('warn', 'peer.claims.unavailable', describeError(err))
+    }
+  }
+
+  const selfHandle = cfg.self ?? ''
 
   const permissionRelayEnabled = cfg.permission_relay.enabled
   const { server } = createMcpServer({ permissionRelay: permissionRelayEnabled })
-  const client = new RelayClient({ relayUrl: cfg.relay_url, token })
   const permissionTracker = permissionRelayEnabled
     ? new PermissionTracker({ ttlMs: PERMISSION_REQUEST_TTL_MS })
     : undefined
-  const dispatchTracker = new DispatchTracker({ ttlMs: DISPATCH_REQUEST_TIMEOUT_MS })
+  // SEC-M1: outbound relay-target authorization for inbound permission_verdicts.
+  const permissionOutboundTracker = permissionRelayEnabled
+    ? new PermissionOutboundTracker({ ttlMs: PERMISSION_REQUEST_TTL_MS })
+    : undefined
+  const dispatchTracker = new DispatchTracker({
+    ttlMs: DISPATCH_REQUEST_TIMEOUT_MS,
+    persistPath: defaultDispatchStatePath(),
+  })
   const approvalRouter = new ApprovalRouter({ routing: cfg.permission_relay.routing as RoutingPolicy })
+  const replyLimiter = new ReplyLimiter({ windowMs: 10_000, maxReplies: 2 })
+
+  const gate = new SenderGate([])
+  const onAuthError = () => {
+    logJson('error', 'peer.auth_failed')
+    process.exit(2)
+  }
+
+  let cursor: string | undefined
+  const dispatcher = new InboundDispatcher({
+    gate,
+    emit: n => server.notification(n as never),
+    setCursor: id => { cursor = id },
+    interest: cfg.subjects.interest,
+    permissionTracker,
+    dispatchTracker,
+    permissionOutboundTracker,
+    replyLimiter,
+  })
+
+  let client: PeerTransport
+  let stream: { start: () => Promise<void>; stop: () => void | Promise<void> }
+
+  if (cfg.transport === 'nats') {
+    if (!selfHandle) throw new Error('self is required when transport is nats')
+    if (!cfg.nats) throw new Error(`nats transport requires a nats config block`)
+    const nkeySeedPath = cfg.nats.nkey_seed_path
+    const rosterPath = cfg.nats.roster_path
+    if (!nkeySeedPath) throw new Error(`nats.nkey_seed_path is required when transport is nats`)
+    if (!rosterPath) throw new Error(`nats.roster_path is required when transport is nats`)
+    const roster = loadRoster(rosterPath)
+    assertTokenNotInRepo(nkeySeedPath)
+    assertSecretFilePrivate(nkeySeedPath, 'NKey seed')
+    const nkeySeed = readTokenFile(nkeySeedPath)
+    const natsTransport = new NatsTransport({
+      selfHandle,
+      natsUrl: cfg.nats.url ?? cfg.relay_url,
+      nkeySeed,
+      roster,
+      // exactOptionalPropertyTypes: only pass inboxPrefix when set (NatsTransport
+      // defaults it to `_INBOX.<selfHandle>` otherwise).
+      ...(cfg.nats.inbox_prefix ? { inboxPrefix: cfg.nats.inbox_prefix } : {}),
+      onEnvelope: e => dispatcher.handle(e),
+      onAuthError,
+      auditWriter: createNatsAuditWriter(cfg.audit_log),
+      instanceGuard: new FileNatsInstanceGuard(selfHandle),
+      reconnectBaseMs: 500,
+    })
+    client = natsTransport
+    stream = natsTransport
+  } else {
+    if (!token) throw new Error('sse transport requires token_path')
+    const relayClient = new RelayClient({ relayUrl: cfg.relay_url, token })
+    client = relayClient
+    claimClient = relayClient
+
+    // Auto-report presence on every (re)connect and on a heartbeat, so
+    // list_peers.online reflects the live SSE connection without requiring an
+    // explicit set_summary call. The NATS transport owns its separate heartbeat.
+    let lastSummary = '(connected)'
+    const originalSetPresence = relayClient.setPresence.bind(relayClient)
+    relayClient.setPresence = async body => {
+      if (body.summary) lastSummary = body.summary
+      return originalSetPresence(body)
+    }
+    const reportPresence = async () => {
+      try {
+        await relayClient.setPresence(buildPresenceBody(cfg.presence, lastSummary, detectWorkingContext()))
+      } catch (err) {
+        logJson('warn', 'peer.presence.auto_report_error', describeError(err))
+      }
+    }
+
+    stream = new StreamClient({
+      relayUrl: cfg.relay_url,
+      token,
+      sinceCursor: () => cursor,
+      subjects: cfg.subjects.interest,
+      onEnvelope: async e => { await dispatcher.handle(e) },
+      onAuthError,
+      onConnect: reportPresence,
+      heartbeatMs: PRESENCE_HEARTBEAT_MS,
+    })
+  }
+
   const originalSend = client.send.bind(client)
   client.send = async (msg, opts) => {
     if (msg.kind === 'chat' && typeof msg.to === 'string' && msg.to !== '@team') {
@@ -37,14 +166,16 @@ async function main(): Promise<void> {
     }
     return originalSend(msg, opts)
   }
-  const replyLimiter = new ReplyLimiter({ windowMs: 10_000, maxReplies: 2 })
-  const { callTool } = registerTools(client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker)
 
+  const { callTool } = registerTools(
+    client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient,
+  )
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...TOOL_DESCRIPTORS,
+      ...(claimClient ? TOOL_DESCRIPTORS_CLAIMS : []),
       ...(permissionRelayEnabled ? [TOOL_DESCRIPTOR_RESPOND] : []),
-      TOOL_DESCRIPTOR_DISPATCH,
+      dispatchToolDescriptor(client),
     ],
   }))
   server.setRequestHandler(CallToolRequestSchema, async req => {
@@ -55,12 +186,26 @@ async function main(): Promise<void> {
     }
   })
 
+  // OUTBOUND permission relay (Claude Code → peer). Only wired when permission_relay is
+  // enabled — same gate as the `claude/channel/permission` capability, so Claude Code
+  // won't even send these notifications otherwise. The ApprovalRouter is a second gate:
+  // routing=never_relay (the default) picks no peer, so nothing is forwarded and the
+  // local dialog stays the sole authority.
+  if (permissionRelayEnabled) {
+    registerOutboundPermissionRelay(server, {
+      client,
+      approvalRouter,
+      selfHandle,
+      ttlMs: PERMISSION_REQUEST_TTL_MS,
+      outboundTracker: permissionOutboundTracker,
+    })
+  }
+
   logJson('info', 'peer.startup', { relay_url: cfg.relay_url })
 
   // Seed the roster. Failing here used to crash the peer-agent hard, breaking
-  // every Claude Code session if the relay happened to be down. Now: start
-  // with an empty roster, let the refresh loop recover once the relay is back.
-  const gate = new SenderGate([])
+  // every Claude Code session if transport is down. Now: start
+  // with an empty roster, let the refresh loop recover once transport starts.
   const refreshRoster = async () => {
     try {
       const peers = await client.listPeers()
@@ -71,46 +216,20 @@ async function main(): Promise<void> {
     }
   }
   void refreshRoster()
-  setInterval(refreshRoster, 60_000)
+  // unref so this background timer never keeps the event loop alive on its own —
+  // the process should live and die with its stdio parent, not with this timer.
+  const rosterTimer = setInterval(refreshRoster, 60_000)
+  rosterTimer.unref?.()
 
-  let cursor: string | undefined
-  const dispatcher = new InboundDispatcher({
-    gate,
-    emit: n => { void server.notification(n as never) },
-    setCursor: id => { cursor = id },
-    interest: cfg.subjects.interest,
-    permissionTracker,
-    dispatchTracker,
-    replyLimiter,
-  })
-
-  // Auto-report presence on every (re)connect and on a heartbeat, so list_peers.online
-  // reflects the live SSE connection WITHOUT requiring the agent to call set_summary.
-  // The last summary set via set_summary is remembered so the heartbeat keeps it; before
-  // any summary is set we report a neutral "(connected)" marker. cwd/branch/repo attach
-  // only when the operator's privacy flags allow (buildPresenceBody).
-  let lastSummary = '(connected)'
-  const originalSetPresence = client.setPresence.bind(client)
-  client.setPresence = async body => { if (body.summary) lastSummary = body.summary; return originalSetPresence(body) }
-  const reportPresence = async () => {
-    try {
-      await client.setPresence(buildPresenceBody(cfg.presence, lastSummary, detectWorkingContext()))
-    } catch (err) {
-      logJson('warn', 'peer.presence.auto_report_error', describeError(err))
-    }
-  }
-
-  const stream = new StreamClient({
-    relayUrl: cfg.relay_url,
-    token,
-    sinceCursor: () => cursor,
-    subjects: cfg.subjects.interest,
-    onEnvelope: e => dispatcher.handle(e),
-    onAuthError: () => { logJson('error', 'peer.auth_failed'); process.exit(2) },
-    onConnect: reportPresence,
-    heartbeatMs: PRESENCE_HEARTBEAT_MS,
-  })
   await server.connect(new StdioServerTransport())
+  // Exit with the stdio parent (Claude Code). Without this the process orphans on
+  // parent death and keeps a stale transport connection alive under the same handle,
+  // which makes presence flap between duplicates. Works for both the SSE and NATS
+  // transports (both expose start()/stop()). See lifecycle.ts.
+  installLifecycleShutdown({
+    cleanup: () => { clearInterval(rosterTimer); void stream.stop() },
+    onShutdown: reason => logJson('info', 'peer.shutdown', { reason }),
+  })
   stream.start().catch(err => {
     logJson('error', 'peer.stream.fatal', {
       err: String(err instanceof Error ? err.message : err),

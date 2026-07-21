@@ -6,7 +6,7 @@ import {
   CLAIM_TTL_MIN_SECONDS, CLAIM_TTL_MAX_SECONDS, CLAIM_DEFAULT_TTL_SECONDS,
   type OutboundMessage, type MessageId,
 } from '@hangar-bridge/shared'
-import type { RelayClient } from './outbound.ts'
+import type { ClaimClient, PeerTransport } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
@@ -62,7 +62,7 @@ export const TOOL_DESCRIPTORS = [
       properties: {
         to: { type: 'string', description: 'handle like "alice" or the literal "@team"' },
         content: { type: 'string' },
-        subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); requires a concrete `to` (not @team) and ownership of the namespace' },
+        subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); publisher must own the namespace. Allowed on @team only for chat, where receivers are filtered by ownership + interest' },
         in_reply_to: { type: 'string', description: 'msg_id being replied to (optional)' },
         meta: { type: 'object', additionalProperties: { type: 'string' } },
       },
@@ -83,6 +83,9 @@ export const TOOL_DESCRIPTORS = [
       required: ['summary'],
     },
   },
+] as const
+
+export const TOOL_DESCRIPTORS_CLAIMS = [
   {
     name: 'claim_asset',
     description: 'Acquire a cooperative advisory lock on a shared asset (e.g. a file, a repo path, a config) so teammates know you are working on it and avoid a collision (P4). Renews if you already hold it. Returns a conflict (with the current owner + expiry) if another teammate holds a live claim — back off or coordinate. Claims auto-expire after ttl_seconds so a crashed holder never wedges an asset.',
@@ -128,7 +131,7 @@ export const TOOL_DESCRIPTOR_RESPOND = {
 
 export const TOOL_DESCRIPTOR_DISPATCH = {
   name: 'dispatch_task',
-  description: 'Hand a task off to a teammate (or @team for fanout). The result returns as a task_result channel notification keyed by correlation_id. Unlike send_to_peer, this is user-initiated and is NOT throttled by the reply-storm limiter.',
+  description: 'Hand a task off to a teammate (or @team for fanout). The receiver gets a structured task_dispatch keyed by correlation_id. The current MCP surface does not yet expose a structured task_result response tool, so receiver completion comes back as chat. Unlike send_to_peer, dispatch is user-initiated and is NOT throttled by the reply-storm limiter.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -141,6 +144,21 @@ export const TOOL_DESCRIPTOR_DISPATCH = {
     required: ['to', 'payload'],
   },
 } as const
+
+export function dispatchToolDescriptor(client: PeerTransport) {
+  if (client.capabilities?.teamTaskFanout !== false) return TOOL_DESCRIPTOR_DISPATCH
+  return {
+    ...TOOL_DESCRIPTOR_DISPATCH,
+    description: 'Hand a task off to one concrete teammate. This NATS transport does not advertise @team task fanout because durable WorkQueue consumers are recipient-scoped.',
+    inputSchema: {
+      ...TOOL_DESCRIPTOR_DISPATCH.inputSchema,
+      properties: {
+        ...TOOL_DESCRIPTOR_DISPATCH.inputSchema.properties,
+        to: { type: 'string', description: 'one concrete peer handle like "alice"; @team is unavailable on this transport' },
+      },
+    },
+  }
+}
 
 export interface PresenceOpts {
   auto_publish_cwd: boolean
@@ -174,12 +192,22 @@ export function buildPresenceBody(
 }
 
 export function registerTools(
-  client: RelayClient,
+  client: PeerTransport,
   presence: PresenceOpts,
   permissionTracker?: PermissionTracker,
   replyLimiter?: ReplyLimiter,
   dispatchTracker?: DispatchTracker,
+  claimClient?: ClaimClient,
 ) {
+  const candidate = client as PeerTransport & Partial<ClaimClient>
+  const claims = claimClient ?? (
+    typeof candidate.claim === 'function'
+    && typeof candidate.listClaims === 'function'
+    && typeof candidate.releaseClaim === 'function'
+      ? candidate as ClaimClient
+      : undefined
+  )
+
   async function callTool(name: string, args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
     if (name === 'send_to_peer') {
       const input = SendInput.parse(args)
@@ -219,11 +247,12 @@ export function registerTools(
       return { content: [{ type: 'text', text: 'presence updated' }] }
     }
     if (name === 'claim_asset') {
+      if (!claims) throw new Error('claim tools unavailable: relay coordination client is not configured')
       const input = ClaimInput.parse(args)
       const body: { key: string; ttl_seconds?: number; note?: string } = { key: input.key }
       if (input.ttl_seconds !== undefined) body.ttl_seconds = input.ttl_seconds
       if (input.note !== undefined) body.note = input.note
-      const r = await client.claim(body)
+      const r = await claims.claim(body)
       if (!r.ok) {
         return { content: [{ type: 'text', text: `claim_conflict: "${input.key}" is held by ${r.conflict.owner} until ${r.conflict.expires_at}` }] }
       }
@@ -231,13 +260,15 @@ export function registerTools(
       return { content: [{ type: 'text', text: `${verb} "${r.claim.claim_key}" until ${r.claim.expires_at}` }] }
     }
     if (name === 'list_claims') {
+      if (!claims) throw new Error('claim tools unavailable: relay coordination client is not configured')
       ListClaimsInput.parse(args)
-      const claims = await client.listClaims()
-      return { content: [{ type: 'text', text: JSON.stringify(claims, null, 2) }] }
+      const liveClaims = await claims.listClaims()
+      return { content: [{ type: 'text', text: JSON.stringify(liveClaims, null, 2) }] }
     }
     if (name === 'release_claim') {
+      if (!claims) throw new Error('claim tools unavailable: relay coordination client is not configured')
       const input = ReleaseClaimInput.parse(args)
-      const r = await client.releaseClaim(input.key)
+      const r = await claims.releaseClaim(input.key)
       if (!r.ok) {
         return { content: [{ type: 'text', text: `cannot release "${input.key}": held by ${r.owner}` }] }
       }
@@ -246,6 +277,9 @@ export function registerTools(
     if (name === 'dispatch_task') {
       if (!dispatchTracker) throw new Error('dispatch_task disabled (no DispatchTracker wired)')
       const input = DispatchInput.parse(args)
+      if (input.to === TEAM_BROADCAST_HANDLE && client.capabilities?.teamTaskFanout === false) {
+        throw new Error('dispatch_task to @team is unavailable on NATS; choose a concrete peer handle')
+      }
       const correlation_id = (input.correlation_id ?? ulid()).toUpperCase()
       // K5: intentionally skip replyLimiter.canReplyTo + recordOutbound for the
       // dispatch path. dispatch_task is user-initiated work, not a bot reply,

@@ -38,5 +38,15 @@ coverage/
 # docs/ — upstream ignored this for local notes; hangar-bridge fork tracks
 # it for project artifacts (file-tree.txt, kind-discrimination-sites.txt etc.)
 
-# autopilot session tracking (local only)
-.claude/
+# autopilot runtime state under .claude/ (the *-config.md DI files ARE tracked)
+.claude/settings.local.json
+.claude/tasks/
+.claude/session-digests/
+.claude/session-start-sha
+.claude/*-state.json
+.claude/improvement-queue.json
+.claude/knowledge/
+.qc/
+
+# git worktrees created by autopilot hetero/verify dispatch
+.claude/worktrees/

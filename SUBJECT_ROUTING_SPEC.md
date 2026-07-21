@@ -22,8 +22,11 @@ IMPLEMENTED 2026-06-22 on branch `feat/subject-routing-acl` (stage1 c12ca54 / st
        factor640/COORDINATION.md §收令方, which forbids trusting meta.task_kind). Defense reduced from 2 layers
        (strip + receiver discipline) to 1 verified layer (receiver discipline) — accepted residual; phase-4
        rollout MUST keep that COORDINATION.md contract in place.
-  TODO (operator): muyan relay deploy (peers.json subjects.owned + restart/init); per-box config.json
-  subjects.interest; same-box cross-project isolation via project-scoped .mcp.json + HANGAR_CONFIG_DIR.
+  OPERATOR ROLLOUT DEFERRED: the relay deployment (peers.json subjects.owned + restart/init) and
+  per-box subjects.interest require real fleet access. Same-box project-scoped .mcp.json +
+  HANGAR_CONFIG_DIR is implemented. Track remaining rollout in docs/BACKLOG.md.
+  TRANSPORT PARITY 2026-07-21: NATS P0–P4 relocates the same ownership/interest checks into
+  peer-agent subject-acl.ts; stage-3 subject-scoped @team chat is supported on both transports.
 Generated 2026-06-22.
 -->
 
@@ -59,7 +62,7 @@ Two coupled outcomes:
 1. **Subject-based routing + filtering** — so unrelated projects/sessions stop receiving `mple2` traffic. Today every subscriber for a handle (or every online handle for `@team`) receives the envelope (`fanout.ts:37-50`); a Claude Code session doing unrelated work on a box still gets `[command::mple2]` dispatches because routing is by handle only, not by topic. This is the context-pollution defect.
 2. **Fail-closed namespace ACL for cross-box authorization** — a subject's first dot-token is a *namespace*; only a peer that **owns** that namespace (per the relay DB, sourced from `peers.json`) may publish or receive it. Kept lean by **constraining subjects to direct messages** (decision 2), which preserves the single `message.delivered_at` flag and avoids a per-recipient delivery table.
 
-**R1 framing — commands are per-handle gated DMs, never `@team`.** Because the fleet is ~6 boxes, command fan-out cost is trivial. The hub (cuda) loops over the owner handles for a namespace and sends one **gated, subjected direct DM** per owner. This makes the command routing key (the subject) the thing the ACL governs, and removes `@team` from the command path entirely. `@team` survives only as a null-subject ambient coordination/legacy channel (§12.2).
+**R1 framing — commands are per-handle gated DMs, never `@team`.** Because the fleet is ~6 boxes, command fan-out cost is trivial. The hub (cuda) loops over the owner handles for a namespace and sends one **gated, subjected direct DM** per owner. This makes the command routing key (the subject) the thing the ACL governs, and removes `@team` from the command path entirely. `@team` remains a coordination chat channel: ambient when null-subject, or receiver-filtered when subject-scoped under the §14 addendum. It is never an authoritative command path.
 
 ### 1.2 Non-goals (expanded in §12)
 Same-box cross-project isolation; separate publish/subscribe ACL lists; wildcards beyond a trailing `>`; compromised-relay threat; intra-namespace blast radius; a per-recipient delivery table; the null-subject `@team` ambient CONTENT path; the `subject=null` ack/correlation channel. All deliberately out of scope (accepted residuals enumerated honestly in §12.2).
@@ -219,11 +222,16 @@ Logic (in order):
    The relay persists envelope meta verbatim (store.ts:48-55) and `META_KEY_REGEX` (constants.ts:9) lets `subject`/`kind`/`task_kind` through, so without this strip a sender-supplied `meta.subject`/`meta.task_kind` would survive to the receiver and be rendered into channel meta (the B1 confused deputy). After this strip, the ONLY `subject` that reaches a receiver is the relay-stamped envelope `subject` field (surfaced as the integrity-protected `gated_subject`, §9/M5). (Decision: STRIP, not reject — stripping is non-breaking for benign callers that happen to set a colliding meta key; the gated signal is unaffected because it never came from meta.)
 1. **Null short-circuit (M4 ack protection):** if `parsed.data.subject == null` → unrestricted, proceed (back-compat). Because the schema (§2.1) forces `in_reply_to ⇒ subject=null`, **every ack/reply lands here** and bypasses the namespace gate — this null short-circuit is exactly what protects the ack/correlation channel. (Anti-spoof recipient-identity mitigation in §9.)
 2. **Kind exemption (M3 — narrowed):** if `parsed.data.subject == null` (covered above) **OR** `parsed.data.kind ∈ {presence_update, permission_request, permission_verdict}` → skip the namespace gate. A **subjected `task_result` is GATED** (not blanket-exempt) — no tool currently emits `task_result`, but if one ever carries a subject it must obey ownership. So `chat`, `task_dispatch`, and subjected `task_result` are subject-gated; only the three reactive/handshake kinds (plus all null-subject) are exempt.
-3. **Direct-only check:** `subject != null && to == @team` → `400 { error: 'invalid_message', message: 'subjected_team_broadcast' }`. (R1: this is the {task_dispatch,@team}=400 enforcement at the route.)
+3. **Command direct-only check (stage-3 amended):** `subject != null && to == @team && kind != chat`
+   → `400 { error: 'invalid_message', message: 'subjected_team_broadcast' }`. A subjected `@team`
+   chat continues to publisher ownership and per-subscriber delivery filtering (§14).
 4. **Publisher ownership:** load the publisher's owned-set (the authenticated `c.get('peer').handle`, never client input) and require `ownsNamespace(subject, ownedPublisher)`. On failure:
    - `403 { error: 'forbidden_subject' }`
    - `INSERT INTO audit_log(team_id,at,actor_human_id,event,detail_json)` — same statement shape as `permission.ts` / `purge.ts` — `event='subject.publish_denied'`, detail `{ subject, namespace, handle }`. **Not silent.** Do NOT insert the message.
-5. **R3 — Recipient ownership (NEW, no black-holed rows):** load the concrete recipient's owned-set (`parsed.data.to`, a concrete handle by step 3) and require `ownsNamespace(subject, ownedRecipient)`. On failure:
+5. **R3 — Recipient ownership (NEW, no black-holed rows):** for a concrete recipient, load its
+   owned-set and require `ownsNamespace(subject, ownedRecipient)`. For a subjected `@team` chat,
+   there is no synthetic recipient owner; each subscriber is gated independently (§14). On a
+   concrete-recipient failure:
    - `409 { error: 'recipient_not_owner' }`
    - `INSERT INTO audit_log` `event='subject.recipient_denied'`, detail `{ subject, namespace, from, to }`.
    - **Do NOT insert the message.** Rationale: a subjected row whose `to`-handle does not own the namespace can NEVER pass the subscribe-side ownership gate (§4.3), so inserting it produces a permanently-undeliverable row that sits forever in the `LIMIT 1000` backlog window, starving deliverable rows. Rejecting at publish keeps the backlog free of black holes. (This is also why the hub fans out per-OWNER under R1 — every recipient of a subjected command provably owns the namespace.)
@@ -278,13 +286,16 @@ Axes: `{subject null | set}` × `{interest none | set}` × `{recipient owns ns |
 | set | handle | none | NO (recipient) | **REJECTED at publish — 409 `recipient_not_owner`, row never inserted (R3)** | n/a (no row) |
 | set | handle | set, matches | YES | DELIVER | DELIVER |
 | set | handle | set, no match | YES | DROP (interest narrowed) | DROP at filter; row stays pending, replayed on a future connect that widens interest (B3) |
-| **set** | **@team** | any | n/a | **REJECTED at publish — 400 `subjected_team_broadcast` (R1)** | n/a (no row) |
+| **set, kind=chat** | **@team** | none/matches | receiver YES | DELIVER to each owning/matching subscriber (§14) | DELIVER by cursor + same receiver gate |
+| **set, kind=chat** | **@team** | any | receiver NO/no match | DROP for that subscriber | DROP for that subscriber |
+| **set, kind≠chat** | **@team** | any | n/a | **REJECTED at publish — 400 `subjected_team_broadcast` (R1)** | n/a (no row) |
 | **kind=task_dispatch** | **@team** | any | n/a | **REJECTED — 400 `subjected_team_broadcast`. MIGRATION: hub MUST fan out one gated direct DM per owner handle instead of one `@team` dispatch (R1)** | n/a (no row) |
 
 Notes:
 - Ownership is evaluated before interest in all delivered cells (§4.3 ordering).
 - Publisher non-ownership of the namespace is also a publish-time `403 forbidden_subject` (§4.1 step 4) and never reaches LIVE/BACKLOG.
-- `@team` is always `subject=null` (direct-only invariant), so legitimate `@team` rows fall in the top two rows and remain unchanged. The bottom two rows are the R1 hard rejects.
+- `@team` remains `subject=null` for ambient coordination and all non-chat kinds. Stage 3 adds the
+  receiver-gated subjected-chat rows above; command kinds remain R1 hard rejects.
 - **B3 — interest-narrowed owned rows are NOT black holes.** An owned row dropped by interest narrowing on connection 1 keeps `delivered_at=NULL` and is still reachable: a later cold-start drain (no `?since=`) enumerates it pending-only, and a client-cursor resume can reach it via the `id>since` resume primitive if the client's cursor is below it. Interest is a per-connection narrowing, not a permanent delivery rejection.
 - **R1 migration note:** any caller that previously sent `dispatch_task(to:"@team", task_kind:"mple2.…")` now receives 400. The supported replacement is a per-owner fan-out of gated direct DMs (see §13 COORDINATION.md changes).
 
@@ -506,7 +517,11 @@ The relay runs on **muyan**. Per `COORDINATION.md`, adding/altering peers requir
 
 ### 12.2 Accepted residual risks (NOT solved — kept documented, do not attempt to fix)
 - **Ack/correlation channel is `subject=null`, hence outside the ACL.** Acks (`send_to_peer … in_reply_to`, `respond_to_permission`) are forced `subject=null` by the M4 schema invariant and hit the publish-gate null short-circuit, so they bypass the namespace gate. **Mitigation, not elimination:** the recipient-identity check on `subject=null` replies (§9.3) — the replier should be the original message's `to_handle`. A determined sender on the roster can still send a null-subject `chat` to any handle.
-- **Null-subject `@team` ambient CONTENT path.** `@team` is, by the direct-only rule, always null-subject and thus never namespace-gated; any roster member can broadcast content to all online peers. **Accepted because** under R1 *commands* now carry subjects and are per-owner gated DMs (so the command routing key IS gated, and `@team` is no longer a command channel at all), and `@team` is coordination/legacy content only — and it is **audited** (access-log + existing audit trail). It is an ambient channel, not a confidential one. NOTE: this is distinct from the now-RESOLVED `@team` COMMAND break (R1) and from the now-RESOLVED `meta.subject` confused deputy (B1) — both of those are fixed; only the ambient content path remains.
+- **Null-subject `@team` ambient CONTENT path.** A null-subject `@team` chat is not namespace-gated;
+  any roster member can broadcast it. §14 adds a separate subject-scoped `@team` chat path whose
+  publisher and each receiver are gated. The ambient path remains accepted because commands carry
+  subjects and use per-owner direct DMs; `@team` is not a command channel. Access is audited. This
+  is distinct from the resolved command-broadcast and `meta.subject` confused-deputy defects.
 - **Same-box cross-project isolation** — see §12.1; solved via project-scoped configuration directories and `.mcp.json` integration (see [docs/PROJECT_ISOLATION.md](docs/PROJECT_ISOLATION.md)).
 - **Intra-namespace blast radius** — restated: namespace ownership is all-or-nothing; any owner sees every subject under the namespace.
 - **Compromised-relay forge-`from`/forge-`subject`** — restated: the relay can forge identity OR the gated subject and bypass the gate; out of scope in v1's trust model. (Note: the B1 fix closes SENDER forgery of the gated subject via `meta`; it does not and cannot close a compromised RELAY forging the envelope `subject` itself — that is the v1 trust-anchor residual.)

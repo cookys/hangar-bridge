@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
-import { registerTools, buildPresenceBody } from './tools.ts'
+import {
+  registerTools,
+  buildPresenceBody,
+  dispatchToolDescriptor,
+  TOOL_DESCRIPTORS,
+  TOOL_DESCRIPTORS_CLAIMS,
+} from './tools.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import type { RelayClient } from './outbound.ts'
@@ -63,10 +69,15 @@ describe('buildPresenceBody — privacy gating', () => {
 describe('registerTools — claim tools', () => {
   const presence = { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false }
   const baseClient = () => ({ send: vi.fn(), listPeers: vi.fn(async () => []), setPresence: vi.fn() })
+  const baseClaims = () => ({
+    claim: vi.fn(),
+    listClaims: vi.fn(async () => []),
+    releaseClaim: vi.fn(),
+  })
 
   it('claim_asset reports claimed/renewed on success', async () => {
     const claim = vi.fn(async () => ({ ok: true, renewed: false, claim: { claim_key: 'k', expires_at: 't2' } }))
-    const client = { ...baseClient(), claim } as unknown as RelayClient
+    const client = { ...baseClient(), ...baseClaims(), claim } as unknown as RelayClient
     const { callTool } = registerTools(client, presence)
     const r = await callTool('claim_asset', { key: 'k', ttl_seconds: 60, note: 'x' })
     expect(claim).toHaveBeenCalledWith({ key: 'k', ttl_seconds: 60, note: 'x' })
@@ -75,21 +86,21 @@ describe('registerTools — claim tools', () => {
 
   it('claim_asset surfaces conflict with owner + expiry', async () => {
     const claim = vi.fn(async () => ({ ok: false, conflict: { owner: 'bob', expires_at: 't9' } }))
-    const client = { ...baseClient(), claim } as unknown as RelayClient
+    const client = { ...baseClient(), ...baseClaims(), claim } as unknown as RelayClient
     const { callTool } = registerTools(client, presence)
     const r = await callTool('claim_asset', { key: 'k' })
     expect((r.content[0] as any).text).toContain('held by bob')
   })
 
   it('claim_asset rejects an invalid key', async () => {
-    const client = { ...baseClient(), claim: vi.fn() } as unknown as RelayClient
+    const client = { ...baseClient(), ...baseClaims() } as unknown as RelayClient
     const { callTool } = registerTools(client, presence)
     await expect(callTool('claim_asset', { key: 'bad key!' })).rejects.toThrow()
   })
 
   it('list_claims returns the claim list JSON', async () => {
     const listClaims = vi.fn(async () => [{ claim_key: 'k', owner_handle: 'alice' }])
-    const client = { ...baseClient(), listClaims } as unknown as RelayClient
+    const client = { ...baseClient(), ...baseClaims(), listClaims } as unknown as RelayClient
     const { callTool } = registerTools(client, presence)
     const r = await callTool('list_claims', {})
     expect((r.content[0] as any).text).toContain('alice')
@@ -97,16 +108,27 @@ describe('registerTools — claim tools', () => {
 
   it('release_claim reports released / conflict', async () => {
     const releaseClaim = vi.fn(async () => ({ ok: true, released: true }))
-    const client = { ...baseClient(), releaseClaim } as unknown as RelayClient
+    const client = { ...baseClient(), ...baseClaims(), releaseClaim } as unknown as RelayClient
     const { callTool } = registerTools(client, presence)
     const r = await callTool('release_claim', { key: 'k' })
     expect((r.content[0] as any).text).toContain('released "k"')
 
     const releaseClaim2 = vi.fn(async () => ({ ok: false, owner: 'bob' }))
-    const client2 = { ...baseClient(), releaseClaim: releaseClaim2 } as unknown as RelayClient
+    const client2 = { ...baseClient(), ...baseClaims(), releaseClaim: releaseClaim2 } as unknown as RelayClient
     const { callTool: callTool2 } = registerTools(client2, presence)
     const r2 = await callTool2('release_claim', { key: 'k' })
     expect((r2.content[0] as any).text).toContain('held by bob')
+  })
+
+  it('keeps claim descriptors separable and fails closed without a relay claim client', async () => {
+    expect(TOOL_DESCRIPTORS.map(tool => tool.name)).not.toContain('claim_asset')
+    expect(TOOL_DESCRIPTORS_CLAIMS.map(tool => tool.name)).toEqual([
+      'claim_asset', 'list_claims', 'release_claim',
+    ])
+    const client = baseClient() as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    await expect(callTool('claim_asset', { key: 'repo:hangar-bridge' }))
+      .rejects.toThrow(/claim tools unavailable/)
   })
 })
 
@@ -217,6 +239,22 @@ describe('registerTools — dispatch_task', () => {
     expect(msg.to).toBe('@team')
     expect(msg.kind).toBe('task_dispatch')
     expect(tracker.peerFor(msg.meta.correlation_id)).toBe('@team')
+  })
+
+  it('does not advertise or execute @team task fanout when the transport lacks it', async () => {
+    const { client, send } = mkClient()
+    Object.assign(client, {
+      capabilities: { teamTaskFanout: false, teamPermissionFanout: false },
+    })
+    const descriptor = dispatchToolDescriptor(client)
+    expect(descriptor.description).toContain('one concrete teammate')
+    expect(descriptor.inputSchema.properties.to.description).toContain('@team is unavailable')
+
+    const tracker = new DispatchTracker({ ttlMs: 60_000 })
+    const { callTool } = registerTools(client, presence, undefined, undefined, tracker)
+    await expect(callTool('dispatch_task', { to: '@team', payload: 'all hands' }))
+      .rejects.toThrow(/unavailable on NATS/)
+    expect(send).not.toHaveBeenCalled()
   })
 
   it('errors when DispatchTracker is not wired', async () => {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig, loadToken, isInsideGitRepoWithRemote } from './config.ts'
+import { loadConfig, loadToken, isInsideGitRepoWithRemote, assertSecretFilePrivate } from './config.ts'
 
 let workdir = ''
 beforeEach(() => { workdir = mkdtempSync(join(tmpdir(), 'mesh-')) })
@@ -26,6 +26,71 @@ describe('loadConfig', () => {
     writeFileSync(p, JSON.stringify({ relay_url: 'x' }))
     expect(() => loadConfig(p)).toThrow()
   })
+
+  it('requires nats config block when transport is nats', () => {
+    const p = join(workdir, 'nats-missing.json')
+    writeFileSync(p, JSON.stringify({
+      transport: 'nats', relay_url: 'nats://localhost:4222', token_path: join(workdir, 'tok'),
+      permission_relay: { enabled: false, routing: 'never_relay' },
+      presence: { auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true },
+      audit_log: join(workdir, 'audit'),
+    }))
+    expect(() => loadConfig(p)).toThrow()
+  })
+
+  it('accepts nats transport when nats block is present', () => {
+    const p = join(workdir, 'nats-valid.json')
+    writeFileSync(p, JSON.stringify({
+      transport: 'nats',
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      nats: {
+        url: 'nats://localhost:4222',
+        nkey_seed_path: join(workdir, 'seed'),
+        roster_path: join(workdir, 'fleet-roster.json'),
+        inbox_prefix: '_INBOX.alice',
+      },
+      permission_relay: { enabled: false, routing: 'never_relay' },
+      presence: { auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true },
+      audit_log: join(workdir, 'audit'),
+    }))
+    const cfg = loadConfig(p)
+    expect(cfg.transport).toBe('nats')
+    expect(cfg.nats).toEqual({
+      url: 'nats://localhost:4222',
+      nkey_seed_path: join(workdir, 'seed'),
+      roster_path: join(workdir, 'fleet-roster.json'),
+      inbox_prefix: '_INBOX.alice',
+    })
+  })
+
+  it('rejects ask_team permission routing on NATS where only direct reactive lanes exist', () => {
+    const p = join(workdir, 'nats-team-permission.json')
+    writeFileSync(p, JSON.stringify({
+      transport: 'nats',
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      nats: {
+        url: 'nats://localhost:4222',
+        nkey_seed_path: join(workdir, 'seed'),
+        roster_path: join(workdir, 'fleet-roster.json'),
+      },
+      permission_relay: { enabled: true, routing: 'ask_team' },
+      audit_log: join(workdir, 'audit'),
+    }))
+    expect(() => loadConfig(p)).toThrow(/ask_team/)
+  })
+
+  it('defaults transport to sse when omitted', () => {
+    const p = join(workdir, 'sse-default.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok'),
+      permission_relay: { enabled: false, routing: 'never_relay' },
+      presence: { auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true },
+      audit_log: join(workdir, 'audit'),
+    }))
+    expect(loadConfig(p).transport).toBe('sse')
+  })
 })
 
 describe('loadToken', () => {
@@ -44,6 +109,19 @@ describe('loadToken', () => {
   })
 })
 
+describe('assertSecretFilePrivate', () => {
+  it('accepts mode 0600 and rejects group/world-readable NKey seeds', () => {
+    const privatePath = join(workdir, 'private-seed')
+    const exposedPath = join(workdir, 'exposed-seed')
+    writeFileSync(privatePath, 'SUPRIVATE', { mode: 0o600 })
+    writeFileSync(exposedPath, 'SUEXPOSED', { mode: 0o640 })
+    expect(() => assertSecretFilePrivate(privatePath, 'NKey seed')).not.toThrow()
+    if (process.platform !== 'win32') {
+      expect(() => assertSecretFilePrivate(exposedPath, 'NKey seed')).toThrow(/mode 0600/)
+    }
+  })
+})
+
 describe('isInsideGitRepoWithRemote', () => {
   it('returns false for a non-git directory', () => {
     expect(isInsideGitRepoWithRemote(workdir)).toBe(false)
@@ -58,5 +136,16 @@ describe('isInsideGitRepoWithRemote', () => {
     writeFileSync(join(workdir, '.git/config'),
       '[core]\nrepositoryformatversion = 0\n\n[remote "origin"]\n  url = git@github.com:x/y.git\n')
     expect(isInsideGitRepoWithRemote(workdir)).toBe(true)
+  })
+  it('detects a linked worktree whose .git is a pointer file', () => {
+    const common = join(workdir, 'common.git')
+    const linked = join(common, 'worktrees', 'linked')
+    const tree = join(workdir, 'tree')
+    mkdirSync(linked, { recursive: true })
+    mkdirSync(tree)
+    writeFileSync(join(common, 'config'), '[remote "origin"]\n  url = git@example/repo.git\n')
+    writeFileSync(join(linked, 'commondir'), '../..\n')
+    writeFileSync(join(tree, '.git'), `gitdir: ${linked}\n`)
+    expect(isInsideGitRepoWithRemote(tree)).toBe(true)
   })
 })

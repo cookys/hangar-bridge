@@ -1,13 +1,24 @@
 import { readFileSync, existsSync, statSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
-import { NAMESPACE_REGEX, INTEREST_REGEX } from '@hangar-bridge/shared'
+import { NAMESPACE_REGEX, INTEREST_REGEX, HANDLE_REGEX } from '@hangar-bridge/shared'
 import { readTokenFile } from './cli/token-file.ts'
 import { defaultConfigPath, defaultAuditDir } from './paths.ts'
 
 export const ConfigSchema = z.object({
+  transport: z.enum(['sse', 'nats']).default('sse'),
+  nats: z.object({
+    url: z.string(),
+    nkey_seed_path: z.string(),
+    roster_path: z.string(),
+    inbox_prefix: z.string().optional(),
+  }).optional(),
   relay_url: z.string().url(),
   token_path: z.string(),
+  // This peer's own handle. Optional/back-compat: only used to exclude self when the
+  // outbound-permission ApprovalRouter policy is `ask_specific_peer:<self>`. The relay
+  // remains the authority on identity (`from` is server-stamped); this is a local hint.
+  self: z.string().regex(HANDLE_REGEX).optional(),
   // Subject routing. `interest` (exact or trailing '>') is sent to the relay as the
   // narrowing filter (x-hangar-subjects header). `owned` is informational on the peer
   // side — the relay DB (human.subjects) is the authoritative ACL. Both default empty.
@@ -27,6 +38,21 @@ export const ConfigSchema = z.object({
     auto_publish_repo: z.boolean().default(true)
   }).default({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }),
   audit_log: z.string().default(() => defaultAuditDir())
+}).superRefine((value, ctx) => {
+  if (value.transport === 'nats' && !value.nats) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['nats'],
+      message: "nats block is required when transport is 'nats'",
+    })
+  }
+  if (value.transport === 'nats' && value.permission_relay.routing === 'ask_team') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['permission_relay', 'routing'],
+      message: "ask_team is unavailable on NATS; choose a direct peer routing policy",
+    })
+  }
 })
 export type HangarConfig = z.infer<typeof ConfigSchema>
 
@@ -45,17 +71,29 @@ export function loadToken(path: string): string {
 
 /** Walk up from `start` looking for a .git dir. If found, inspect .git/config for any remote.url. */
 export function isInsideGitRepoWithRemote(start: string): boolean {
+  const configHasRemote = (gitDir: string): boolean => {
+    let configDir = gitDir
+    const commonDirPath = `${gitDir}/commondir`
+    if (existsSync(commonDirPath)) {
+      const common = readFileSync(commonDirPath, 'utf8').trim()
+      configDir = isAbsolute(common) ? common : resolve(gitDir, common)
+    }
+    const config = `${configDir}/config`
+    if (!existsSync(config)) return false
+    const text = readFileSync(config, 'utf8')
+    return /\[remote\s+"[^"]+"\][^\[]*\burl\s*=\s*\S+/s.test(text)
+  }
+
   let dir = resolve(start)
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const gitDir = `${dir}/.git`
-    if (existsSync(gitDir) && statSync(gitDir).isDirectory()) {
-      const cfg = `${gitDir}/config`
-      if (existsSync(cfg)) {
-        const text = readFileSync(cfg, 'utf8')
-        if (/\[remote\s+"[^"]+"\][^\[]*\burl\s*=\s*\S+/s.test(text)) return true
-      }
-      return false
+    if (existsSync(gitDir)) {
+      if (statSync(gitDir).isDirectory()) return configHasRemote(gitDir)
+      const pointer = readFileSync(gitDir, 'utf8').trim().match(/^gitdir:\s*(.+)$/i)?.[1]
+      if (!pointer) return false
+      const linkedGitDir = isAbsolute(pointer) ? pointer : resolve(dir, pointer)
+      return configHasRemote(linkedGitDir)
     }
     const parent = dirname(dir)
     if (parent === dir) return false
@@ -69,6 +107,18 @@ export function assertTokenNotInRepo(tokenPath: string): void {
     throw new Error(
       `refusing to start: token file "${tokenPath}" is inside a git worktree with a remote. ` +
       `Move it out of the tree or remove the remote.`
+    )
+  }
+}
+
+/** Refuse group/world-readable long-lived credentials on POSIX hosts. */
+export function assertSecretFilePrivate(secretPath: string, label = 'secret'): void {
+  const stat = statSync(resolve(secretPath))
+  if (!stat.isFile()) throw new Error(`${label} path is not a regular file: ${secretPath}`)
+  if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
+    throw new Error(
+      `refusing to start: ${label} file "${secretPath}" must not be readable or writable by group/other ` +
+      '(expected mode 0600)',
     )
   }
 }

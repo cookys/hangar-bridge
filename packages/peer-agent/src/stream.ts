@@ -30,7 +30,7 @@ export interface StreamClientOpts {
   // Interest patterns (exact or trailing '>') sent as the x-hangar-subjects header
   // so the relay narrows delivery to these. Empty ⇒ all owned + null-subject.
   subjects?: string[]
-  onEnvelope: (e: Envelope) => void
+  onEnvelope: (e: Envelope) => void | Promise<void>
   onAuthError: () => void
   // Fired after each successful stream open (200) and then repeatedly on the heartbeat
   // interval while the stream is up. Used to auto-report presence on connect and keep it
@@ -115,11 +115,11 @@ export class StreamClient {
       const { value, done } = await reader.read()
       if (done) break
       buf += decoder.decode(value, { stream: true })
-      buf = this.consume(buf)
+      buf = await this.consume(buf)
     }
   }
 
-  private consume(buf: string): string {
+  private async consume(buf: string): Promise<string> {
     const parts = buf.split('\n\n')
     const rest = parts.pop() ?? ''
     for (const block of parts) {
@@ -128,12 +128,24 @@ export class StreamClient {
       logJson('info', 'peer.stream.event', { event: ev.event })
       if (ev.event === 'ping') continue
       if (ev.event !== 'message') continue
+      let envelope: Envelope
       try {
         const raw = JSON.parse(ev.data)
-        const envelope = EnvelopeSchema.parse(raw)
-        this.opts.onEnvelope(envelope)
+        envelope = EnvelopeSchema.parse(raw)
       } catch (err) {
         logJson('warn', 'peer.stream.decode_error', { err: String(err instanceof Error ? err.message : err) })
+        continue
+      }
+      try {
+        await this.opts.onEnvelope(envelope)
+      } catch (err) {
+        logJson('warn', 'peer.stream.delivery_error', {
+          msg_id: envelope.id,
+          err: String(err instanceof Error ? err.message : err),
+        })
+        // Abort this stream read. Since InboundDispatcher did not advance its cursor,
+        // the reconnect requests this envelope again instead of losing it.
+        throw err
       }
     }
     return rest

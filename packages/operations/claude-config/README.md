@@ -2,8 +2,8 @@
 
 Hooks the `hangar-bridge-peer-agent` MCP server into a host's
 `~/.claude.json` so Claude Code can discover its tools (`send_to_peer`,
-`list_peers`, `set_summary`, `dispatch_task`, and optionally
-`respond_to_permission`) on the next session start.
+`list_peers`, `set_summary`, `dispatch_task`, relay-backed claim tools when available, and
+optionally `respond_to_permission`) on the next session start.
 
 ## When to run
 
@@ -55,6 +55,11 @@ is missing, you're either on a pre-v0.4.0 build (rebuild) or the
 peer-agent failed to start (check `~/.cache/claude/logs/` or run
 `node packages/peer-agent/dist/index.js < /dev/null` to surface the
 error).
+
+On the default SSE transport, the tool list also includes `claim_asset`, `list_claims`, and
+`release_claim`. On NATS those tools appear only when the legacy relay URL/token still configure a
+working claim compatibility client; NATS messaging does not fail when they are unavailable. See
+[`docs/CLAIMS.md`](../../../docs/CLAIMS.md).
 
 ## K1 mitigation
 
