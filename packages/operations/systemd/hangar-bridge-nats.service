@@ -1,0 +1,22 @@
+[Unit]
+Description=hangar-bridge NATS control-plane
+Documentation=https://github.com/cookys/hangar-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hangar-bridge
+ExecStart=%h/.local/bin/nats-server -c %h/projects/hangar-bridge/packages/operations/nats/nats-server.conf
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

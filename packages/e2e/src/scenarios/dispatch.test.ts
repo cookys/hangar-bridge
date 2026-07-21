@@ -73,7 +73,7 @@ async function spinUpPeer(opts: {
     relayUrl: opts.relayUrl,
     token: opts.token,
     sinceCursor: () => cursor,
-    onEnvelope: e => dispatcher.handle(e),
+    onEnvelope: async e => { await dispatcher.handle(e) },
     onAuthError: () => { authErrors.push('auth') },
   })
   // Kick off the stream loop without awaiting — it runs forever until stop().
@@ -174,7 +174,10 @@ describe('P5 self-loopback: dispatch_task ↔ task_result correlation', () => {
       expect((resultNote.params.meta as { from: string }).from).toBe('peerb')
       expect((resultNote.params as { content: string }).content).toBe('build green: 193+2 tests pass')
 
-      // 5. Drop a forensic fixture so the round-trip is reviewable post-mortem.
+      // 5. Build a forensic fixture so the round-trip is reviewable post-mortem.
+      // Normal CI/test runs must be hermetic: timestamps and ULIDs are intentionally
+      // nondeterministic, so rewriting a tracked fixture on every green run leaves the
+      // worktree dirty. Refresh the committed evidence only when explicitly requested.
       const lines = [
         '# hangar-bridge P5 self-loopback dispatch round-trip',
         `# captured ${new Date().toISOString()} on ${process.platform} node ${process.version}`,
@@ -185,7 +188,7 @@ describe('P5 self-loopback: dispatch_task ↔ task_result correlation', () => {
         JSON.stringify({ phase: 'A4.peerA.inbound', method: resultNote.method, params: resultNote.params }),
         '',
       ].join('\n')
-      writeFileSync(FIXTURE_LOG, lines)
+      if (process.env.UPDATE_FIXTURES === '1') writeFileSync(FIXTURE_LOG, lines)
     } finally {
       peerA.stop()
       peerB.stop()

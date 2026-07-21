@@ -6,6 +6,7 @@ import { openDatabase } from '../../relay/src/db/db.ts'
 import { MessageStore } from '../../relay/src/messages/store.ts'
 import { Fanout } from '../../relay/src/fanout.ts'
 import { PresenceRegistry } from '../../relay/src/presence/registry.ts'
+import { ClaimStore } from '../../relay/src/claims/store.ts'
 import { buildApp } from '../../relay/src/app.ts'
 import { generateRawToken, hashToken } from '../../relay/src/auth/hash.ts'
 import { seedPeers } from '../../relay/src/auth/peers-file.ts'
@@ -66,6 +67,7 @@ export async function startHarness(
     store: new MessageStore(db),
     fanout: new Fanout(),
     presence: new PresenceRegistry(),
+    claims: new ClaimStore(db),
     now: () => new Date(),
   })
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(resolve => {

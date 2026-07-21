@@ -5,8 +5,7 @@ Gentoo doesn't need a unit here.
 
 ## Pivot from the plan letter
 
-[`docs/projects/2026-05-17-hangar-bridge/README.md`](../../../docs/projects/2026-05-17-hangar-bridge/README.md)
-(plan v1.2 row 19, P9a) originally called for **two** systemd user
+An earlier rollout plan (v1.2 row 19, P9a) originally called for **two** systemd user
 services on openclaw: `hangar-bridge-relay` AND
 `hangar-bridge-peer-agent`. After the implementation pass the
 peer-agent unit was deliberately dropped:
@@ -19,7 +18,9 @@ peer-agent unit was deliberately dropped:
 > a stdin that never gets written. The correct "persistence" for
 > peer-agent is the `~/.claude.json` registration in
 > [`../claude-config/`](../claude-config/), which spawns a fresh peer-agent
-> per CC session — exactly the lifecycle stdio MCP is designed for.
+> per CC session — exactly the lifecycle stdio MCP is designed for. NATS mode currently adds a
+> host-global same-handle lock, so only one of those sessions may use a given NATS fleet handle;
+> SSE remains the multi-session-compatible default.
 
 Filed as a clarifying note in this directory rather than retconning
 the plan: the bug was in the plan's mental model of "service",

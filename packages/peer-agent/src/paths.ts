@@ -26,3 +26,23 @@ export function defaultSecretPath(): string {
 export function defaultAuditDir(): string {
   return join(configDir(), 'audit')
 }
+
+/**
+ * Disk-backed store for the DispatchTracker's in-flight {correlation_id → dispatch}
+ * correlations, so a peer-agent restart doesn't orphan a late task_result.
+ */
+export function defaultDispatchStatePath(): string {
+  return join(configDir(), 'dispatch-state.json')
+}
+
+/**
+ * Host-global (not project-config-local) lock path for a NATS fleet handle.
+ * Different Claude projects may set different HANGAR_CONFIG_DIR values, but a
+ * handle-level durable consumer still permits only one local live process.
+ */
+export function defaultNatsInstanceLockPath(handle: string): string {
+  const base = process.env.XDG_RUNTIME_DIR
+    ? join(process.env.XDG_RUNTIME_DIR, 'hangar-bridge')
+    : join(homedir(), '.cache', 'hangar-bridge', 'locks')
+  return join(base, `nats-${handle}.lock`)
+}
