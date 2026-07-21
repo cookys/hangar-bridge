@@ -12,7 +12,9 @@ One row per tracked L-size project. Archived projects move to `_archive/`.
 | Status | Project | Plan | Notes |
 |--------|---------|------|-------|
 | 🔄 in progress | [relay→NATS migration](2026-07-02-relay-to-nats-migration/README.md) | [docs/plans/2026-07-02-relay-to-nats-migration.md](../plans/2026-07-02-relay-to-nats-migration.md) | /l6 hetero 執行;P0–P4 自主,P5/P6 Board 閘 |
-| 🔄 closing | [hangar-bridge mainline closeout](2026-07-21-hangar-bridge-closeout/README.md) | — | integrate main+develop, verify, document, merge/push, hand off Plan 029 P10 |
 
 ## Archive
-_(none yet — `docs/projects/_archive/`)_
+
+| Status | Project | Plan | Notes |
+|--------|---------|------|-------|
+| ✅ complete | [hangar-bridge mainline closeout](_archive/2026-07-21-hangar-bridge-closeout/README.md) | — | official integration merge `134e2bc`; verified handoff for Plan 029 P10 |

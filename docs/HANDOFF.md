@@ -16,9 +16,17 @@ cutover, or assume the Plan 029 sketch is already a valid tool schema.
 
 The closeout integrates the original `main@c5a310327aaacbe665fdf97b09221a9bc0821fa8`
 fleet-coordination work with `develop@a9d72eb9227f9343577ba3f7f77c88f55d16190a` NATS P0–P4.
-The exact integration merge SHA is sealed into this section by the post-merge documentation commit;
-the authoritative final remote tip is always `git rev-parse origin/main` and is also reported to the
-operator at delivery. This two-step record avoids claiming that a commit can contain its own SHA.
+The independently reviewed source integration commit is
+`d0b67b2b3469398095a8ec0131bfd4707434f716`; the official `main` integration merge is
+`134e2bc0463616f9dfc3378c86a72050e5d72150`. Both input tips are ancestors of that merge. The final
+documentation/archive commit necessarily follows it, so the authoritative final remote tip is
+`git rev-parse origin/main` and is reported to the operator at delivery. This two-step record avoids
+claiming that a commit can contain its own SHA.
+
+Final independent review returned PASS for staged tree
+`fceaad842eb929966e7ecb16ab7afe34c7b4c730` (`fingerprint_final_review`, 2026-07-21). The local
+`chore/hangar-bridge-closeout` branch was deleted after its tip was proven merged; the remote branch
+did not exist.
 
 At handoff preparation time, `llm-playground` is clean on the receiving baseline above. No Plan 029
 P10 files have been changed by this closeout.
@@ -146,8 +154,12 @@ Additional NATS constraints:
 - `corepack pnpm -r test:ci`: PASS — 523 passed, 3 explicitly gated skips; live local-NATS coverage
   ran and all configured coverage thresholds passed.
 - `nats-server -t -c packages/operations/nats/nats-server.conf`: PASS.
-- Final independent review and remote-main SHA verification are recorded during the closing
-  sequence; the operator delivery report is authoritative for the final remote tip.
+- Final independent review: PASS — `fingerprint_final_review`, staged tree
+  `fceaad842eb929966e7ecb16ab7afe34c7b4c730`.
+- Commit-level test-integrity gate: warn-mode PASS; its three alleged dropped permission tests were
+  parser false positives and were then executed directly, 13/13 PASS.
+- Official integration merge: `134e2bc0463616f9dfc3378c86a72050e5d72150`; the operator delivery
+  report is authoritative for the subsequent documentation commit and verified final remote tip.
 
 ## Read order
 

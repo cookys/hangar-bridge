@@ -1,9 +1,9 @@
 # Project — hangar-bridge closeout and mainline integration
 
-> **Status:** in progress
+> **Status:** complete and archived
 > **Date:** 2026-07-21
-> **Branch:** `chore/hangar-bridge-closeout`
-> **Integration target:** `main`
+> **Branch:** `chore/hangar-bridge-closeout` (deleted locally; never present remotely)
+> **Integration target:** `main@134e2bc0463616f9dfc3378c86a72050e5d72150`
 > **Inputs:** `origin/main@c5a3103` (fleet-coordination stage3) + `origin/develop@a9d72eb` (relay→NATS P0–P4)
 
 ## Project Goal
@@ -67,8 +67,8 @@
 | P1 | Merge `origin/develop` into the main-based closeout branch and reconcile six overlapping files | complete |
 | P2 | Make the test gate hermetic; verify combined behavior, coverage, and real local NATS paths | complete |
 | P3 | Reconcile docs/project tracking and write the claim/compatibility/deferred closeout reference | complete |
-| L-5 | Quality review, merge/push, post-merge doc-sync, archive/session cleanup, branch deletion | in progress |
-| Handoff | Snapshot final `main` state for Plan 029 P10 | prepared; SHA seal follows merge |
+| L-5 | Quality review, merge/push, post-merge doc-sync, archive/session cleanup, branch deletion | complete |
+| Handoff | Snapshot final `main` state for Plan 029 P10 | complete; integration SHA sealed |
 
 ## Decisions
 
@@ -79,7 +79,7 @@
 - Stage3 relay claims remain available while SSE is the default. The NATS substrate stays opt-in,
   so integrating P0–P4 must preserve both transport paths until a later cutover.
 - There is one generic asset claim kind; `repo:` / `file:` / `config:` prefixes are conventions, not
-  schema-enforced variants. [`docs/CLAIMS.md`](../../CLAIMS.md) is the contract authority.
+  schema-enforced variants. [`docs/CLAIMS.md`](../../../CLAIMS.md) is the contract authority.
 - NATS core messaging starts independently of claims. Claim tools are advertised only after a
   bounded authenticated relay probe; failure omits them. Durable task consumption separately waits
   and retries until permanent KV dedup is ready.
@@ -103,6 +103,14 @@
   application dedup cache binds each `msg_id` to a stable envelope fingerprint, so reusing a prior
   ID with different sender/kind/content/meta cannot forge `already-delivered`. A composed regression
   primes that collision and proves the legitimate peer can still complete the same correlation.
+- Fresh independent review then returned PASS on frozen staged tree
+  `fceaad842eb929966e7ecb16ab7afe34c7b4c730` (`fingerprint_final_review`, 2026-07-21).
+- Reviewed source integration commit: `d0b67b2b3469398095a8ec0131bfd4707434f716`.
+- Official `main` integration merge: `134e2bc0463616f9dfc3378c86a72050e5d72150`; both input tips are
+  ancestors. The subsequent docs-only archive commit is identified by the final remote tip in the
+  operator delivery report because a commit cannot record its own SHA.
+- Commit-level test-integrity gate: warn-mode PASS. Its only executed-set shrink report named three
+  `PermissionTracker` tests that remain present; a direct run executed the file 13/13 PASS.
 
 ## Deferred register
 
@@ -114,5 +122,5 @@
 - Session-addressed NATS task routing so multiple local Claude sessions can share one fleet handle.
 - Two-real-Claude outbound permission relay smoke (`CLAUDE_DRIVER=cli`).
 - Operator rollout of production subject ownership/interest settings.
-- Legacy Docker packaging repair/deprecation and the remaining items in [`docs/BACKLOG.md`](../../BACKLOG.md).
+- Legacy Docker packaging repair/deprecation and the remaining items in [`docs/BACKLOG.md`](../../../BACKLOG.md).
 - Plan 029 P10 implementation; this closeout only prepares its verified handoff.
