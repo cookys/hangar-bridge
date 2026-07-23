@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { InboundDispatcher } from './inbound.ts'
+import { createPresenceTracker } from './presence-tracker.ts'
 import { SenderGate } from './gate.ts'
 import { DispatchTracker } from './correlation.ts'
 import { PermissionOutboundTracker } from './permission.ts'
@@ -248,5 +249,65 @@ describe('InboundDispatcher', () => {
     }))
     expect(sent).toHaveLength(1)
     expect(sent[0]!.method).toBe('notifications/claude/channel')
+  })
+
+  it('swallows a presence_update heartbeat WITHOUT emitting (AC7 — no MCP-host wake)', async () => {
+    const cursors: string[] = []
+    const d7 = new InboundDispatcher({
+      gate: new SenderGate(['alice', 'bob']),
+      emit: n => { sent.push(n) },
+      setCursor: id => { cursors.push(id) },
+    })
+    await expect(d7.handle(envelope({ kind: 'presence_update', content: '(connected)' })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(0)            // never emitted as a channel notification
+    expect(cursors).toEqual(['msg_01HRK7Y0000000000000000000']) // cursor still advances
+  })
+
+  it('records the presence heartbeat against the sender via the tracker + injected clock', async () => {
+    const tracker = createPresenceTracker(90_000)
+    const d8 = new InboundDispatcher({
+      gate: new SenderGate(['alice', 'bob']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+      presenceTracker: tracker,
+      now: () => 1_000,
+    })
+    await d8.handle(envelope({ from: 'alice', kind: 'presence_update' }))
+    expect(tracker.lastSeen('alice')).toBe(1_000)
+    expect(tracker.isOnline('alice', 1_000)).toBe(true)
+    expect(sent).toHaveLength(0)
+  })
+
+  it('gate still drops a presence_update from an unknown peer (not tracked, not emitted)', async () => {
+    const tracker = createPresenceTracker(90_000)
+    const d9 = new InboundDispatcher({
+      gate: new SenderGate(['alice', 'bob']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+      presenceTracker: tracker,
+      now: () => 1_000,
+    })
+    await expect(d9.handle(envelope({ from: 'mallory', kind: 'presence_update' })))
+      .resolves.toBe('rejected')
+    expect(tracker.lastSeen('mallory')).toBeNull()
+    expect(sent).toHaveLength(0)
+  })
+
+  it('presence_update is tracked regardless of subject-interest narrowing', async () => {
+    const tracker = createPresenceTracker(90_000)
+    const d10 = new InboundDispatcher({
+      gate: new SenderGate(['alice', 'bob']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+      interest: ['mple2.command'],           // a subject-interest that would drop non-matching chat
+      presenceTracker: tracker,
+      now: () => 1_000,
+    })
+    // subject does NOT match interest, yet liveness must still be recorded and swallowed
+    await expect(d10.handle(envelope({ from: 'alice', kind: 'presence_update', subject: 'other.ns' })))
+      .resolves.toBe('delivered')
+    expect(tracker.lastSeen('alice')).toBe(1_000)
+    expect(sent).toHaveLength(0)
   })
 })

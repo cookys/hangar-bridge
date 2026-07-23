@@ -4,6 +4,7 @@ import { SenderGate } from './gate.ts'
 import type { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
+import type { PresenceTracker } from './presence-tracker.ts'
 import { logJson } from './logger.ts'
 
 export interface InboundDispatcherOpts {
@@ -22,6 +23,14 @@ export interface InboundDispatcherOpts {
   // (never applied) — closes the compromised-peer verdict-snipe under first-answer-wins.
   permissionOutboundTracker?: PermissionOutboundTracker | undefined
   replyLimiter?: ReplyLimiter | undefined
+  // AC7 (SSE/relay lane): records presence_update heartbeats as liveness so they are
+  // swallowed instead of emitted to the MCP host. The NATS lane intercepts presence at
+  // the wire layer (nats-transport.ts) and never reaches this dispatcher; the SSE lane
+  // routes every envelope here, so the parity guard lives in handle(). Optional: when
+  // absent, presence is still swallowed (never emitted), just not locally tracked.
+  presenceTracker?: PresenceTracker | undefined
+  // Injectable clock for the presence heartbeat timestamp (tests). Defaults to Date.now.
+  now?: (() => number) | undefined
 }
 
 /**
@@ -57,6 +66,18 @@ export class InboundDispatcher {
     if (!this.opts.gate.accept(e.from)) {
       logJson('warn', 'peer.inbound.sender_gate_drop', { from: e.from, msg_id: e.id })
       return 'rejected'
+    }
+    // AC7: a presence_update IS a liveness heartbeat, not chat. Record it against the
+    // gate-accepted (relay-authenticated) sender and swallow WITHOUT emitting a channel
+    // notification — otherwise the SSE/relay lane wakes the MCP host every
+    // PRESENCE_HEARTBEAT_MS. This mirrors the NATS lane, which records presence at the
+    // wire layer and never forwards it here. Placed before interest narrowing so peer
+    // liveness is tracked regardless of subject-interest config. Advance the cursor so
+    // the heartbeat is not re-processed on replay.
+    if (e.kind === 'presence_update') {
+      this.opts.presenceTracker?.onHeartbeat(e.from, (this.opts.now ?? Date.now)())
+      this.opts.setCursor(e.id)
+      return 'delivered'
     }
     // Local interest narrowing (fail-open: interest only, never ownership).
     const interest = this.opts.interest
