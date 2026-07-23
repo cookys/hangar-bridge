@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS } from '@hangar-bridge/shared'
+import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS, PRESENCE_TTL_MS } from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
 import { loadConfig, loadToken, assertTokenNotInRepo, assertSecretFilePrivate } from './config.ts'
 import { readTokenFile } from './cli/token-file.ts'
@@ -16,6 +16,7 @@ import {
 import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
+import { createPresenceTracker } from './presence-tracker.ts'
 import { StreamClient } from './stream.ts'
 import { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import { DispatchTracker } from './correlation.ts'
@@ -83,6 +84,10 @@ async function main(): Promise<void> {
   }
 
   let cursor: string | undefined
+  // AC7: the SSE/relay lane delivers presence_update heartbeats through the dispatcher;
+  // this tracker lets it record peer liveness while swallowing the heartbeat instead of
+  // waking the MCP host. (The NATS lane keeps its own tracker at the wire layer.)
+  const presenceTracker = createPresenceTracker(PRESENCE_TTL_MS)
   const dispatcher = new InboundDispatcher({
     gate,
     emit: n => server.notification(n as never),
@@ -92,6 +97,7 @@ async function main(): Promise<void> {
     dispatchTracker,
     permissionOutboundTracker,
     replyLimiter,
+    presenceTracker,
   })
 
   let client: PeerTransport
