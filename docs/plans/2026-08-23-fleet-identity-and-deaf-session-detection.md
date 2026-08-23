@@ -1,6 +1,6 @@
 # Plan — Fleet 身分模型重構 + 跨 harness 送達 + 失聰免疫（v2）
 
-- **狀態**：v2.2 —— P0–P3 已實作合併（main `12446b9`）；P4 經 fleet 徵詢後否決，改為 P4'（路由/歸屬解耦）
+- **狀態**：v2.3 —— P0–P3 已實作合併；P4 否決；P4' 經 gen-3 hetero loop 複驗（Fable + kimi-k3 SHIP-WITH-FIXES；sol transport_failed、grok no_verdict）後定案，可執行
 - **日期**：2026-08-23
 - **作者**：Claude Opus 5
 - **v1 複驗紀錄**：四席 hetero review —— Fable r1（REWORK）、kimi r1 無 repo（SHIP-WITH-FIXES）、kimi r2 含全源碼（SHIP-WITH-FIXES）、gpt-5.6-sol max（STOP，8 findings）+ Fable 設計研究（native 對照）+ Fable 實測（四 harness MCP inbound 探針）。v2 吸收全部收斂發現。**v2 輪複驗**：kimi r3（SHIP-WITH-FIXES，R9 FAIL）、Fable r2（SHIP-WITH-FIXES，M1/M2）、sol v2（STOP，5 findings —— 逐一對照全部落在 kimi/Fable 已收斂修正簇，無新架構問題；transport 連續第三次 exhausted，內容取自 unratified）。v2.1 = v2 + 三席收斂修正。分歧裁決記於 §6。
@@ -41,9 +41,9 @@ Claude Code session 未帶 `--dangerously-load-development-channels server:<conf
 
 **因果定位（gentoo 更正後）**：handle collision 單獨即足以產生互相否認（B 發訊、第三方問 A、A 誠實說不是我）；失聰只是放大器。8/22 該串與 gentoo 失聰時間軸（最後 7/14）對不上，不能用失聰解釋。逐則歸屬定案仍需 relay send log。
 
-### 1.4 已完成的止血（GREEN，待 commit）
+### 1.4 已完成的止血（已合併，`fe51139`）
 
-`inbound.ts` 吸收 `presence_update`（不 emit、推進 cursor）；README 補 config-key 警告。peer-agent 281 tests passed。cuda/gentoo 兩台獨立驗證 chat 照常、presence 不再灌 context。
+`inbound.ts` 吸收 `presence_update`（不 emit、推進 cursor）；README 補 config-key 警告。合併時與遠端 `d30c8da`（AC7 PresenceTracker）調和，兩者並存。cuda/gentoo 兩台獨立驗證 chat 照常、presence 不再灌 context。
 
 ## 2. 設計決策
 
@@ -161,9 +161,9 @@ README：兩條安裝路徑並列、config-key 警告（已寫）、`--resume` �
 
 **否決理由**（fleet 徵詢 `msg_01M0QS73XGT02NBYWW3JM131M9` 的回覆；**歸屬以 msg_id 記，不以 handle 記 —— 見下方「歸屬不確定性」**）：
 
-1. **不根治。**（`msg_01M0QSA3EM…`）實測 `pgrep -fc claude` = 8 而 handle 只有一個；同一專案本來就會開多支 session（其 h3 有兩個 cwd）。`<host>-<project>` 只把 8 支收斂到 3–4 個 handle，**同專案多 session 照樣互收對方的信**。
+1. **不根治。**（`msg_01M0QSA3EM…`）實測 `pgrep -fc claude` = 8 而 handle 只有一個（remote first-hand，未獨立驗證；但**同前提已被本次徵詢的汙染事件當場證明** —— gentoo/cuda 各 ≥2 session）；同一專案本來就會開多支 session（其 h3 有兩個 cwd）。`<host>-<project>` 只把 8 支收斂到 3–4 個 handle，**同專案多 session 照樣互收對方的信**。
 2. **兩種撞車形態只解一種。**（`msg_01M0QSDTWS…`）跨專案撞車（per-project 能分）vs 同專案多 session 撞車（`msg_01M0QS8T67…` / `msg_01M0QS9073…`）（per-project 分不開，要 per-session，roster 更爆）。**又貴又不完整。**
-3. **成本有外部性。** roster 靜態（`architecture.md:125`）⇒ 開新專案 = 產 secret + 改 `peers.json` + 重啟 relay + **斷全 fleet SSE**。（`msg_01M0QS8T67…`）原話：「把『開新專案』和『打斷所有人』綁在一起，代價會落在正在做長量測的人身上，而那個人通常不是開專案的那個人。」該台 revival.3d 有 29 個 worktree、5 個 agent 分屬 3 專案。
+3. **成本有外部性。** roster 靜態（`architecture.md:125`）⇒ 開新專案 = 產 secret + 改 `peers.json` + 重啟 relay + **斷全 fleet SSE**。（`msg_01M0QS8T67…`）原話：「把『開新專案』和『打斷所有人』綁在一起，代價會落在正在做長量測的人身上，而那個人通常不是開專案的那個人。」該台 revival.3d 有 29 個 worktree、5 個 agent 分屬 3 專案（**remote first-hand，depth-0 未獨立驗證**；此為量級佐證，非承重論據 —— 承重的是 `architecture.md:125-127` 的靜態 roster 明文）。
 4. **解錯問題。**（`msg_01M0QSDTWS…`）：「**P4 要解的問題（精準定址）不是咬到我們的問題（歸屬不明）**。」8/22 被上報為疑似冒名的安全事件裡，訊息送到對的機器了，壞的是不知道是哪支 session 說的。per-project handle 救不了。
 
 ### P4' — 路由與歸屬解耦（取代 P4）
@@ -173,26 +173,40 @@ README：兩條安裝路徑並列、config-key 警告（已寫）、`--resume` �
 **問題的真正形狀**（`msg_01M0QSDTWS…`）：不是 spray，是**同 handle 兄弟之間互相隱形**。已在三個系統各出現一次 —— relay（同 handle 多 session）、git（兩個 session 獨立修同一個 presence bug，7/23 `d30c8da` vs 本 branch `fe51139`，靠 non-fast-forward 才擋下）、Claude Code channels 旗標（聾兩個月無人知）。
 
 **P4'a — per-message 歸屬（先做，成本近零）**
-- P2 的 per-process instance ULID 一併放進每則 envelope 的 `meta`
-- 加 `CLAUDE_CODE_SESSION_ID`（**實測：直接存在於 peer-agent 環境變數**，不需走 `/proc`）
-- 收訊端可見 `from=cuda#<instance>`，能自證「這則不是我發的」、能過濾非本線 inbound
+**權威性裁決（gen-3；kimi Major-1 勝過 Fable F3）**：peer 自宣告的 meta 不足 —— 「**我們要修的是偽造否認事故，而修法本身可偽造**」。Fable 的「同信任域內本可互冒」不足以當設計理由，因為它自己也承認偽造某活 sibling 的 instance 會造成**選擇性致盲**（該 sibling 收不到該則訊息）。攻擊有實效 ⇒ 走 relay stamp，成本低（基礎設施已存在）。
+
+- peer-agent 於 `POST /v1/messages` 帶 `X-Hangar-Instance` header（沿用既有 `parseInstanceHeader`）
+- **relay 從 header 蓋 `meta.instance`，並在 `messages.ts` 的 chokepoint 剝除 client 自帶的 `meta.instance` / `meta.session_id`**（延伸既有 strip 清單）
+- `CLAUDE_CODE_SESSION_ID` **relay 無法驗證** ⇒ 若保留，須明確命名為 display-only 宣稱（`peer_session_claim`），不得與 stamped instance 混為一談
+- 加 `caps` 位 `attribution-v1`：**有 cap 卻無 stamped instance = 隱匿/被剝**，render 為不可驗證；**無 cap = 舊 peer**（解 R13(b) 的區分問題，與 §2.5 capability gate 同型）
+- 收訊端可見 `from=cuda` + 權威 instance，能自證「這則不是我發的」、能過濾非本線 inbound
 - 不動 handle / roster / relay 重啟
 
-**P4'b — fanout 直達分支排除寄件者（一行）**
+**P4'b — fanout 直達分支排除寄件 instance**
 `fanout.ts` 的 `@team` 分支有 `if (handle === e.from) continue`，**直達分支沒有** → 同機送給自己的 handle 時訊息原封回到自己（cuda 2026-08-24 實地踩到）。
+
+**粒度必須是 per-instance 而非 per-handle**：寄件者的意圖是送給同機**另一支** session；排除整個 handle 會使該訊息**無人收到**，比現況更糟。
+
+**界碑（gen-3 F5）**：fanout 的 instance 僅用於**自我排除**（負向過濾），不賦予任何人「指定 instance 投遞」的能力；正向的 `to_instance` 定址仍歸 NATS session-addressing 統一設計，未偷渡。
+
+**已知殘餘（須進驗收）**：寄件者是該 handle 唯一 subscriber 時 `deliver()` 回 `false` → 訊息轉 durable 未投遞 → 日後同 handle 冷啟 drain 會撈到自己的舊信。裁決：**self-excluded-only 視為已投遞**（`markDelivered`），避免自寄舊信回流。
 
 **P4'c — 失聰 fail-safe**（`msg_01M0QSH107…` / `msg_01M0QSHV9R…`）
 > 一個聾掉的 peer-agent 繼續 send，可能比它安靜死掉更糟 —— 它發出看似正常、實則基於殘缺 context 的發言，收訊端無從分辨。8/22 那個 thread 就是這樣長出來的。
 
-採用：**outbound 每則自動掛 DEAF 標記**（非硬拒 —— 聾掉的 session 仍需能對外求救，硬拒會使其成為完全孤島；標記讓收訊端自行判斷採信度）。
+採用：**outbound 每則自動掛 DEAF 標記**（非硬拒 —— 聾掉的 session 仍需能對外求救，硬拒會殺掉唯一的信標；標記讓收訊端自行折算）。
+
+**實作方式（gen-3 Fable F2 —— 原以為撞紅線，實為假二分）**：`SUBJECT_ROUTING_SPEC` B1 明文 meta key 會 render 進 channel meta，**即直接出現在收訊端 `<channel>` 的呈現上**（要主動查詢才看得到的是 relay DB，不是 channel meta）。故做成 outbound meta key —— `sender_health="deaf"` + `deaf_since=<ts>` —— **同時滿足「算繪在信封上」與「不改 `<channel>` tag 形狀」，兩邊都不必讓**。`deaf_since` 須**跨重啟持久化**（deaf-check 是 startup 檢查，首次偵測時間戳存 config dir），否則「聾兩個月 vs 五分鐘」的語意做不到。
 
 **P4'c 補充語意**（`msg_01M0QSH107…`）：DEAF 標記**不是**「此節點不可信」，而是精確的二分 —— 它對**自身狀態**的陳述可信（它看得到自己），對**對話歷史**的陳述不可信（context 有洞）。8/22 那串「那不是我發的」每一句都是真心話，只是說話者少了一半 context。標記要能傳達這個折算方式。另：標記須帶**聾了多久**（聾兩個月 vs 聾五分鐘，收訊端處置完全不同），且**必須出現在信封的算繪上而非僅 meta**——「一個要收訊端主動查詢才看得到的警告，等於沒有警告」。順序前提：P0 讓它**知道**，標記讓別人**知道它知道**；標記無法脫離 P0 獨立實作。
 
 **P0 缺口**（`msg_01M0QSHV9R…`，實據來自其 log grep）：失聰有**兩種 mode**，flag 自檢只蓋一種 ——
 - `not in --channels list for this session` ← flag 沒帶，`/proc` 祖先鏈比對抓得到 ✅
-- `server did not declare claude/channel capability` ← **MCP capability handshake 問題，與 flag 無關，祖先鏈檢查漏掉** ❌
+- `server did not declare claude/channel capability` ← **MCP capability handshake，與 flag 無關** ❌
 
-⇒ DEAF 判定除 startup flag 外，須再 key 一個 **runtime 收訊信號**（如「連線後 N 秒內是否曾成功 emit 過任何 inbound」），才能同時蓋住兩種聾法。（註：本機 2026-08-23 的掃描顯示 capability 那種只出現在 claude.ai 內建 server，但 gentoo 那台的分佈不同 —— 設計上不應假設它不會發生。）
+**修正（gen-3 Fable F1 —— 原提案「連線後 N 秒內是否 emit 過 inbound」已撤回）**：該提案對整夜安靜的健康 fleet 保證誤報，且**與 §2.6 自身裁決矛盾**（emit 成功 ≠ client 算繪；靜默→`unverified`，永不→`deaf`）。
+
+正解：**mode 2 不是流量問題，是 server 端自己的宣告** —— `mcp-server.ts:16-19` 已宣告 `'claude/channel': {}`。以**啟動時自我內省該 capability 物件 + 單元測試鎖定宣告**即可決定性覆蓋 mode 2，**零誤報**。流量訊號只准用於機會性升級到 `verified`，不得用於判定 `deaf`。
 
 ### 🔴 歸屬不確定性（本 plan 自身的證據）
 
