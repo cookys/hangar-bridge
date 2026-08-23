@@ -12,7 +12,7 @@ import { RelayClient, type ClaimClient, type InboxClient, type PeerTransport } f
 import { NatsTransport } from './nats-transport.ts'
 import { createNatsAuditWriter } from './audit-log.ts'
 import {
-  registerTools, resolveInboxClient, buildPresenceBody, PEER_CAPS,
+  registerTools, resolveInboxClient, buildPresenceBody, peerCaps,
   TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS, TOOL_DESCRIPTOR_RESPOND,
   TOOL_DESCRIPTOR_POLL_INBOX, dispatchToolDescriptor,
 } from './tools.ts'
@@ -28,7 +28,7 @@ import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
 import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import { defaultDispatchStatePath, defaultCursorStatePath } from './paths.ts'
-import { CursorStore } from './cursor-store.ts'
+import { CursorStore, cursorSink } from './cursor-store.ts'
 import { installLifecycleShutdown } from './lifecycle.ts'
 import { FileNatsInstanceGuard } from './nats-instance-lock.ts'
 import { verifyClaimCompatibility } from './claims-compat.ts'
@@ -71,10 +71,17 @@ async function main(): Promise<void> {
   // aggregate every SSE reconnect this process makes. It is presence/observability
   // only: nothing addresses a peer by instance (no `to_instance`).
   const instanceId = newInstanceId()
+  // FIX4: mutated once inboxClient resolves below (line ~228 wiring), before
+  // any presence write actually fires — presenceIdentity/decorated setPresence
+  // are closures invoked only after that point (stream.start(), heartbeats).
+  // Declaring it here — rather than a hardcoded caps string — is what stops a
+  // NATS-only peer with no relay compatibility client from advertising
+  // poll_inbox when the tool isn't even registered (index.ts §ListTools).
+  let inboxAvailable = false
   const presenceIdentity = () => ({
     instance: instanceId,
     delivery_state: health.deliveryState(),
-    caps: PEER_CAPS,
+    caps: peerCaps(inboxAvailable),
   })
 
   // P0 deaf-immunity: walk /proc ancestry for the claude process and verify its
@@ -123,10 +130,15 @@ async function main(): Promise<void> {
   // drain — the relay stamps delivered_at at socket-write time, so a relay
   // killed mid-drain would otherwise silently strand rows for this client.
   const cursorStore = new CursorStore({ persistPath: defaultCursorStatePath() })
+  // FIX2: the durable cursor file is SSE-only (see cursor-store.ts doc on
+  // cursorSink). Deriving the sink from cfg.transport HERE — before the
+  // transport-specific block below constructs the actual client/stream —
+  // keeps a NATS-selected process from ever persisting a NATS message id
+  // into the SSE resume cursor.
   const dispatcher = new InboundDispatcher({
     gate,
     emit: n => server.notification(n as never),
-    setCursor: id => cursorStore.advance(id),
+    setCursor: cursorSink(cfg.transport, cursorStore),
     interest: cfg.subjects.interest,
     permissionTracker,
     dispatchTracker,
@@ -186,7 +198,7 @@ async function main(): Promise<void> {
         summary: health.decorateSummary(body.summary ?? lastSummary),
         instance: instanceId,
         delivery_state: health.deliveryState(),
-        caps: PEER_CAPS,
+        caps: peerCaps(inboxAvailable),
       }
       return originalSetPresence(decorated)
     }
@@ -226,6 +238,7 @@ async function main(): Promise<void> {
   // client, if one authenticated. Advertise the tool only when something can
   // actually serve it.
   const inboxClient = resolveInboxClient(client, claimClient as unknown as InboxClient | undefined)
+  inboxAvailable = Boolean(inboxClient)
   const { callTool } = registerTools(
     client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient, inboxClient,
   )

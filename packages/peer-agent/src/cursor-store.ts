@@ -84,6 +84,30 @@ export class CursorStore {
     try {
       mkdirSync(dirname(path), { recursive: true })
       writeFileSync(tmp, JSON.stringify({ cursor: this.cursor }), { mode: 0o600 })
+      // Best-effort CAS: this class does process-local monotonic checking only,
+      // over ONE config-wide file. Two peer-agent processes sharing a config dir
+      // (e.g. two Claude Code sessions in the same worktree) can each advance
+      // their own in-memory cursor independently and then race to persist —
+      // without this check, the slower writer's rename could REWIND the file
+      // to an older id than a faster sibling already wrote. Re-reading right
+      // before the rename closes the common case, but a tiny window remains
+      // between this read and our own rename (the other process could persist
+      // in between); that residual race is NOT eliminated here. The real fix
+      // is per-project HANGAR_CONFIG_DIR isolation (plan P4) so sibling
+      // processes never share a cursor file at all.
+      if (existsSync(path)) {
+        try {
+          const raw = JSON.parse(readFileSync(path, 'utf8')) as CursorFile
+          const onDisk = raw?.cursor
+          if (
+            typeof onDisk === 'string' && isValidMessageId(onDisk)
+            && this.cursor !== undefined && onDisk >= this.cursor
+          ) {
+            try { unlinkSync(tmp) } catch { /* best-effort */ }
+            return
+          }
+        } catch { /* unreadable/corrupt on-disk file: fall through and write ours */ }
+      }
       renameSync(tmp, path)
     } catch (err) {
       // Best-effort durability: a write failure must never break the live
@@ -94,4 +118,24 @@ export class CursorStore {
       try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* best-effort */ }
     }
   }
+}
+
+/**
+ * Lane-scoped sink for InboundDispatcher.setCursor.
+ *
+ * The durable cursor file backs SSE's `?since=` resume ONLY — the NATS lane
+ * has no such resume protocol (JetStream/WorkQueue own their own delivery
+ * state). Wiring `store.advance` unconditionally, regardless of which
+ * transport is actually selected, lets a NATS message id land in
+ * cursor-state.json; if that peer-agent later reconnects over SSE (or a
+ * sibling process on the same config dir does), the SSE stream would resume
+ * from a foreign, non-SSE cursor value and corrupt delivery. Only the SSE
+ * lane may advance the store; the NATS lane gets a no-op sink.
+ */
+export function cursorSink(
+  transport: 'sse' | 'nats',
+  store: Pick<CursorStore, 'advance'>,
+): (id: string) => void {
+  if (transport !== 'sse') return () => { /* NATS lane: no durable SSE cursor to advance */ }
+  return id => store.advance(id)
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CursorStore } from './cursor-store.ts'
+import { CursorStore, cursorSink } from './cursor-store.ts'
 
 const A = 'msg_01HRK7Y000000000000000000A'
 const B = 'msg_01HRK7Y000000000000000000B'
@@ -110,5 +110,66 @@ describe('CursorStore', () => {
     } finally {
       chmodSync(dir, 0o700)
     }
+  })
+
+  /**
+   * FIX7 (best-effort) — this class does process-local monotonic checking
+   * over ONE config-wide file. Two peer-agent processes sharing a config dir
+   * can each hold a stale in-memory view and race to persist; without a
+   * check right before the rename, the slower writer could REWIND the file.
+   * This closes the common case: a re-read immediately before the rename
+   * skips our write when the disk already holds an id >= ours. The residual
+   * race (a write landing between that re-read and our own rename) is NOT
+   * eliminated — see the comment on CursorStore.persist. The real fix is
+   * per-project HANGAR_CONFIG_DIR isolation (plan P4) so sibling processes
+   * never share a cursor file at all.
+   */
+  it('CAS: skips the write when disk already holds an id >= ours', () => {
+    const s = new CursorStore({ persistPath: path })
+    // Simulate a sibling process that already advanced further than we know.
+    writeFileSync(path, JSON.stringify({ cursor: C }))
+    s.advance(B) // B < C
+    expect(JSON.parse(readFileSync(path, 'utf8')).cursor).toBe(C)
+  })
+
+  it('CAS: still writes when disk holds an older id than ours', () => {
+    const s = new CursorStore({ persistPath: path })
+    writeFileSync(path, JSON.stringify({ cursor: A }))
+    s.advance(C) // C > A
+    expect(JSON.parse(readFileSync(path, 'utf8')).cursor).toBe(C)
+  })
+})
+
+/**
+ * FIX2 — the durable cursor file backs SSE resume ONLY. Wiring
+ * InboundDispatcher.setCursor to store.advance unconditionally (regardless
+ * of which transport actually got selected) lets a NATS message id land in
+ * cursor-state.json, later corrupting the SSE `?since=` resume point for
+ * this process or a sibling sharing the same config dir. cursorSink derives
+ * the sink from the ACTUAL selected transport.
+ */
+describe('cursorSink — lane-scoped cursor persistence (FIX2)', () => {
+  let dir: string
+  let path: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'hb-cursor-sink-'))
+    path = join(dir, 'cursor-state.json')
+  })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('sse lane advances the store and persists to disk', () => {
+    const store = new CursorStore({ persistPath: path })
+    const sink = cursorSink('sse', store)
+    sink(B)
+    expect(store.get()).toBe(B)
+    expect(existsSync(path)).toBe(true)
+  })
+
+  it('nats lane never advances the store or writes cursor-state.json', () => {
+    const store = new CursorStore({ persistPath: path })
+    const sink = cursorSink('nats', store)
+    sink(B)
+    expect(store.get()).toBeUndefined()
+    expect(existsSync(path)).toBe(false)
   })
 })
