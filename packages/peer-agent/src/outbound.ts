@@ -8,6 +8,22 @@ export interface RelayClientOpts {
   requestTimeoutMs?: number
 }
 
+/**
+ * What a peer reports about itself on connect, on every heartbeat, and on an
+ * explicit set_summary. `instance` keys the relay's presence row per process
+ * (P2 §2.1); `delivery_state` and `caps` are observability/telemetry bits.
+ */
+export interface PresenceReport {
+  summary: string
+  cwd?: string
+  branch?: string
+  repo?: string
+  worktree?: string
+  instance?: string
+  delivery_state?: 'unverified' | 'verified' | 'deaf'
+  caps?: string
+}
+
 export interface PeerTransport {
   readonly capabilities?: {
     teamTaskFanout: boolean
@@ -15,7 +31,7 @@ export interface PeerTransport {
   }
   send(msg: OutboundMessage, opts?: { idempotency_key?: string }): Promise<Envelope>
   listPeers(): Promise<PeerSummary[]>
-  setPresence(body: { summary: string; cwd?: string; branch?: string; repo?: string }): Promise<void>
+  setPresence(body: PresenceReport): Promise<void>
   start(): Promise<void>
   stop(): Promise<void>
 }
@@ -91,7 +107,7 @@ export class RelayClient implements PeerTransport, ClaimClient {
     return await res.json() as PeerSummary[]
   }
 
-  async setPresence(body: { summary: string; cwd?: string; branch?: string; repo?: string }): Promise<void> {
+  async setPresence(body: PresenceReport): Promise<void> {
     const res = await this.request(new URL('/v1/presence', this.opts.relayUrl), {
       method: 'POST',
       headers: { authorization: `Bearer ${this.opts.token}`, 'content-type': 'application/json' },

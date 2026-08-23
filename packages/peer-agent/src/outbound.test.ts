@@ -29,6 +29,29 @@ describe('RelayClient', () => {
     await expect(c.send({ to: 'bob', kind: 'chat', content: 'x' })).rejects.toThrow(/invalid_body/)
   })
 
+  /**
+   * P2 — the instance id has to travel on BOTH lanes (presence body and SSE
+   * header) with the same value, or the relay writes one row key and deletes
+   * another.
+   */
+  it('setPresence posts the process identity alongside the summary', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const fakeFetch = vi.fn(async (url: string | URL, init: RequestInit) => {
+      calls.push({ url: String(url), init })
+      return new Response('{}', { status: 200 })
+    })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    await c.setPresence({
+      summary: 'working', instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      delivery_state: 'deaf', caps: 'disposition', worktree: 'agent-1',
+    })
+    expect(calls[0]!.url).toBe('https://x/v1/presence')
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      summary: 'working', instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      delivery_state: 'deaf', caps: 'disposition', worktree: 'agent-1',
+    })
+  })
+
   it('listPeers calls GET /v1/peers', async () => {
     const fakeFetch = vi.fn(async () =>
       new Response(JSON.stringify([{ handle: 'alice', online: true }]), { status: 200 }))

@@ -160,6 +160,17 @@ export function dispatchToolDescriptor(client: PeerTransport) {
   }
 }
 
+/**
+ * Capability bits this peer-agent binary declares on every presence write.
+ *
+ * Telemetry gates its DENOMINATOR on these (plan §2.5 / rubric R8): "no
+ * disposition was ever reported" is only evidence of a stalled correlation for
+ * a peer that declared it understands dispositions. An older binary declares
+ * nothing and is simply excluded, instead of manufacturing false alarms during
+ * a mixed-version rollout.
+ */
+export const PEER_CAPS = 'disposition,poll_inbox'
+
 export interface PresenceOpts {
   auto_publish_cwd: boolean
   auto_publish_branch: boolean
@@ -171,6 +182,24 @@ export interface PresenceBody {
   cwd?: string
   branch?: string
   repo?: string
+  worktree?: string
+  /** Per-process instance id — makes the relay's presence row unique per process. */
+  instance?: string
+  /** Three-valued inbound-delivery liveness (P2 §2.6). */
+  delivery_state?: 'unverified' | 'verified' | 'deaf'
+  /** Comma-separated capability bits, e.g. "disposition". Absent ⇒ old binary. */
+  caps?: string
+}
+
+/**
+ * Process-level identity attached to every presence write. Constant for the
+ * life of the process (the instance id in particular MUST NOT change across
+ * SSE reconnects, or the relay's refcount can never aggregate).
+ */
+export interface PresenceIdentity {
+  instance?: string
+  delivery_state?: 'unverified' | 'verified' | 'deaf'
+  caps?: string
 }
 
 /**
@@ -182,12 +211,19 @@ export interface PresenceBody {
 export function buildPresenceBody(
   presence: PresenceOpts,
   summary: string,
-  ctx: { cwd?: string; branch?: string; repo?: string },
+  ctx: { cwd?: string; branch?: string; repo?: string; worktree?: string },
+  identity?: PresenceIdentity,
 ): PresenceBody {
   const body: PresenceBody = { summary }
   if (presence.auto_publish_cwd && ctx.cwd) body.cwd = ctx.cwd
   if (presence.auto_publish_branch && ctx.branch) body.branch = ctx.branch
   if (presence.auto_publish_repo && ctx.repo) body.repo = ctx.repo
+  // The worktree name is a path fragment, so it rides the same privacy flag
+  // that governs publishing cwd rather than getting a flag of its own.
+  if (presence.auto_publish_cwd && ctx.worktree) body.worktree = ctx.worktree
+  if (identity?.instance) body.instance = identity.instance
+  if (identity?.delivery_state) body.delivery_state = identity.delivery_state
+  if (identity?.caps) body.caps = identity.caps
   return body
 }
 

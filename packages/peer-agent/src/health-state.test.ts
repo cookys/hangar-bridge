@@ -34,4 +34,15 @@ describe('HealthState', () => {
     expect(new HealthState(ok).isDeaf()).toBe(false)
     expect(new HealthState(skip).isDeaf()).toBe(false)
   })
+
+  /**
+   * P2 §2.6 — the three-valued presence bit. `skip` (non-Claude harness,
+   * unreadable /proc, unknown mcp key) maps to `unverified`, NOT to `deaf`:
+   * a healthy but unobservable session must never be reported as broken.
+   */
+  it('maps the deaf-check result onto the presence delivery_state', () => {
+    expect(new HealthState(ok).deliveryState()).toBe('verified')
+    expect(new HealthState(deaf).deliveryState()).toBe('deaf')
+    expect(new HealthState(skip).deliveryState()).toBe('unverified')
+  })
 })

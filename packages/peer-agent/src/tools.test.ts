@@ -64,6 +64,41 @@ describe('buildPresenceBody — privacy gating', () => {
     const body = buildPresenceBody({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }, 's', { cwd: '/only' })
     expect(body).toEqual({ summary: 's', cwd: '/only' })
   })
+
+  /**
+   * P2 — identity fields ride on EVERY presence write (connect, heartbeat and
+   * set_summary all funnel through this builder), so the relay can key the row
+   * per process and telemetry can tell a disposition-capable peer from an old
+   * binary.
+   */
+  describe('identity fields', () => {
+    const allOn = { auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }
+
+    it('attaches instance, delivery_state and caps when supplied', () => {
+      const body = buildPresenceBody(allOn, 's', ctx, {
+        instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        delivery_state: 'deaf',
+        caps: 'disposition',
+      })
+      expect(body.instance).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
+      expect(body.delivery_state).toBe('deaf')
+      expect(body.caps).toBe('disposition')
+    })
+
+    it('stays byte-identical to the legacy body when no identity is supplied', () => {
+      expect(buildPresenceBody(allOn, 's', ctx)).toEqual({
+        summary: 's', cwd: '/home/x/proj', branch: 'feat/y', repo: 'proj',
+      })
+    })
+
+    it('publishes worktree only when cwd publishing is allowed', () => {
+      const withWt = { ...ctx, worktree: 'agent-1' }
+      expect(buildPresenceBody(allOn, 's', withWt).worktree).toBe('agent-1')
+      expect(
+        buildPresenceBody({ ...allOn, auto_publish_cwd: false }, 's', withWt).worktree
+      ).toBeUndefined()
+    })
+  })
 })
 
 describe('registerTools — claim tools', () => {

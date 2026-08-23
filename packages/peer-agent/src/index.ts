@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS } from '@hangar-bridge/shared'
+import {
+  PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS, newInstanceId,
+} from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
 import { loadConfig, loadToken, assertTokenNotInRepo, assertSecretFilePrivate } from './config.ts'
 import { readTokenFile } from './cli/token-file.ts'
@@ -10,7 +12,7 @@ import { RelayClient, type ClaimClient, type PeerTransport } from './outbound.ts
 import { NatsTransport } from './nats-transport.ts'
 import { createNatsAuditWriter } from './audit-log.ts'
 import {
-  registerTools, buildPresenceBody, TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS,
+  registerTools, buildPresenceBody, PEER_CAPS, TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS,
   TOOL_DESCRIPTOR_RESPOND, dispatchToolDescriptor,
 } from './tools.ts'
 import { detectWorkingContext } from './roots.ts'
@@ -61,6 +63,36 @@ async function main(): Promise<void> {
   }
 
   const selfHandle = cfg.self ?? ''
+
+  // ONE instance id for the whole process (P2 §2.1). Generated here — not per
+  // connection — so the relay's per-(label, instance) connection refcount can
+  // aggregate every SSE reconnect this process makes. It is presence/observability
+  // only: nothing addresses a peer by instance (no `to_instance`).
+  const instanceId = newInstanceId()
+  const presenceIdentity = () => ({
+    instance: instanceId,
+    delivery_state: health.deliveryState(),
+    caps: PEER_CAPS,
+  })
+
+  // P0 deaf-immunity: walk /proc ancestry for the claude process and verify its
+  // channels flag names OUR mcp config key (HANGAR_MCP_KEY, plumbed by every
+  // registration path). A missing or mismatched flag means the client silently
+  // drops every inbound notification — the failure mode this fleet ran under for
+  // two months. Fail-open: non-Claude harness / unreadable /proc / unknown key ⇒
+  // skip. Runs BEFORE transport wiring so the FIRST presence report already
+  // carries the delivery_state.
+  const deafCheck = checkChannelsFlag({ mcpKey: process.env.HANGAR_MCP_KEY })
+  const health = new HealthState(deafCheck)
+  if (health.isDeaf()) {
+    logJson('error', 'peer.startup.deaf_suspected', { reason: deafCheck.reason })
+    process.stderr.write(
+      `\n[hangar-bridge] DEAF SESSION SUSPECTED: ${deafCheck.reason}\n` +
+      `[hangar-bridge] Restart with: claude --dangerously-load-development-channels server:${process.env.HANGAR_MCP_KEY} --resume <name>\n\n`
+    )
+  } else {
+    logJson('info', 'peer.startup.channels_check', { state: deafCheck.state, reason: deafCheck.reason })
+  }
 
   const permissionRelayEnabled = cfg.permission_relay.enabled
   const { server } = createMcpServer({ permissionRelay: permissionRelayEnabled })
@@ -139,15 +171,24 @@ async function main(): Promise<void> {
     const originalSetPresence = relayClient.setPresence.bind(relayClient)
     relayClient.setPresence = async body => {
       if (body.summary) lastSummary = body.summary
-      // Single-builder rule (P0): the DEAF marker rides on EVERY presence
-      // write — connect, heartbeat, and explicit set_summary — so it cannot
-      // be washed out by the next 30s heartbeat.
-      const decorated = { ...body, summary: health.decorateSummary(body.summary ?? lastSummary) }
+      // Single-builder rule (P0/P2): the DEAF marker, the instance id and the
+      // delivery_state ride on EVERY presence write — connect, heartbeat, and
+      // explicit set_summary — so none of them can be washed out by the next
+      // 30s heartbeat, and the row key never changes mid-process.
+      const decorated = {
+        ...body,
+        summary: health.decorateSummary(body.summary ?? lastSummary),
+        instance: instanceId,
+        delivery_state: health.deliveryState(),
+        caps: PEER_CAPS,
+      }
       return originalSetPresence(decorated)
     }
     const reportPresence = async () => {
       try {
-        await relayClient.setPresence(buildPresenceBody(cfg.presence, lastSummary, detectWorkingContext()))
+        await relayClient.setPresence(buildPresenceBody(
+          cfg.presence, lastSummary, detectWorkingContext(), presenceIdentity(),
+        ))
       } catch (err) {
         logJson('warn', 'peer.presence.auto_report_error', describeError(err))
       }
@@ -162,6 +203,7 @@ async function main(): Promise<void> {
       onAuthError,
       onConnect: reportPresence,
       heartbeatMs: PRESENCE_HEARTBEAT_MS,
+      instanceId,
     })
   }
 
@@ -208,24 +250,6 @@ async function main(): Promise<void> {
   }
 
   logJson('info', 'peer.startup', { relay_url: cfg.relay_url })
-
-  // P0 deaf-immunity: before anything else, walk /proc ancestry for the
-  // claude process and verify its channels flag names OUR mcp config key
-  // (HANGAR_MCP_KEY, plumbed by every registration path). A missing or
-  // mismatched flag means the client will silently drop every inbound
-  // notification — the failure mode this fleet ran under for two months.
-  // Fail-open: non-Claude harness / unreadable /proc / unknown key ⇒ skip.
-  const deafCheck = checkChannelsFlag({ mcpKey: process.env.HANGAR_MCP_KEY })
-  const health = new HealthState(deafCheck)
-  if (health.isDeaf()) {
-    logJson('error', 'peer.startup.deaf_suspected', { reason: deafCheck.reason })
-    process.stderr.write(
-      `\n[hangar-bridge] DEAF SESSION SUSPECTED: ${deafCheck.reason}\n` +
-      `[hangar-bridge] Restart with: claude --dangerously-load-development-channels server:${process.env.HANGAR_MCP_KEY} --resume <name>\n\n`
-    )
-  } else {
-    logJson('info', 'peer.startup.channels_check', { state: deafCheck.state, reason: deafCheck.reason })
-  }
 
   // Seed the roster. Failing here used to crash the peer-agent hard, breaking
   // every Claude Code session if transport is down. Now: start

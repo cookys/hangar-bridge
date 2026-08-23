@@ -10,11 +10,29 @@ import type { DeafCheckResult } from './deaf-check.ts'
  */
 const DEAF_PREFIX = 'DEAF(inbound-dropped): '
 
+/**
+ * The three-valued presence bit (P2 §2.6). `unverified` is the honest
+ * default for a session whose inbound rendering we cannot observe.
+ */
+export type DeliveryState = 'unverified' | 'verified' | 'deaf'
+
 export class HealthState {
   constructor(private readonly check: DeafCheckResult) {}
 
   isDeaf(): boolean {
     return this.check.state === 'deaf'
+  }
+
+  /**
+   * Map the startup check onto the presence bit. `skip` — non-Claude harness,
+   * unreadable /proc, unknown mcp key — becomes `unverified`, never `deaf`:
+   * the check's fail-open discipline must not turn into a false alarm on the
+   * fleet dashboard.
+   */
+  deliveryState(): DeliveryState {
+    if (this.check.state === 'deaf') return 'deaf'
+    if (this.check.state === 'verified') return 'verified'
+    return 'unverified'
   }
 
   reason(): string {
