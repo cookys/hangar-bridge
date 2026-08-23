@@ -4,6 +4,7 @@ import { SenderGate } from './gate.ts'
 import type { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
+import type { PresenceTracker } from './presence-tracker.ts'
 import { logJson } from './logger.ts'
 
 export interface InboundDispatcherOpts {
@@ -22,6 +23,14 @@ export interface InboundDispatcherOpts {
   // (never applied) — closes the compromised-peer verdict-snipe under first-answer-wins.
   permissionOutboundTracker?: PermissionOutboundTracker | undefined
   replyLimiter?: ReplyLimiter | undefined
+  // AC7 (SSE/relay lane): records presence_update heartbeats as liveness so they are
+  // swallowed instead of emitted to the MCP host. The NATS lane intercepts presence at
+  // the wire layer (nats-transport.ts) and never reaches this dispatcher; the SSE lane
+  // routes every envelope here, so the parity guard lives in handle(). Optional: when
+  // absent, presence is still swallowed (never emitted), just not locally tracked.
+  presenceTracker?: PresenceTracker | undefined
+  // Injectable clock for the presence heartbeat timestamp (tests). Defaults to Date.now.
+  now?: (() => number) | undefined
 }
 
 /**
@@ -58,14 +67,18 @@ export class InboundDispatcher {
       logJson('warn', 'peer.inbound.sender_gate_drop', { from: e.from, msg_id: e.id })
       return 'rejected'
     }
-    // presence_update is heartbeat traffic, not a message anyone addressed to us:
-    // every peer broadcasts one every few seconds, and a host-global self_handle
-    // means each session on a peer box broadcasts its own. Emitting those as
-    // <channel> tags floods the session context with zero-information
-    // "(connected)" noise and crowds out real peer traffic. Presence is
-    // pull-shaped instead: list_peers queries /v1/peers live (outbound.ts), so
-    // absorbing it here loses nothing. Advance the cursor so it is not replayed.
+    // presence_update is a liveness heartbeat, not chat. Two things must happen and
+    // neither may be dropped: record the beat against the gate-accepted (relay-
+    // authenticated) sender, and swallow it WITHOUT emitting a channel notification.
+    // Emitting wakes the MCP host every PRESENCE_HEARTBEAT_MS and floods the session
+    // context with zero-information "(connected)" noise that crowds out real peer
+    // traffic; presence is pull-shaped instead (list_peers queries /v1/peers live).
+    // This mirrors the NATS lane, which records presence at the wire layer and never
+    // forwards it here. Placed after the sender gate (unknown-peer presence is still
+    // dropped) and before interest narrowing (liveness is subject-agnostic). Advance
+    // the cursor so the heartbeat is not re-processed on replay.
     if (e.kind === 'presence_update') {
+      this.opts.presenceTracker?.onHeartbeat(e.from, (this.opts.now ?? Date.now)())
       this.opts.setCursor(e.id)
       return 'delivered'
     }
