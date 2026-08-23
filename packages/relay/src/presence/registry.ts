@@ -1,10 +1,27 @@
 import { PRESENCE_TTL_MS } from '@hangar-bridge/shared'
 
+/**
+ * Delivery liveness of a session (P2 §2.6).
+ *
+ * Presence proves the TRANSPORT is up; it says nothing about whether the
+ * client actually renders inbound notifications. `unverified` is the honest
+ * default — a healthy but quiet session stays there rather than being
+ * mislabelled deaf.
+ */
+export type DeliveryState = 'unverified' | 'verified' | 'deaf'
+
 export interface PresenceSession {
   label: string
+  /** Per-process instance id; absent for a legacy client. Observability only. */
+  instance?: string
   cwd?: string
   branch?: string
   repo?: string
+  /** Worktree name when the session runs in a git worktree (instance metadata, never a handle). */
+  worktree?: string
+  delivery_state: DeliveryState
+  /** Comma-separated capability bits declared by the peer-agent, e.g. "disposition". */
+  caps?: string
 }
 
 export interface PresenceSnapshot {
@@ -17,32 +34,48 @@ export interface PresenceSnapshot {
 interface SessionState {
   label: string
   summary: string
+  instance?: string
   cwd?: string
   branch?: string
   repo?: string
+  worktree?: string
+  delivery_state: DeliveryState
+  caps?: string
   last_seen: string
 }
 
 export interface PresenceInput {
   summary: string
+  instance?: string | undefined
   cwd?: string | undefined
   branch?: string | undefined
   repo?: string | undefined
+  worktree?: string | undefined
+  delivery_state?: DeliveryState | undefined
+  caps?: string | undefined
 }
 
-function copyOptional(src: PresenceInput): Omit<SessionState, 'label' | 'summary' | 'last_seen'> {
-  const out: Omit<SessionState, 'label' | 'summary' | 'last_seen'> = {}
+type OptionalState = Omit<SessionState, 'label' | 'summary' | 'last_seen' | 'delivery_state'>
+
+function copyOptional(src: PresenceInput): OptionalState {
+  const out: OptionalState = {}
+  if (src.instance !== undefined) out.instance = src.instance
   if (src.cwd !== undefined) out.cwd = src.cwd
   if (src.branch !== undefined) out.branch = src.branch
   if (src.repo !== undefined) out.repo = src.repo
+  if (src.worktree !== undefined) out.worktree = src.worktree
+  if (src.caps !== undefined) out.caps = src.caps
   return out
 }
 
 function toSession(s: SessionState): PresenceSession {
-  const out: PresenceSession = { label: s.label }
+  const out: PresenceSession = { label: s.label, delivery_state: s.delivery_state }
+  if (s.instance !== undefined) out.instance = s.instance
   if (s.cwd !== undefined) out.cwd = s.cwd
   if (s.branch !== undefined) out.branch = s.branch
   if (s.repo !== undefined) out.repo = s.repo
+  if (s.worktree !== undefined) out.worktree = s.worktree
+  if (s.caps !== undefined) out.caps = s.caps
   return out
 }
 
@@ -86,6 +119,7 @@ export class PresenceRegistry {
       label,
       summary: s.summary,
       ...copyOptional(s),
+      delivery_state: s.delivery_state ?? 'unverified',
       last_seen: this.now().toISOString(),
     })
   }

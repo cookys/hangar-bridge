@@ -86,6 +86,26 @@ export class MessageStore {
     return rows.map(envelopeFromRow)
   }
 
+  /**
+   * READ-ONLY cursored peek at the caller's durable inbox (poll_inbox, P2 §2.4).
+   *
+   * Deliberately NOT delivered_at-filtered and deliberately never stamping it:
+   * a peek must not consume the cold-start backlog that a later SSE connect
+   * relies on, and it must be idempotent so a harness can poll on a timer.
+   * Same recipient predicate as fetchSince (direct rows plus @team from others).
+   */
+  fetchInboxSince(team_id: string, to_handle: string, since_id: string, limit: number): Envelope[] {
+    const rows = this.db.prepare(`
+      SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
+             kind, content, meta_json, sent_at, delivered_at
+      FROM message
+      WHERE team_id=? AND id > ?
+        AND (to_handle=? OR (to_handle='@team' AND from_handle != ?))
+      ORDER BY id ASC LIMIT ?
+    `).all(team_id, since_id, to_handle, to_handle, limit) as EnvelopeRow[]
+    return rows.map(envelopeFromRow)
+  }
+
   markDelivered(id: string): void {
     this.db.prepare(
       "UPDATE message SET delivered_at=COALESCE(delivered_at,?) WHERE id=?"

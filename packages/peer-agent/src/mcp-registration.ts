@@ -14,7 +14,11 @@ export function ensureMcpRegistered(): void {
   const here = dirname(fileURLToPath(import.meta.url))
   const entry = {
     command: process.execPath,
-    args: [resolve(join(here, 'index.js'))]
+    args: [resolve(join(here, 'index.js'))],
+    // P0 deaf-immunity: the peer-agent cannot otherwise know which mcpServers
+    // key it was registered under, and the startup flag self-check needs it
+    // to compare against the claude ancestor's `server:<key>` argument.
+    env: { HANGAR_MCP_KEY: 'hangar-bridge-peers' }
   }
   if (JSON.stringify(mcpServers['hangar-bridge-peers']) === JSON.stringify(entry)) return
   mcpServers['hangar-bridge-peers'] = entry
@@ -44,7 +48,9 @@ export function writeProjectMcpJson(opts: WriteProjectMcpJsonOpts): void {
     command: process.execPath,
     args: [resolve(join(here, 'index.js'))],
     env: {
-      HANGAR_CONFIG_DIR: resolve(opts.configDir)
+      HANGAR_CONFIG_DIR: resolve(opts.configDir),
+      // P0 deaf-immunity: see ensureMcpRegistered.
+      HANGAR_MCP_KEY: opts.serverName
     }
   }
   mcpServers[opts.serverName] = entry

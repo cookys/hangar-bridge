@@ -36,6 +36,15 @@ export function defaultDispatchStatePath(): string {
 }
 
 /**
+ * Disk-backed SSE resume cursor (P3). Lives beside dispatch-state.json under the
+ * SAME config dir, so a project-scoped peer keeps its own cursor — two projects
+ * on one box must never share a resume point.
+ */
+export function defaultCursorStatePath(): string {
+  return join(configDir(), 'cursor-state.json')
+}
+
+/**
  * Host-global (not project-config-local) lock path for a NATS fleet handle.
  * Different Claude projects may set different HANGAR_CONFIG_DIR values, but a
  * handle-level durable consumer still permits only one local live process.

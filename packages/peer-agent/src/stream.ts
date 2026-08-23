@@ -27,6 +27,14 @@ export interface StreamClientOpts {
   relayUrl: string
   token: string
   sinceCursor: () => string | undefined
+  /**
+   * Per-PROCESS instance id, sent as `x-hangar-instance`. The relay derives the
+   * presence row key from it on BOTH the presence write and the SSE cleanup, so
+   * it must be generated ONCE at startup and stay constant across reconnects —
+   * a per-connection value would defeat the relay's connection refcount.
+   * Omitted ⇒ legacy behavior (row keyed on the bare token label).
+   */
+  instanceId?: string
   // Interest patterns (exact or trailing '>') sent as the x-hangar-subjects header
   // so the relay narrows delivery to these. Empty ⇒ all owned + null-subject.
   subjects?: string[]
@@ -80,6 +88,7 @@ export class StreamClient {
         const headers: Record<string, string> = {
           authorization: `Bearer ${this.opts.token}`, accept: 'text/event-stream',
         }
+        if (this.opts.instanceId) headers['x-hangar-instance'] = this.opts.instanceId
         if (this.opts.subjects && this.opts.subjects.length > 0) {
           headers['x-hangar-subjects'] = this.opts.subjects.join(',')
         }

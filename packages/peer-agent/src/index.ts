@@ -1,28 +1,34 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS } from '@hangar-bridge/shared'
+import {
+  PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS, newInstanceId,
+} from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
 import { loadConfig, loadToken, assertTokenNotInRepo, assertSecretFilePrivate } from './config.ts'
 import { readTokenFile } from './cli/token-file.ts'
 import { loadRoster } from './subject-acl.ts'
-import { RelayClient, type ClaimClient, type PeerTransport } from './outbound.ts'
+import { RelayClient, type ClaimClient, type InboxClient, type PeerTransport } from './outbound.ts'
 import { NatsTransport } from './nats-transport.ts'
 import { createNatsAuditWriter } from './audit-log.ts'
 import {
-  registerTools, buildPresenceBody, TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS,
-  TOOL_DESCRIPTOR_RESPOND, dispatchToolDescriptor,
+  registerTools, resolveInboxClient, buildPresenceBody, peerCaps,
+  TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS, TOOL_DESCRIPTOR_RESPOND,
+  TOOL_DESCRIPTOR_POLL_INBOX, dispatchToolDescriptor,
 } from './tools.ts'
 import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
+import { checkChannelsFlag } from './deaf-check.ts'
+import { HealthState } from './health-state.ts'
 import { StreamClient } from './stream.ts'
 import { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
 import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
-import { defaultDispatchStatePath } from './paths.ts'
+import { defaultDispatchStatePath, defaultCursorStatePath } from './paths.ts'
+import { CursorStore, cursorSink } from './cursor-store.ts'
 import { installLifecycleShutdown } from './lifecycle.ts'
 import { FileNatsInstanceGuard } from './nats-instance-lock.ts'
 import { verifyClaimCompatibility } from './claims-compat.ts'
@@ -60,6 +66,43 @@ async function main(): Promise<void> {
 
   const selfHandle = cfg.self ?? ''
 
+  // ONE instance id for the whole process (P2 §2.1). Generated here — not per
+  // connection — so the relay's per-(label, instance) connection refcount can
+  // aggregate every SSE reconnect this process makes. It is presence/observability
+  // only: nothing addresses a peer by instance (no `to_instance`).
+  const instanceId = newInstanceId()
+  // FIX4: mutated once inboxClient resolves below (line ~228 wiring), before
+  // any presence write actually fires — presenceIdentity/decorated setPresence
+  // are closures invoked only after that point (stream.start(), heartbeats).
+  // Declaring it here — rather than a hardcoded caps string — is what stops a
+  // NATS-only peer with no relay compatibility client from advertising
+  // poll_inbox when the tool isn't even registered (index.ts §ListTools).
+  let inboxAvailable = false
+  const presenceIdentity = () => ({
+    instance: instanceId,
+    delivery_state: health.deliveryState(),
+    caps: peerCaps(inboxAvailable),
+  })
+
+  // P0 deaf-immunity: walk /proc ancestry for the claude process and verify its
+  // channels flag names OUR mcp config key (HANGAR_MCP_KEY, plumbed by every
+  // registration path). A missing or mismatched flag means the client silently
+  // drops every inbound notification — the failure mode this fleet ran under for
+  // two months. Fail-open: non-Claude harness / unreadable /proc / unknown key ⇒
+  // skip. Runs BEFORE transport wiring so the FIRST presence report already
+  // carries the delivery_state.
+  const deafCheck = checkChannelsFlag({ mcpKey: process.env.HANGAR_MCP_KEY })
+  const health = new HealthState(deafCheck)
+  if (health.isDeaf()) {
+    logJson('error', 'peer.startup.deaf_suspected', { reason: deafCheck.reason })
+    process.stderr.write(
+      `\n[hangar-bridge] DEAF SESSION SUSPECTED: ${deafCheck.reason}\n` +
+      `[hangar-bridge] Restart with: claude --dangerously-load-development-channels server:${process.env.HANGAR_MCP_KEY} --resume <name>\n\n`
+    )
+  } else {
+    logJson('info', 'peer.startup.channels_check', { state: deafCheck.state, reason: deafCheck.reason })
+  }
+
   const permissionRelayEnabled = cfg.permission_relay.enabled
   const { server } = createMcpServer({ permissionRelay: permissionRelayEnabled })
   const permissionTracker = permissionRelayEnabled
@@ -82,11 +125,20 @@ async function main(): Promise<void> {
     process.exit(2)
   }
 
-  let cursor: string | undefined
+  // P3: the resume cursor is durable. A restart now resumes with `?since=`
+  // (id-cursor only) instead of the lossy cold-start `delivered_at IS NULL`
+  // drain — the relay stamps delivered_at at socket-write time, so a relay
+  // killed mid-drain would otherwise silently strand rows for this client.
+  const cursorStore = new CursorStore({ persistPath: defaultCursorStatePath() })
+  // FIX2: the durable cursor file is SSE-only (see cursor-store.ts doc on
+  // cursorSink). Deriving the sink from cfg.transport HERE — before the
+  // transport-specific block below constructs the actual client/stream —
+  // keeps a NATS-selected process from ever persisting a NATS message id
+  // into the SSE resume cursor.
   const dispatcher = new InboundDispatcher({
     gate,
     emit: n => server.notification(n as never),
-    setCursor: id => { cursor = id },
+    setCursor: cursorSink(cfg.transport, cursorStore),
     interest: cfg.subjects.interest,
     permissionTracker,
     dispatchTracker,
@@ -137,11 +189,24 @@ async function main(): Promise<void> {
     const originalSetPresence = relayClient.setPresence.bind(relayClient)
     relayClient.setPresence = async body => {
       if (body.summary) lastSummary = body.summary
-      return originalSetPresence(body)
+      // Single-builder rule (P0/P2): the DEAF marker, the instance id and the
+      // delivery_state ride on EVERY presence write — connect, heartbeat, and
+      // explicit set_summary — so none of them can be washed out by the next
+      // 30s heartbeat, and the row key never changes mid-process.
+      const decorated = {
+        ...body,
+        summary: health.decorateSummary(body.summary ?? lastSummary),
+        instance: instanceId,
+        delivery_state: health.deliveryState(),
+        caps: peerCaps(inboxAvailable),
+      }
+      return originalSetPresence(decorated)
     }
     const reportPresence = async () => {
       try {
-        await relayClient.setPresence(buildPresenceBody(cfg.presence, lastSummary, detectWorkingContext()))
+        await relayClient.setPresence(buildPresenceBody(
+          cfg.presence, lastSummary, detectWorkingContext(), presenceIdentity(),
+        ))
       } catch (err) {
         logJson('warn', 'peer.presence.auto_report_error', describeError(err))
       }
@@ -150,12 +215,13 @@ async function main(): Promise<void> {
     stream = new StreamClient({
       relayUrl: cfg.relay_url,
       token,
-      sinceCursor: () => cursor,
+      sinceCursor: () => cursorStore.get(),
       subjects: cfg.subjects.interest,
       onEnvelope: async e => { await dispatcher.handle(e) },
       onAuthError,
       onConnect: reportPresence,
       heartbeatMs: PRESENCE_HEARTBEAT_MS,
+      instanceId,
     })
   }
 
@@ -167,12 +233,19 @@ async function main(): Promise<void> {
     return originalSend(msg, opts)
   }
 
+  // The relay's durable buffer is what backs poll_inbox. On SSE that is the
+  // transport itself; during the NATS cutover it is the relay compatibility
+  // client, if one authenticated. Advertise the tool only when something can
+  // actually serve it.
+  const inboxClient = resolveInboxClient(client, claimClient as unknown as InboxClient | undefined)
+  inboxAvailable = Boolean(inboxClient)
   const { callTool } = registerTools(
-    client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient,
+    client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient, inboxClient,
   )
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...TOOL_DESCRIPTORS,
+      ...(inboxClient ? [TOOL_DESCRIPTOR_POLL_INBOX] : []),
       ...(claimClient ? TOOL_DESCRIPTORS_CLAIMS : []),
       ...(permissionRelayEnabled ? [TOOL_DESCRIPTOR_RESPOND] : []),
       dispatchToolDescriptor(client),

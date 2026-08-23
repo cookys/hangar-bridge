@@ -95,6 +95,21 @@ Core invariants:
 - Subject ownership is fail-closed. Interest patterns narrow delivery but never grant authority.
 - Peer content is escaped and treated as untrusted user input before entering Claude's context.
 
+### Disposition convention
+
+Replying to a `task_dispatch` is a conversation, not an acknowledgement: a peer may accept,
+decline, counter-propose, or report progress. That answer travels as a **`meta` convention, not a
+schema change** — the six envelope kinds are unchanged. A reply SHOULD carry:
+
+- `meta.disposition` ∈ `accepted` | `declined` | `counter_proposal` | `in_progress` | `completed`
+- `meta.correlation_id` — copied from the dispatch, so the sender can match the answer
+
+The `send_to_peer` and `dispatch_task` tool descriptions carry this instruction, and each
+peer-agent declares a `disposition` capability bit in its presence row. Stalled-correlation
+telemetry gates its denominator on that bit: an older binary that declares nothing is excluded
+rather than counted as silent. With this in place, the missing-peer signal is **no disposition at
+all**, not "no `task_result`".
+
 ## Requirements
 
 - Node.js 22 or newer.
@@ -136,6 +151,7 @@ This writes:
 
 - `~/.config/hangar-bridge/secret` (mode `0600`)
 - `~/.config/hangar-bridge/config.json`
+- `~/.config/hangar-bridge/cursor-state.json` (written at runtime; the durable SSE resume cursor)
 - an MCP entry named `hangar-bridge-peers` in `~/.claude.json`
 
 It prints the secret's SHA-256 hash. Add that hash to the relay host's
@@ -167,6 +183,26 @@ node packages/peer-agent/dist/cli.js init-project \
 
 See [`docs/PROJECT_ISOLATION.md`](./docs/PROJECT_ISOLATION.md) for collision and `.mcp.json` rules.
 
+#### Registration paths and their MCP config keys
+
+There are three ways to register the peer-agent, and **each writes a different `mcpServers`
+key**. The key you pass to `--dangerously-load-development-channels server:<key>` must match the
+key that path wrote, or inbound `<channel>` notifications are dropped silently (see §3 below).
+
+| Registration path | Written to | `mcpServers` key | Launch flag |
+|---|---|---|---|
+| `hangar-bridge init` | `~/.claude.json` | `hangar-bridge-peers` | `server:hangar-bridge-peers` |
+| Manual merge of [`packages/operations/claude-config/hangar-bridge.fragment.json`](./packages/operations/claude-config/hangar-bridge.fragment.json) | `~/.claude.json` | `hangar-bridge-peer-agent` | `server:hangar-bridge-peer-agent` |
+| `hangar-bridge init-project [<name>]` | `<project>/.mcp.json` | `hangar-bridge-peers-<name>` | `server:hangar-bridge-peers-<name>` |
+
+Note that the key is *not* the server's own `serverInfo` name (`hangar-bridge`), even though the
+first path's key happens to look similar.
+
+All three paths plumb `HANGAR_MCP_KEY` into the peer-agent's environment with the key they wrote,
+so the startup deaf-check can compare it against the `claude` ancestor process's `server:<key>`
+argument and warn when they disagree. The operations fragment is static JSON — if you rename its
+`mcpServers` key, **update its `env.HANGAR_MCP_KEY` by hand to match**.
+
 ### 2. Start the relay
 
 ```bash
@@ -196,7 +232,35 @@ node packages/peer-agent/dist/cli.js send bob "hello" --relay http://127.0.0.1:8
 claude --dangerously-load-development-channels server:hangar-bridge-peers
 ```
 
+> **The name after `server:` must match your MCP config key exactly** — the key under
+> `mcpServers` in `~/.claude.json` (or `.mcp.json`), NOT the server's own `serverInfo`
+> name. A mismatch fails **silently**: the MCP server still connects and every tool
+> works, so `/mcp` and `list_peers` both look healthy, but Claude Code drops every
+> inbound `<channel>` notification. Outbound keeps working, which makes it read like a
+> one-way relay fault rather than a local flag problem.
+>
+> The only signal is one debug line in the MCP log
+> (`~/.cache/claude-cli-nodejs/<project>/mcp-logs-<server>/*.jsonl`):
+>
+> ```
+> Channel notifications skipped: server <name> not in --channels list for this session
+> ```
+>
+> If inbound is silent while outbound works, grep for that line first.
+
+If you started a session with the wrong key (or no flag at all), you do not lose the conversation:
+re-launch with the correct flag plus `--resume <name>` to continue the same session with channel
+notifications enabled.
+
+```bash
+claude --dangerously-load-development-channels server:hangar-bridge-peers --resume <name>
+```
+
 In Claude Code, `/mcp` should show the server connected. `list_peers` is a useful first smoke test.
+
+`poll_inbox` reads the same durable buffer directly — a read-only, cursored peek that never
+consumes anything. Use it when a turn was busy enough to miss a pushed `<channel>` tag, and as the
+inbound mainline on any harness that does not render server notifications at all.
 
 ## NATS setup (opt-in, pre-cutover)
 
@@ -263,6 +327,10 @@ packages/operations/   relay/NATS config, provisioning, and systemd artifacts
 - Treat the relay or NATS server as a central trust/failure point; use a private overlay or mTLS.
 - Never commit raw peer secrets, NKey seeds, tokens, paircodes, or local config directories.
 - `claude/channel` is research-preview and may change across Claude Code releases.
+- Non-Claude harnesses do not render MCP server notifications; inbound for them is a pull loop.
+  kimi additionally gates on **workspace trust** — in a directory that has not been trusted, a
+  project-level `mcp.json` is ignored **silently**, so the peer-agent never starts and no error is
+  printed. Trust the workspace first, then verify the server is listed before assuming a relay fault.
 - SSE and NATS messaging are not bridged. Whole-fleet cutover or intentionally isolated cohorts are
   required until a bridge is implemented.
 - The live two-real-Claude outbound permission round-trip remains deferred; unit/integration wiring
