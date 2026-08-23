@@ -11,6 +11,7 @@ import { isValidMessageId } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { hashToken } from '../auth/hash.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
+import { parseInstanceHeader } from '../presence/label.ts'
 import type { Deps } from '../deps.ts'
 
 const DEFAULT_INBOX_LIMIT = 100
@@ -78,6 +79,29 @@ export function messagesRoute(deps: Deps) {
       for (const k of RESERVED_META_KEYS) delete (data.meta as Record<string, string>)[k]
     }
 
+    // P4'a attribution. The 8/22 incident was a thread of mutually-denying messages
+    // behind one handle: every "that wasn't me" was sincere, but nobody could tell
+    // WHICH session spoke. The fix for a forged-denial incident must not itself be
+    // forgeable, so these keys are stamped here from the authenticated connection and
+    // any client-supplied value is dropped first — same chokepoint treatment as B1.
+    // `instance` identifies the sending PROCESS; it is what fanout uses to keep a
+    // direct message from echoing back into the session that sent it.
+    // A peer's own Claude session id cannot be verified by the relay at all, so it may
+    // only travel under a name that says so (`peer_session_claim`), never as `session_id`.
+    const stampedInstance = parseInstanceHeader(c.req.header('x-hangar-instance'))
+    if (!stampedInstance.ok) {
+      return c.json({ error: 'invalid_instance_header' }, 400)
+    }
+    const meta = (data.meta ?? {}) as Record<string, string>
+    delete meta['instance']
+    delete meta['session_id']
+    if (stampedInstance.instance !== undefined) {
+      meta['instance'] = stampedInstance.instance
+      // fanout reads this to exclude the sending process (never to address one).
+      meta['sender_instance'] = stampedInstance.instance
+    }
+    if (Object.keys(meta).length > 0) data.meta = meta
+
     // Fail-closed namespace ACL — gate on SUBJECT PRESENCE, not a kind allow-list.
     // A non-null subject is only meaningful on a command-carrying kind; a subjected
     // reactive/system kind (presence_update/permission_*/task_result) is rejected
@@ -125,6 +149,13 @@ export function messagesRoute(deps: Deps) {
     // the sole authority (marks delivered_at only AFTER a successful writeSSE), so
     // do NOT stamp on enqueue here — else a stream abort between enqueue and write
     // silently loses a single-copy message. null-subject keeps the online optimisation.
+    // Self-exclusion note (P4'b): when the sender is the ONLY subscriber on the
+    // recipient handle, fanout delivers to nobody — but `isOnline` is still true, so
+    // the row IS marked delivered. That is the wanted behaviour, not an oversight:
+    // leaving it pending would park the message in the durable buffer until a later
+    // cold start on this handle drained the sender its own old message back. Do not
+    // "fix" this into a delivered-count check without re-reading
+    // tests/integration/attribution.test.ts § self-excluded delivery accounting.
     if (envelope.subject === null) {
       const isDelivered = envelope.to === TEAM_BROADCAST_HANDLE
         ? deps.fanout.onlineHandles(envelope.team).some(h => h !== envelope.from)
