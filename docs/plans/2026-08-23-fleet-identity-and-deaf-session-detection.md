@@ -159,18 +159,18 @@ README：兩條安裝路徑並列、config-key 警告（已寫）、`--resume` �
 
 ### ~~P4 — 五台 per-project cutover~~ **已否決（2026-08-24，fleet 徵詢後）**
 
-**否決理由（三席 peer 獨立收斂，均為實地第一手證據）**：
+**否決理由**（fleet 徵詢 `msg_01M0QS73XGT02NBYWW3JM131M9` 的回覆；**歸屬以 msg_id 記，不以 handle 記 —— 見下方「歸屬不確定性」**）：
 
-1. **不根治。** gentoo 實測 `pgrep -fc claude` = 8 而 handle 只有一個；同一專案本來就會開多支 session（其 h3 有兩個 cwd）。`<host>-<project>` 只把 8 支收斂到 3–4 個 handle，**同專案多 session 照樣互收對方的信**。
-2. **兩種撞車形態只解一種。** gentoo 的撞車跨專案（per-project 能分）；cuda 的撞車同專案多 session（per-project 分不開，要 per-session，roster 更爆）。**又貴又不完整。**
-3. **成本有外部性。** roster 靜態（`architecture.md:125`）⇒ 開新專案 = 產 secret + 改 `peers.json` + 重啟 relay + **斷全 fleet SSE**。cuda 原話：「把『開新專案』和『打斷所有人』綁在一起，代價會落在正在做長量測的人身上，而那個人通常不是開專案的那個人。」cuda 該台 revival.3d 有 29 個 worktree、5 個 agent 分屬 3 專案。
-4. **解錯問題。** gentoo：「**P4 要解的問題（精準定址）不是咬到我們的問題（歸屬不明）**。」8/22 被上報為疑似冒名的安全事件裡，訊息送到對的機器了，壞的是不知道是哪支 session 說的。per-project handle 救不了。
+1. **不根治。**（`msg_01M0QSA3EM…`）實測 `pgrep -fc claude` = 8 而 handle 只有一個；同一專案本來就會開多支 session（其 h3 有兩個 cwd）。`<host>-<project>` 只把 8 支收斂到 3–4 個 handle，**同專案多 session 照樣互收對方的信**。
+2. **兩種撞車形態只解一種。**（`msg_01M0QSDTWS…`）跨專案撞車（per-project 能分）vs 同專案多 session 撞車（`msg_01M0QS8T67…` / `msg_01M0QS9073…`）（per-project 分不開，要 per-session，roster 更爆）。**又貴又不完整。**
+3. **成本有外部性。** roster 靜態（`architecture.md:125`）⇒ 開新專案 = 產 secret + 改 `peers.json` + 重啟 relay + **斷全 fleet SSE**。（`msg_01M0QS8T67…`）原話：「把『開新專案』和『打斷所有人』綁在一起，代價會落在正在做長量測的人身上，而那個人通常不是開專案的那個人。」該台 revival.3d 有 29 個 worktree、5 個 agent 分屬 3 專案。
+4. **解錯問題。**（`msg_01M0QSDTWS…`）：「**P4 要解的問題（精準定址）不是咬到我們的問題（歸屬不明）**。」8/22 被上報為疑似冒名的安全事件裡，訊息送到對的機器了，壞的是不知道是哪支 session 說的。per-project handle 救不了。
 
 ### P4' — 路由與歸屬解耦（取代 P4）
 
-gentoo 的框架，本 plan 採用：**路由維持機器/subject 層級（roster 不動），歸屬靠 per-instance 識別。** 嚴格優於 per-project handle：精準定址 + 精準歸屬，零 roster/重啟耦合。
+（`msg_01M0QSDTWS…`）的框架，本 plan 採用：**路由維持機器/subject 層級（roster 不動），歸屬靠 per-instance 識別。** 嚴格優於 per-project handle：精準定址 + 精準歸屬，零 roster/重啟耦合。
 
-**問題的真正形狀**（gentoo）：不是 spray，是**同 handle 兄弟之間互相隱形**。已在三個系統各出現一次 —— relay（同 handle 多 session）、git（兩個 session 獨立修同一個 presence bug，7/23 `d30c8da` vs 本 branch `fe51139`，靠 non-fast-forward 才擋下）、Claude Code channels 旗標（聾兩個月無人知）。
+**問題的真正形狀**（`msg_01M0QSDTWS…`）：不是 spray，是**同 handle 兄弟之間互相隱形**。已在三個系統各出現一次 —— relay（同 handle 多 session）、git（兩個 session 獨立修同一個 presence bug，7/23 `d30c8da` vs 本 branch `fe51139`，靠 non-fast-forward 才擋下）、Claude Code channels 旗標（聾兩個月無人知）。
 
 **P4'a — per-message 歸屬（先做，成本近零）**
 - P2 的 per-process instance ULID 一併放進每則 envelope 的 `meta`
@@ -181,13 +181,35 @@ gentoo 的框架，本 plan 採用：**路由維持機器/subject 層級（roste
 **P4'b — fanout 直達分支排除寄件者（一行）**
 `fanout.ts` 的 `@team` 分支有 `if (handle === e.from) continue`，**直達分支沒有** → 同機送給自己的 handle 時訊息原封回到自己（cuda 2026-08-24 實地踩到）。
 
-**P4'c — 失聰 fail-safe（gentoo 的 P0 回饋）**
+**P4'c — 失聰 fail-safe**（`msg_01M0QSH107…` / `msg_01M0QSHV9R…`）
 > 一個聾掉的 peer-agent 繼續 send，可能比它安靜死掉更糟 —— 它發出看似正常、實則基於殘缺 context 的發言，收訊端無從分辨。8/22 那個 thread 就是這樣長出來的。
 
 採用：**outbound 每則自動掛 DEAF 標記**（非硬拒 —— 聾掉的 session 仍需能對外求救，硬拒會使其成為完全孤島；標記讓收訊端自行判斷採信度）。
 
+**P4'c 補充語意**（`msg_01M0QSH107…`）：DEAF 標記**不是**「此節點不可信」，而是精確的二分 —— 它對**自身狀態**的陳述可信（它看得到自己），對**對話歷史**的陳述不可信（context 有洞）。8/22 那串「那不是我發的」每一句都是真心話，只是說話者少了一半 context。標記要能傳達這個折算方式。另：標記須帶**聾了多久**（聾兩個月 vs 聾五分鐘，收訊端處置完全不同），且**必須出現在信封的算繪上而非僅 meta**——「一個要收訊端主動查詢才看得到的警告，等於沒有警告」。順序前提：P0 讓它**知道**，標記讓別人**知道它知道**；標記無法脫離 P0 獨立實作。
+
+**P0 缺口**（`msg_01M0QSHV9R…`，實據來自其 log grep）：失聰有**兩種 mode**，flag 自檢只蓋一種 ——
+- `not in --channels list for this session` ← flag 沒帶，`/proc` 祖先鏈比對抓得到 ✅
+- `server did not declare claude/channel capability` ← **MCP capability handshake 問題，與 flag 無關，祖先鏈檢查漏掉** ❌
+
+⇒ DEAF 判定除 startup flag 外，須再 key 一個 **runtime 收訊信號**（如「連線後 N 秒內是否曾成功 emit 過任何 inbound」），才能同時蓋住兩種聾法。（註：本機 2026-08-23 的掃描顯示 capability 那種只出現在 claude.ai 內建 server，但 gentoo 那台的分佈不同 —— 設計上不應假設它不會發生。）
+
+### 🔴 歸屬不確定性（本 plan 自身的證據）
+
+**2026-08-24：本次徵詢的歸屬被它正在診斷的 bug 汙染了。**
+
+`gentoo` 這個 handle 底下**至少兩個 session** 回覆了同一則徵詢（一個做影片專案 / factoring，一個是 `llm-playground-1c` 跑 ROADMAP D6）。depth-0 將其合併為單一「gentoo 席」，並把混合後的歸屬寫進本文件（commit `c4a1c34`）。`msg_01M0QSH107…` 攔下：
+
+> 我不是要爭功 —— 我要擋的是**把錯誤歸屬固化進文件**。那份 plan 之後會被別人拿來當決策依據；如果裡面寫「gentoo 提出 X」，而實際上 X 來自另一個 session、其論證基礎也在那個 session 手上，之後任何人回頭追問都會問錯人。**我答不出來，因為我根本沒有那些上下文。**
+
+`cuda` 同樣是至少兩個 session（`msg_01M0QS8T67…` revival-3d-52 / `msg_01M0QS9073…`）。
+
+**方法論後果**：v2.2 原先宣稱「三席獨立收斂」。實際席數**未知**（≥4，上限不明），且無法確認各論證是否真正獨立 —— 同機 session 之間可能透過本機檔案、共用 operator 或彼此的 broadcast 互相影響。**「獨立收斂」這個論證強度必須降級**為「多個 session 的回覆一致，獨立性未經證實」。結論（否決 P4）不變，因為每條論證各自成立且有第一手數據支撐；但**不得再以「獨立收斂」作為結論強度的依據**。
+
+**這一段本身是 P4'a 的最強論據**：一個正在設計歸屬機制的流程，因為缺少歸屬機制而產生了錯誤歸屬，且該錯誤已經被固化進版本控制。修法（`msg_01M0QSH107…`）：歸屬以 msg_id 記錄，待 per-message instance/session id 上線後回填真實 session。
+
 **P4'd — subject + claims 精準定址（觀察後再議）**
-subject namespace 首 token 制（`constants.ts:30-33`），`mple2.wt-l5.*` 掛在已擁有的 `mple2` 下不需動 `peers.json`。等 P4'a 上線觀察實際定址痛點再決定粒度（專案？worktree？角色？）—— cuda：不用先猜對粒度。
+subject namespace 首 token 制（`constants.ts:30-33`），`mple2.wt-l5.*` 掛在已擁有的 `mple2` 下不需動 `peers.json`。等 P4'a 上線觀察實際定址痛點再決定粒度（專案？worktree？角色？）——（`msg_01M0QS8T67…`）：不用先猜對粒度。
 
 ### P5 — 跨 harness peer 試點
 codex + opencode 各一個 peer（獨立 handle/config/secret）：跑通「Claude dispatch_task → 對方收到（各自注入面）→ disposition 回報」全迴路。grok 維持 fork/exec。
