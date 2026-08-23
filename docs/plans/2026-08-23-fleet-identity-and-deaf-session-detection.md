@@ -1,6 +1,6 @@
 # Plan — Fleet 身分模型重構 + 跨 harness 送達 + 失聰免疫（v2）
 
-- **狀態**：v2.1 —— hetero loop 兩輪完成，收斂修正已摺入，待 operator 核可後執行
+- **狀態**：v2.2 —— P0–P3 已實作合併（main `12446b9`）；P4 經 fleet 徵詢後否決，改為 P4'（路由/歸屬解耦）
 - **日期**：2026-08-23
 - **作者**：Claude Opus 5
 - **v1 複驗紀錄**：四席 hetero review —— Fable r1（REWORK）、kimi r1 無 repo（SHIP-WITH-FIXES）、kimi r2 含全源碼（SHIP-WITH-FIXES）、gpt-5.6-sol max（STOP，8 findings）+ Fable 設計研究（native 對照）+ Fable 實測（四 harness MCP inbound 探針）。v2 吸收全部收斂發現。**v2 輪複驗**：kimi r3（SHIP-WITH-FIXES，R9 FAIL）、Fable r2（SHIP-WITH-FIXES，M1/M2）、sol v2（STOP，5 findings —— 逐一對照全部落在 kimi/Fable 已收斂修正簇，無新架構問題；transport 連續第三次 exhausted，內容取自 unratified）。v2.1 = v2 + 三席收斂修正。分歧裁決記於 §6。
@@ -157,16 +157,37 @@ README：兩條安裝路徑並列、config-key 警告（已寫）、`--resume` �
 - 已知窗口文件化：`markDelivered` 於 socket-write（`stream.ts:78,128`），cold-start 走 `delivered_at IS NULL` —— relay 於 drain 中被 kill 對無 cursor client 靜默丟失。cursor 持久化把 cold-start 變罕見路徑。
 - BACKLOG：per-row `delivered_at` 使未連線 peer 錯過已投遞的 `@team`（既有，kimi M3）。
 
-### P4 — 五台 per-project cutover（單次，含 drain）
-- 每台 `init-project`（handle = `<host>-<project>`，無 worktree 段）。
-- **drain 程序（v2.1 修正 —— Fable M2：原判準對 `@team` 永不收斂，presence 心跳每 30 秒寫一筆 durable `@team` row）**：
-  1. 宣告靜默期（停止新 dispatch）。
-  2. **直達訊息**判準：`to_handle=<舊 handle> AND delivered_at IS NULL` 為空（不含 `@team`）。
-  3. **`@team` 閉合**：每個舊 handle peer 以**持久化 cursor**（P3 產物；since-resume 路徑不看 delivered_at）重連一次 drain 到 live edge，記錄 final cursor ≥ 靜默起點 max(id)。
-  4. release/等待舊 handle claims → 更新 `peers.json`（**先備份**）→ 單次重啟 relay。
-  5. **舊 handle 保留於 peers.json（receive-capable）直到遷移驗收通過**；退役時間點 = 驗收通過 + 一個觀察日（kimi F3：否則遷移測試 vacuous）。
-  6. 明寫：`init-project` 換新 config dir → cursor 不隨遷；新 handle cold-start 的可接受性以步驟 2-3 完成為前提。
-- 驗收：cutover 前寄給舊 handle 的 pending dispatch，cutover 後（舊 handle 仍註冊期間）drain 送達；同機兩專案互不收訊。
+### ~~P4 — 五台 per-project cutover~~ **已否決（2026-08-24，fleet 徵詢後）**
+
+**否決理由（三席 peer 獨立收斂，均為實地第一手證據）**：
+
+1. **不根治。** gentoo 實測 `pgrep -fc claude` = 8 而 handle 只有一個；同一專案本來就會開多支 session（其 h3 有兩個 cwd）。`<host>-<project>` 只把 8 支收斂到 3–4 個 handle，**同專案多 session 照樣互收對方的信**。
+2. **兩種撞車形態只解一種。** gentoo 的撞車跨專案（per-project 能分）；cuda 的撞車同專案多 session（per-project 分不開，要 per-session，roster 更爆）。**又貴又不完整。**
+3. **成本有外部性。** roster 靜態（`architecture.md:125`）⇒ 開新專案 = 產 secret + 改 `peers.json` + 重啟 relay + **斷全 fleet SSE**。cuda 原話：「把『開新專案』和『打斷所有人』綁在一起，代價會落在正在做長量測的人身上，而那個人通常不是開專案的那個人。」cuda 該台 revival.3d 有 29 個 worktree、5 個 agent 分屬 3 專案。
+4. **解錯問題。** gentoo：「**P4 要解的問題（精準定址）不是咬到我們的問題（歸屬不明）**。」8/22 被上報為疑似冒名的安全事件裡，訊息送到對的機器了，壞的是不知道是哪支 session 說的。per-project handle 救不了。
+
+### P4' — 路由與歸屬解耦（取代 P4）
+
+gentoo 的框架，本 plan 採用：**路由維持機器/subject 層級（roster 不動），歸屬靠 per-instance 識別。** 嚴格優於 per-project handle：精準定址 + 精準歸屬，零 roster/重啟耦合。
+
+**問題的真正形狀**（gentoo）：不是 spray，是**同 handle 兄弟之間互相隱形**。已在三個系統各出現一次 —— relay（同 handle 多 session）、git（兩個 session 獨立修同一個 presence bug，7/23 `d30c8da` vs 本 branch `fe51139`，靠 non-fast-forward 才擋下）、Claude Code channels 旗標（聾兩個月無人知）。
+
+**P4'a — per-message 歸屬（先做，成本近零）**
+- P2 的 per-process instance ULID 一併放進每則 envelope 的 `meta`
+- 加 `CLAUDE_CODE_SESSION_ID`（**實測：直接存在於 peer-agent 環境變數**，不需走 `/proc`）
+- 收訊端可見 `from=cuda#<instance>`，能自證「這則不是我發的」、能過濾非本線 inbound
+- 不動 handle / roster / relay 重啟
+
+**P4'b — fanout 直達分支排除寄件者（一行）**
+`fanout.ts` 的 `@team` 分支有 `if (handle === e.from) continue`，**直達分支沒有** → 同機送給自己的 handle 時訊息原封回到自己（cuda 2026-08-24 實地踩到）。
+
+**P4'c — 失聰 fail-safe（gentoo 的 P0 回饋）**
+> 一個聾掉的 peer-agent 繼續 send，可能比它安靜死掉更糟 —— 它發出看似正常、實則基於殘缺 context 的發言，收訊端無從分辨。8/22 那個 thread 就是這樣長出來的。
+
+採用：**outbound 每則自動掛 DEAF 標記**（非硬拒 —— 聾掉的 session 仍需能對外求救，硬拒會使其成為完全孤島；標記讓收訊端自行判斷採信度）。
+
+**P4'd — subject + claims 精準定址（觀察後再議）**
+subject namespace 首 token 制（`constants.ts:30-33`），`mple2.wt-l5.*` 掛在已擁有的 `mple2` 下不需動 `peers.json`。等 P4'a 上線觀察實際定址痛點再決定粒度（專案？worktree？角色？）—— cuda：不用先猜對粒度。
 
 ### P5 — 跨 harness peer 試點
 codex + opencode 各一個 peer（獨立 handle/config/secret）：跑通「Claude dispatch_task → 對方收到（各自注入面）→ disposition 回報」全迴路。grok 維持 fork/exec。
