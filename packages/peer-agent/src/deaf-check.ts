@@ -114,3 +114,33 @@ export function checkChannelsFlag(opts: DeafCheckOpts): DeafCheckResult {
   }
   return { state: 'skip', reason: 'no claude ancestor found (non-Claude harness or shim boundary); flag check not applicable' }
 }
+
+/**
+ * Deafness mode 2 — the capability handshake (P0 gap, gen-3 F1).
+ *
+ * Claude Code drops a server's channel notifications for two independent
+ * reasons, and the MCP log distinguishes them:
+ *
+ *   'not in --channels list for this session'          ← the launch flag; mode 1
+ *   'server did not declare claude/channel capability' ← this handshake; mode 2
+ *
+ * checkChannelsFlag walks the process ancestry and answers mode 1 only. Mode 2
+ * is not about traffic or flags at all: it is what THIS server declared about
+ * itself during initialize, so it is decidable at startup by looking, with no
+ * false positives — unlike a "have we received anything lately" heuristic, which
+ * indicts every healthy-but-quiet fleet and contradicts the rule that a
+ * successful emit never proves the client rendered anything.
+ */
+export function checkChannelCapability(
+  capabilities: { experimental?: Record<string, unknown> | undefined } | undefined,
+): DeafCheckResult {
+  const experimental = capabilities?.experimental
+  if (experimental && Object.prototype.hasOwnProperty.call(experimental, 'claude/channel')) {
+    return { state: 'verified', reason: "server declares experimental 'claude/channel'" }
+  }
+  return {
+    state: 'deaf',
+    reason: "server did not declare the 'claude/channel' capability — the client will "
+      + 'drop every inbound notification regardless of launch flags',
+  }
+}

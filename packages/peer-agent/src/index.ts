@@ -21,7 +21,7 @@ import {
 import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
-import { checkChannelsFlag } from './deaf-check.ts'
+import { checkChannelsFlag, checkChannelCapability } from './deaf-check.ts'
 import { HealthState } from './health-state.ts'
 import { createPresenceTracker } from './presence-tracker.ts'
 import { StreamClient } from './stream.ts'
@@ -94,7 +94,19 @@ async function main(): Promise<void> {
   // two months. Fail-open: non-Claude harness / unreadable /proc / unknown key ⇒
   // skip. Runs BEFORE transport wiring so the FIRST presence report already
   // carries the delivery_state.
-  const deafCheck = checkChannelsFlag({ mcpKey: process.env.HANGAR_MCP_KEY })
+
+
+
+  const permissionRelayEnabled = cfg.permission_relay.enabled
+  const { server, capabilities } = createMcpServer({ permissionRelay: permissionRelayEnabled })
+
+  // Two independent deafness modes; either one silences inbound entirely.
+  // Mode 2 is checked first because it is decidable with certainty (we are
+  // inspecting our own declaration), whereas the flag walk fails open.
+  const capabilityCheck = checkChannelCapability(capabilities)
+  const deafCheck = capabilityCheck.state === 'deaf'
+    ? capabilityCheck
+    : checkChannelsFlag({ mcpKey: process.env.HANGAR_MCP_KEY })
   // P4'c: deafness needs a FIRST-detected timestamp that survives restarts, or
   // deaf_since resets every boot and the two-months/five-minutes distinction dies.
   let deafSinceMs: number | undefined
@@ -114,6 +126,7 @@ async function main(): Promise<void> {
     try { rmSync(defaultHealthStatePath(), { force: true }) } catch { /* best-effort */ }
   }
   const health = new HealthState(deafCheck, deafSinceMs)
+
   if (health.isDeaf()) {
     logJson('error', 'peer.startup.deaf_suspected', { reason: deafCheck.reason })
     process.stderr.write(
@@ -124,8 +137,7 @@ async function main(): Promise<void> {
     logJson('info', 'peer.startup.channels_check', { state: deafCheck.state, reason: deafCheck.reason })
   }
 
-  const permissionRelayEnabled = cfg.permission_relay.enabled
-  const { server } = createMcpServer({ permissionRelay: permissionRelayEnabled })
+
   const permissionTracker = permissionRelayEnabled
     ? new PermissionTracker({ ttlMs: PERMISSION_REQUEST_TTL_MS })
     : undefined

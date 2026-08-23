@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkChannelsFlag, type DeafCheckResult } from './deaf-check.ts'
+import { checkChannelsFlag, checkChannelCapability, type DeafCheckResult } from './deaf-check.ts'
 
 /**
  * P0 deaf-immunity: walk the /proc ancestor chain looking for a `claude`
@@ -106,5 +106,42 @@ describe('checkChannelsFlag', () => {
       [200, 2, ['node', 'index.js']],
     ])
     expect(checkChannelsFlag({ procRoot: proc, selfPid: 200, mcpKey: KEY }).state).toBe('skip')
+  })
+})
+
+/**
+ * Deafness mode 2 (gen-3 Fable F1). The MCP log carries TWO distinct strings:
+ *
+ *   'not in --channels list for this session'          ← flag missing, mode 1
+ *   'server did not declare claude/channel capability' ← handshake, mode 2
+ *
+ * The ancestor-chain flag check cannot see mode 2 at all. The withdrawn proposal
+ * was a traffic signal ("did we emit any inbound within N seconds"), which
+ * false-positives on any healthy-but-quiet fleet AND contradicts this plan's own
+ * ruling that emit success never proves client rendering.
+ *
+ * Mode 2 is not a traffic question — it is what THIS server declared about
+ * itself, so it is answerable at startup by introspection, deterministically and
+ * with zero false positives.
+ */
+describe('checkChannelCapability', () => {
+  it('verified when the server declares experimental claude/channel', () => {
+    const r = checkChannelCapability({ experimental: { 'claude/channel': {} }, tools: {} })
+    expect(r.state).toBe('verified')
+  })
+
+  it('deaf when the capability block omits claude/channel — mode 2', () => {
+    const r = checkChannelCapability({ experimental: {}, tools: {} })
+    expect(r.state).toBe('deaf')
+    expect(r.reason).toMatch(/capability/i)
+  })
+
+  it('deaf when there is no experimental block at all', () => {
+    expect(checkChannelCapability({ tools: {} }).state).toBe('deaf')
+  })
+
+  it('the permission sub-capability is not required for channel delivery', () => {
+    // permission relay is off by default; its absence must not read as deafness
+    expect(checkChannelCapability({ experimental: { 'claude/channel': {} }, tools: {} }).state).toBe('verified')
   })
 })
