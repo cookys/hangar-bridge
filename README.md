@@ -257,6 +257,10 @@ claude --dangerously-load-development-channels server:hangar-bridge-peers --resu
 
 In Claude Code, `/mcp` should show the server connected. `list_peers` is a useful first smoke test.
 
+`poll_inbox` reads the same durable buffer directly — a read-only, cursored peek that never
+consumes anything. Use it when a turn was busy enough to miss a pushed `<channel>` tag, and as the
+inbound mainline on any harness that does not render server notifications at all.
+
 ## NATS setup (opt-in, pre-cutover)
 
 Do not flip a production fleet from this README alone. Follow the version-pinned provisioning guide

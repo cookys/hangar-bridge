@@ -8,12 +8,13 @@ import { createMcpServer } from './mcp-server.ts'
 import { loadConfig, loadToken, assertTokenNotInRepo, assertSecretFilePrivate } from './config.ts'
 import { readTokenFile } from './cli/token-file.ts'
 import { loadRoster } from './subject-acl.ts'
-import { RelayClient, type ClaimClient, type PeerTransport } from './outbound.ts'
+import { RelayClient, type ClaimClient, type InboxClient, type PeerTransport } from './outbound.ts'
 import { NatsTransport } from './nats-transport.ts'
 import { createNatsAuditWriter } from './audit-log.ts'
 import {
-  registerTools, buildPresenceBody, PEER_CAPS, TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS,
-  TOOL_DESCRIPTOR_RESPOND, dispatchToolDescriptor,
+  registerTools, resolveInboxClient, buildPresenceBody, PEER_CAPS,
+  TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS, TOOL_DESCRIPTOR_RESPOND,
+  TOOL_DESCRIPTOR_POLL_INBOX, dispatchToolDescriptor,
 } from './tools.ts'
 import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
@@ -215,12 +216,18 @@ async function main(): Promise<void> {
     return originalSend(msg, opts)
   }
 
+  // The relay's durable buffer is what backs poll_inbox. On SSE that is the
+  // transport itself; during the NATS cutover it is the relay compatibility
+  // client, if one authenticated. Advertise the tool only when something can
+  // actually serve it.
+  const inboxClient = resolveInboxClient(client, claimClient as unknown as InboxClient | undefined)
   const { callTool } = registerTools(
-    client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient,
+    client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient, inboxClient,
   )
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...TOOL_DESCRIPTORS,
+      ...(inboxClient ? [TOOL_DESCRIPTOR_POLL_INBOX] : []),
       ...(claimClient ? TOOL_DESCRIPTORS_CLAIMS : []),
       ...(permissionRelayEnabled ? [TOOL_DESCRIPTOR_RESPOND] : []),
       dispatchToolDescriptor(client),

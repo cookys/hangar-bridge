@@ -61,13 +61,27 @@ export type ClaimAcquireResult =
   | { ok: true; claim: Claim; renewed: boolean }
   | { ok: false; conflict: { owner: string; expires_at: string } }
 
+export interface InboxPage {
+  messages: Envelope[]
+  next_cursor: string | null
+}
+
+/**
+ * Durable inbox PULL (poll_inbox, P2 §2.4). Read-only: peeking never marks a
+ * message delivered, so the SSE cold-start backlog stays intact and a harness
+ * can poll on a timer without consuming anything.
+ */
+export interface InboxClient {
+  pollInbox(opts: { since?: string; limit?: number }): Promise<InboxPage>
+}
+
 export interface ClaimClient {
   claim(body: { key: string; ttl_seconds?: number; note?: string }): Promise<ClaimAcquireResult>
   listClaims(): Promise<Claim[]>
   releaseClaim(key: string): Promise<{ ok: true; released: boolean } | { ok: false; owner: string }>
 }
 
-export class RelayClient implements PeerTransport, ClaimClient {
+export class RelayClient implements PeerTransport, ClaimClient, InboxClient {
   readonly capabilities = { teamTaskFanout: true, teamPermissionFanout: true } as const
   private fetchImpl: typeof globalThis.fetch
 
@@ -135,6 +149,17 @@ export class RelayClient implements PeerTransport, ClaimClient {
       return { ok: false, conflict: { owner: j.owner, expires_at: j.expires_at } }
     }
     throw new Error(`claim failed: ${res.status} ${text}`)
+  }
+
+  async pollInbox(opts: { since?: string; limit?: number } = {}): Promise<InboxPage> {
+    const url = new URL('/v1/messages', this.opts.relayUrl)
+    if (opts.since) url.searchParams.set('since', opts.since)
+    if (opts.limit !== undefined) url.searchParams.set('limit', String(opts.limit))
+    const res = await this.request(url, {
+      headers: { authorization: `Bearer ${this.opts.token}` },
+    })
+    if (res.status !== 200) throw new Error(`pollInbox failed: ${res.status}`)
+    return await res.json() as InboxPage
   }
 
   async listClaims(): Promise<Claim[]> {

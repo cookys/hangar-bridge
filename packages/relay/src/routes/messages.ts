@@ -7,15 +7,50 @@ import {
   type Envelope,
 } from '@hangar-bridge/shared'
 import { loadOwnedSet, ownsNamespace } from '../acl.ts'
+import { isValidMessageId } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { hashToken } from '../auth/hash.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
 import type { Deps } from '../deps.ts'
 
+const DEFAULT_INBOX_LIMIT = 100
+const MAX_INBOX_LIMIT = 1000
+
 export function messagesRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
   app.use('*', bearerAuth(deps.db))
   app.use('*', rateLimit({ windowMs: 60_000, max: 120, key: c => `msg:${c.get('token').id}` }))
+
+  /**
+   * Durable inbox PEEK (poll_inbox, P2 §2.4). The pull mainline for harnesses
+   * that render no server notifications, and for a Claude turn that is busy.
+   *
+   * Read-only by contract: it never stamps delivered_at. Same fail-closed
+   * subject gate as the SSE stream, so a peek can never leak a namespace the
+   * caller does not own.
+   */
+  app.get('/', c => {
+    const since = c.req.query('since')
+    if (since !== undefined && !isValidMessageId(since)) {
+      return c.json({ error: 'invalid_since' }, 400)
+    }
+    const rawLimit = c.req.query('limit')
+    let limit = DEFAULT_INBOX_LIMIT
+    if (rawLimit !== undefined) {
+      if (!/^[0-9]+$/.test(rawLimit)) return c.json({ error: 'invalid_limit' }, 400)
+      limit = Number(rawLimit)
+      if (limit < 1 || limit > MAX_INBOX_LIMIT) return c.json({ error: 'invalid_limit' }, 400)
+    }
+
+    const handle = c.get('peer').handle
+    const owned = loadOwnedSet(deps.db, HANGAR_TEAM_ID, handle)
+    const rows = deps.store.fetchInboxSince(HANGAR_TEAM_ID, handle, since ?? '', limit)
+    const messages = rows.filter(e => e.subject === null || ownsNamespace(e.subject, owned))
+    // The cursor advances over EVERY row read, not only the deliverable ones, so
+    // a page full of gated rows can never wedge the caller below the live edge.
+    const next_cursor = rows.length > 0 ? rows[rows.length - 1]!.id : (since ?? null)
+    return c.json({ messages, next_cursor })
+  })
 
   app.post('/', async c => {
     const idemKey = c.req.header('idempotency-key')
