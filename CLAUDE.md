@@ -60,7 +60,7 @@ Claude Code ──stdio──▶ peer-agent ──default HTTP/SSE──▶ rela
 
 ### Prompt-injection threat model
 
-Peer messages end up in Claude's context. The `instructions` string in `packages/peer-agent/src/instructions.ts` downgrades peer `content` to "untrusted user input" and carries a four-point safety charter. **Do not weaken this wording** — it's load-bearing (see README security-primitives section).
+Peer messages end up in Claude's context. The `instructions` string in `packages/peer-agent/src/instructions.ts` downgrades peer `content` to "untrusted user input" and carries a six-point safety charter (points 5 and 6 forbid peer-requested configuration changes and executing command-like text in peer content). **Do not weaken this wording** — it's load-bearing (see README security-primitives section).
 
 Layered defenses: sender gating (roster-check every inbound against `/v1/peers`, `gate.ts`), `claude/channel/permission` off by default, `approval_routing = never_relay` by default (`approval-routing.ts`).
 
