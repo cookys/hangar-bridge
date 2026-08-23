@@ -196,6 +196,22 @@ node packages/peer-agent/dist/cli.js send bob "hello" --relay http://127.0.0.1:8
 claude --dangerously-load-development-channels server:hangar-bridge-peers
 ```
 
+> **The name after `server:` must match your MCP config key exactly** — the key under
+> `mcpServers` in `~/.claude.json` (or `.mcp.json`), NOT the server's own `serverInfo`
+> name. A mismatch fails **silently**: the MCP server still connects and every tool
+> works, so `/mcp` and `list_peers` both look healthy, but Claude Code drops every
+> inbound `<channel>` notification. Outbound keeps working, which makes it read like a
+> one-way relay fault rather than a local flag problem.
+>
+> The only signal is one debug line in the MCP log
+> (`~/.cache/claude-cli-nodejs/<project>/mcp-logs-<server>/*.jsonl`):
+>
+> ```
+> Channel notifications skipped: server <name> not in --channels list for this session
+> ```
+>
+> If inbound is silent while outbound works, grep for that line first.
+
 In Claude Code, `/mcp` should show the server connected. `list_peers` is a useful first smoke test.
 
 ## NATS setup (opt-in, pre-cutover)
