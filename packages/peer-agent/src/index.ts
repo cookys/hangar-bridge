@@ -27,7 +27,8 @@ import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
 import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
-import { defaultDispatchStatePath } from './paths.ts'
+import { defaultDispatchStatePath, defaultCursorStatePath } from './paths.ts'
+import { CursorStore } from './cursor-store.ts'
 import { installLifecycleShutdown } from './lifecycle.ts'
 import { FileNatsInstanceGuard } from './nats-instance-lock.ts'
 import { verifyClaimCompatibility } from './claims-compat.ts'
@@ -117,11 +118,15 @@ async function main(): Promise<void> {
     process.exit(2)
   }
 
-  let cursor: string | undefined
+  // P3: the resume cursor is durable. A restart now resumes with `?since=`
+  // (id-cursor only) instead of the lossy cold-start `delivered_at IS NULL`
+  // drain — the relay stamps delivered_at at socket-write time, so a relay
+  // killed mid-drain would otherwise silently strand rows for this client.
+  const cursorStore = new CursorStore({ persistPath: defaultCursorStatePath() })
   const dispatcher = new InboundDispatcher({
     gate,
     emit: n => server.notification(n as never),
-    setCursor: id => { cursor = id },
+    setCursor: id => cursorStore.advance(id),
     interest: cfg.subjects.interest,
     permissionTracker,
     dispatchTracker,
@@ -198,7 +203,7 @@ async function main(): Promise<void> {
     stream = new StreamClient({
       relayUrl: cfg.relay_url,
       token,
-      sinceCursor: () => cursor,
+      sinceCursor: () => cursorStore.get(),
       subjects: cfg.subjects.interest,
       onEnvelope: async e => { await dispatcher.handle(e) },
       onAuthError,

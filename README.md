@@ -151,6 +151,7 @@ This writes:
 
 - `~/.config/hangar-bridge/secret` (mode `0600`)
 - `~/.config/hangar-bridge/config.json`
+- `~/.config/hangar-bridge/cursor-state.json` (written at runtime; the durable SSE resume cursor)
 - an MCP entry named `hangar-bridge-peers` in `~/.claude.json`
 
 It prints the secret's SHA-256 hash. Add that hash to the relay host's

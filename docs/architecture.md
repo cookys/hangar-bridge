@@ -247,6 +247,15 @@ same-handle processes from racing this file or consuming one another's result. T
 no structured `task_result` emitter; Claude receivers return completion via chat until that deferred
 tool is implemented.
 
+The SSE resume cursor is durable alongside it, in `cursor-state.json` under the same config dir
+(`CursorStore`, P3). It advances strictly monotonically and is written after every advance with an
+atomic temp+rename; a corrupt or unreadable file fails open to a cold start rather than crashing
+the session. This matters because the relay stamps `delivered_at` at socket-WRITE time
+(`stream.ts`): a relay killed mid-drain has already marked rows delivered that the client never
+processed, and a cold-starting client — which drains `delivered_at IS NULL` only — would never see
+them. With a persisted cursor the client resumes via `?since=`, which filters on the id cursor
+alone, and cold start becomes the rare path instead of the default one.
+
 ### 5.7 Durable model (`db/schema.sql`, SQLite WAL, schema v6)
 
 `team` (single fixed `'hangar'` row) · `human` (peer roster + `subjects` JSON ACL) · `token`
