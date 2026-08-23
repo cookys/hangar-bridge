@@ -16,6 +16,8 @@ import {
 import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
+import { checkChannelsFlag } from './deaf-check.ts'
+import { HealthState } from './health-state.ts'
 import { StreamClient } from './stream.ts'
 import { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import { DispatchTracker } from './correlation.ts'
@@ -137,7 +139,11 @@ async function main(): Promise<void> {
     const originalSetPresence = relayClient.setPresence.bind(relayClient)
     relayClient.setPresence = async body => {
       if (body.summary) lastSummary = body.summary
-      return originalSetPresence(body)
+      // Single-builder rule (P0): the DEAF marker rides on EVERY presence
+      // write — connect, heartbeat, and explicit set_summary — so it cannot
+      // be washed out by the next 30s heartbeat.
+      const decorated = { ...body, summary: health.decorateSummary(body.summary ?? lastSummary) }
+      return originalSetPresence(decorated)
     }
     const reportPresence = async () => {
       try {
@@ -202,6 +208,24 @@ async function main(): Promise<void> {
   }
 
   logJson('info', 'peer.startup', { relay_url: cfg.relay_url })
+
+  // P0 deaf-immunity: before anything else, walk /proc ancestry for the
+  // claude process and verify its channels flag names OUR mcp config key
+  // (HANGAR_MCP_KEY, plumbed by every registration path). A missing or
+  // mismatched flag means the client will silently drop every inbound
+  // notification — the failure mode this fleet ran under for two months.
+  // Fail-open: non-Claude harness / unreadable /proc / unknown key ⇒ skip.
+  const deafCheck = checkChannelsFlag({ mcpKey: process.env.HANGAR_MCP_KEY })
+  const health = new HealthState(deafCheck)
+  if (health.isDeaf()) {
+    logJson('error', 'peer.startup.deaf_suspected', { reason: deafCheck.reason })
+    process.stderr.write(
+      `\n[hangar-bridge] DEAF SESSION SUSPECTED: ${deafCheck.reason}\n` +
+      `[hangar-bridge] Restart with: claude --dangerously-load-development-channels server:${process.env.HANGAR_MCP_KEY} --resume <name>\n\n`
+    )
+  } else {
+    logJson('info', 'peer.startup.channels_check', { state: deafCheck.state, reason: deafCheck.reason })
+  }
 
   // Seed the roster. Failing here used to crash the peer-agent hard, breaking
   // every Claude Code session if transport is down. Now: start
