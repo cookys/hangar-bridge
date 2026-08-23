@@ -5,6 +5,8 @@ import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { loadOwnedSet, ownsNamespace, matchesInterest } from '../acl.ts'
 import type { Deps } from '../deps.ts'
 import type { Subscriber } from '../fanout.ts'
+import { effectiveLabel, parseInstanceHeader } from '../presence/label.ts'
+import { ConnectionRegistry } from '../presence/connections.ts'
 
 const PING_INTERVAL_MS = 25_000
 const BACKLOG_PAGE = 1000
@@ -16,11 +18,22 @@ export function streamRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
   app.use('*', bearerAuth(deps.db))
 
+  // One refcount table per relay process. A presence row is removed only when the
+  // LAST SSE connection for its (handle, effectiveLabel) closes, which is what makes
+  // an overlapping reconnect safe.
+  const connections = new ConnectionRegistry()
+
   app.get('/', c => {
     const since = c.req.query('since')
     if (since !== undefined && !isValidMessageId(since)) {
       return c.json({ error: 'invalid_since' }, 400)
     }
+    // Per-process instance id, constant across this process's reconnects. Absent ⇒
+    // legacy client keyed on the bare token label (unchanged behavior).
+    const parsedInstance = parseInstanceHeader(c.req.header('x-hangar-instance'))
+    if (!parsedInstance.ok) return c.json({ error: 'invalid_instance' }, 400)
+    const instance = parsedInstance.instance
+
     // Optional interest narrowing. Header (set by undici fetch) takes precedence
     // over query param. Comma-separated. Interest can only NARROW within owned
     // namespaces; it is NOT the authority gate (ownership is — see below).
@@ -103,14 +116,33 @@ export function streamRoute(deps: Deps) {
         stream.writeSSE({ event: 'ping', data: String(Date.now()) }).catch(() => { /* client gone */ })
       }, PING_INTERVAL_MS)
 
+      // The SAME resolver POST /v1/presence uses to WRITE the row. Derived once,
+      // up front, so the acquire and the release can never disagree even if the
+      // request context changes underneath.
+      const presenceLabel = effectiveLabel(c.get('token').label, instance)
+      connections.acquire(team_id, handle, presenceLabel)
+
+      // This connection has TWO cleanup paths — the abort listener below and the
+      // `finally` of the read loop — and both can fire for one connection. Without
+      // this guard the refcount would be decremented twice and a SIBLING
+      // connection's presence row would be removed while it is still live.
+      let cleanedUp = false
       const cleanup = () => {
+        if (cleanedUp) return
+        cleanedUp = true
         deps.fanout.unsubscribe(sub)
         clearInterval(pingTimer)
         // Reflect offline immediately on a clean disconnect rather than waiting out the
-        // presence TTL. Keyed on the same (team, handle, label) tuple presence.set uses;
-        // label is this SSE connection's token label. TTL remains the backstop for an
-        // unclean disconnect (crash) that never reaches this cleanup.
-        deps.presence.remove(team_id, handle, c.get('token').label)
+        // presence TTL — but only once the LAST connection for this instance is gone.
+        // TTL remains the backstop for an unclean disconnect (crash) that never reaches
+        // this cleanup.
+        //
+        // ACCEPTED RESIDUAL (plan §P2): a heartbeat POST /v1/presence already in flight
+        // when this runs can re-create the row afterwards; it then ages out via the
+        // 90s presence TTL. Bounded and self-healing; not worth a write barrier.
+        if (connections.release(team_id, handle, presenceLabel)) {
+          deps.presence.remove(team_id, handle, presenceLabel)
+        }
       }
       c.req.raw.signal?.addEventListener('abort', cleanup)
 
