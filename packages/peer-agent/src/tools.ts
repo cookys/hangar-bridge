@@ -56,7 +56,7 @@ const DispatchInput = z.object({
 export const TOOL_DESCRIPTORS = [
   {
     name: 'send_to_peer',
-    description: 'Send a message to a teammate (by handle) or the whole team (@team).',
+    description: 'Send a message to a teammate (by handle) or the whole team (@team). When you are ANSWERING a task_dispatch, always carry meta.disposition (accepted | declined | counter_proposal | in_progress | completed) and preserve the correlation_id — declining or counter-proposing is a first-class answer, and a dispatch with no disposition at all is what the fleet reads as a lost session.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -64,7 +64,11 @@ export const TOOL_DESCRIPTORS = [
         content: { type: 'string' },
         subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); publisher must own the namespace. Allowed on @team only for chat, where receivers are filtered by ownership + interest' },
         in_reply_to: { type: 'string', description: 'msg_id being replied to (optional)' },
-        meta: { type: 'object', additionalProperties: { type: 'string' } },
+        meta: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'free-form string map. When replying to a task_dispatch, SET meta.disposition to one of "accepted", "declined", "counter_proposal", "in_progress" or "completed", and copy the dispatch\'s correlation_id into meta.correlation_id so the sender can match your answer to its task.',
+        },
       },
       required: ['to', 'content'],
     },
@@ -131,7 +135,7 @@ export const TOOL_DESCRIPTOR_RESPOND = {
 
 export const TOOL_DESCRIPTOR_DISPATCH = {
   name: 'dispatch_task',
-  description: 'Hand a task off to a teammate (or @team for fanout). The receiver gets a structured task_dispatch keyed by correlation_id. The current MCP surface does not yet expose a structured task_result response tool, so receiver completion comes back as chat. Unlike send_to_peer, dispatch is user-initiated and is NOT throttled by the reply-storm limiter.',
+  description: 'Hand a task off to a teammate (or @team for fanout). The receiver gets a structured task_dispatch keyed by correlation_id. The current MCP surface does not yet expose a structured task_result response tool, so receiver completion comes back as chat carrying meta.disposition — expect accepted, declined, counter_proposal, in_progress or completed, and treat declined or counter_proposal as a normal answer rather than a failure. Silence with NO disposition is the only signal of a peer that never received the task. Unlike send_to_peer, dispatch is user-initiated and is NOT throttled by the reply-storm limiter.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -149,7 +153,7 @@ export function dispatchToolDescriptor(client: PeerTransport) {
   if (client.capabilities?.teamTaskFanout !== false) return TOOL_DESCRIPTOR_DISPATCH
   return {
     ...TOOL_DESCRIPTOR_DISPATCH,
-    description: 'Hand a task off to one concrete teammate. This NATS transport does not advertise @team task fanout because durable WorkQueue consumers are recipient-scoped.',
+    description: 'Hand a task off to one concrete teammate. This NATS transport does not advertise @team task fanout because durable WorkQueue consumers are recipient-scoped. The reply carries meta.disposition (accepted | declined | counter_proposal | in_progress | completed) and preserves the correlation_id.',
     inputSchema: {
       ...TOOL_DESCRIPTOR_DISPATCH.inputSchema,
       properties: {

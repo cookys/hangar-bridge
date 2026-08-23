@@ -5,6 +5,8 @@ import {
   dispatchToolDescriptor,
   TOOL_DESCRIPTORS,
   TOOL_DESCRIPTORS_CLAIMS,
+  TOOL_DESCRIPTOR_DISPATCH,
+  PEER_CAPS,
 } from './tools.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
@@ -39,6 +41,47 @@ describe('registerTools', () => {
     const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
     await callTool('set_summary', { summary: 'hacking' })
     expect(setPresence).toHaveBeenCalledWith({ summary: 'hacking' })
+  })
+})
+
+/**
+ * P2 §2.5 — disposition is a META CONVENTION, not a schema change. The
+ * envelope's six kinds are untouched (CLAUDE.md invariant); what changes is
+ * that the tool descriptions teach the model to answer a task_dispatch with a
+ * disposition so "declined" and "in progress" stop being indistinguishable
+ * from "the session went deaf".
+ */
+describe('disposition convention — tool descriptions', () => {
+  const send = TOOL_DESCRIPTORS.find(d => d.name === 'send_to_peer')!
+
+  it('send_to_peer teaches the disposition values for a dispatch reply', () => {
+    const text = send.description + JSON.stringify(send.inputSchema)
+    expect(text).toContain('meta.disposition')
+    for (const v of ['accepted', 'declined', 'counter_proposal', 'in_progress', 'completed']) {
+      expect(text).toContain(v)
+    }
+  })
+
+  it('send_to_peer tells the model to preserve the correlation_id on a reply', () => {
+    const text = send.description + JSON.stringify(send.inputSchema)
+    expect(text).toContain('correlation_id')
+  })
+
+  it('dispatch_task tells the sender what dispositions to expect back', () => {
+    const text = TOOL_DESCRIPTOR_DISPATCH.description
+    expect(text).toContain('disposition')
+    expect(text).toContain('declined')
+  })
+
+  it('the NATS-narrowed dispatch descriptor keeps the disposition guidance', () => {
+    const narrowed = dispatchToolDescriptor({
+      capabilities: { teamTaskFanout: false, teamPermissionFanout: false },
+    } as any)
+    expect(narrowed.description).toContain('disposition')
+  })
+
+  it('declares the disposition capability bit for presence telemetry', () => {
+    expect(PEER_CAPS.split(',')).toContain('disposition')
   })
 })
 

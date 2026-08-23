@@ -95,6 +95,21 @@ Core invariants:
 - Subject ownership is fail-closed. Interest patterns narrow delivery but never grant authority.
 - Peer content is escaped and treated as untrusted user input before entering Claude's context.
 
+### Disposition convention
+
+Replying to a `task_dispatch` is a conversation, not an acknowledgement: a peer may accept,
+decline, counter-propose, or report progress. That answer travels as a **`meta` convention, not a
+schema change** — the six envelope kinds are unchanged. A reply SHOULD carry:
+
+- `meta.disposition` ∈ `accepted` | `declined` | `counter_proposal` | `in_progress` | `completed`
+- `meta.correlation_id` — copied from the dispatch, so the sender can match the answer
+
+The `send_to_peer` and `dispatch_task` tool descriptions carry this instruction, and each
+peer-agent declares a `disposition` capability bit in its presence row. Stalled-correlation
+telemetry gates its denominator on that bit: an older binary that declares nothing is excluded
+rather than counted as silent. With this in place, the missing-peer signal is **no disposition at
+all**, not "no `task_result`".
+
 ## Requirements
 
 - Node.js 22 or newer.
