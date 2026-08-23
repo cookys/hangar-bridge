@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import {
@@ -29,7 +30,7 @@ import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
 import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
-import { defaultDispatchStatePath, defaultCursorStatePath } from './paths.ts'
+import { defaultDispatchStatePath, defaultCursorStatePath, defaultHealthStatePath } from './paths.ts'
 import { CursorStore, cursorSink } from './cursor-store.ts'
 import { installLifecycleShutdown } from './lifecycle.ts'
 import { FileNatsInstanceGuard } from './nats-instance-lock.ts'
@@ -94,7 +95,25 @@ async function main(): Promise<void> {
   // skip. Runs BEFORE transport wiring so the FIRST presence report already
   // carries the delivery_state.
   const deafCheck = checkChannelsFlag({ mcpKey: process.env.HANGAR_MCP_KEY })
-  const health = new HealthState(deafCheck)
+  // P4'c: deafness needs a FIRST-detected timestamp that survives restarts, or
+  // deaf_since resets every boot and the two-months/five-minutes distinction dies.
+  let deafSinceMs: number | undefined
+  if (deafCheck.state === 'deaf') {
+    try {
+      const raw = JSON.parse(readFileSync(defaultHealthStatePath(), 'utf8')) as { deaf_since_ms?: number }
+      deafSinceMs = typeof raw.deaf_since_ms === 'number' ? raw.deaf_since_ms : undefined
+    } catch { /* fail-open: first detection, or unreadable state */ }
+    if (deafSinceMs === undefined) {
+      deafSinceMs = Date.now()
+      try {
+        writeFileSync(defaultHealthStatePath(), JSON.stringify({ deaf_since_ms: deafSinceMs }), { mode: 0o600 })
+      } catch { /* best-effort: an unwritable config dir must not block startup */ }
+    }
+  } else {
+    // Recovered: clear the stamp so a future deafness starts its own clock.
+    try { rmSync(defaultHealthStatePath(), { force: true }) } catch { /* best-effort */ }
+  }
+  const health = new HealthState(deafCheck, deafSinceMs)
   if (health.isDeaf()) {
     logJson('error', 'peer.startup.deaf_suspected', { reason: deafCheck.reason })
     process.stderr.write(
@@ -186,7 +205,7 @@ async function main(): Promise<void> {
     stream = natsTransport
   } else {
     if (!token) throw new Error('sse transport requires token_path')
-    const relayClient = new RelayClient({ relayUrl: cfg.relay_url, token })
+    const relayClient = new RelayClient({ relayUrl: cfg.relay_url, token, instance: instanceId })
     client = relayClient
     claimClient = relayClient
 
@@ -194,6 +213,16 @@ async function main(): Promise<void> {
     // list_peers.online reflects the live SSE connection without requiring an
     // explicit set_summary call. The NATS transport owns its separate heartbeat.
     let lastSummary = '(connected)'
+    // Single-builder rule, outbound edition (P4'c): the DEAF marker rides on EVERY
+    // message this process sends, from every call site, so a deaf peer cannot emit
+    // an unmarked claim about conversation history. Marking, never refusing — the
+    // send path is a deaf session's only beacon.
+    const originalSend = relayClient.send.bind(relayClient)
+    relayClient.send = async (msg, opts) => {
+      const marker = health.outboundMeta()
+      if (Object.keys(marker).length === 0) return originalSend(msg, opts)
+      return originalSend({ ...msg, meta: { ...(msg.meta ?? {}), ...marker } }, opts)
+    }
     const originalSetPresence = relayClient.setPresence.bind(relayClient)
     relayClient.setPresence = async body => {
       if (body.summary) lastSummary = body.summary

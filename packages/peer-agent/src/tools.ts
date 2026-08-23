@@ -195,7 +195,11 @@ export function dispatchToolDescriptor(client: PeerTransport) {
  * nothing and is simply excluded, instead of manufacturing false alarms during
  * a mixed-version rollout.
  */
-export const BASE_PEER_CAPS = 'disposition'
+// attribution-v1 (P4'a): tells a receiver how to read a MISSING stamped instance.
+// From a peer advertising this bit, absence means stripped or concealed; from a
+// peer without it, absence just means an older build. Without the bit the two are
+// indistinguishable, which is exactly the ambiguity the 8/22 thread turned on.
+export const BASE_PEER_CAPS = 'disposition,attribution-v1'
 
 /**
  * poll_inbox is conditional (FIX4): index.ts registers the poll_inbox TOOL

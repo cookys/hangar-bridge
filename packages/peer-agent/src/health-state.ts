@@ -17,7 +17,16 @@ const DEAF_PREFIX = 'DEAF(inbound-dropped): '
 export type DeliveryState = 'unverified' | 'verified' | 'deaf'
 
 export class HealthState {
-  constructor(private readonly check: DeafCheckResult) {}
+  /**
+   * @param deafSinceMs first moment this process knew it was deaf. Persisted by the
+   *   caller across restarts (deaf-check runs at startup only), because a receiver
+   *   treats "deaf for two months" very differently from "deaf for five minutes":
+   *   the former makes every claim of not having received something worthless.
+   */
+  constructor(
+    private readonly check: DeafCheckResult,
+    private readonly deafSinceMs?: number,
+  ) {}
 
   isDeaf(): boolean {
     return this.check.state === 'deaf'
@@ -43,5 +52,31 @@ export class HealthState {
     if (!this.isDeaf()) return summary
     if (summary.startsWith(DEAF_PREFIX)) return summary
     return DEAF_PREFIX + summary
+  }
+
+  /**
+   * Meta keys attached to EVERY outbound message while deaf (P4'c).
+   *
+   * Marker, not a hard stop: a deaf session's send path still works, and refusing
+   * to send would kill the one beacon that lets the fleet learn it is deaf at all —
+   * the exact failure that let this box run deaf for two months. Ruling: mark, and
+   * let the receiver discount.
+   *
+   * These ride as META because the subject-routing spec renders meta into the
+   * <channel> envelope the receiver actually reads. A warning the receiver has to
+   * query for is no warning — and this needs no change to the <channel> tag shape.
+   *
+   * Semantics for the receiver: this sender's statements about ITSELF stay
+   * trustworthy (it can see itself); its statements about CONVERSATION HISTORY do
+   * not (its inbound context has holes). Every "that wasn't me" in the 8/22 thread
+   * was sincere and wrong for exactly this reason.
+   */
+  outboundMeta(): Record<string, string> {
+    if (!this.isDeaf()) return {}
+    const meta: Record<string, string> = { sender_health: 'deaf' }
+    if (this.deafSinceMs !== undefined) {
+      meta['deaf_since'] = new Date(this.deafSinceMs).toISOString()
+    }
+    return meta
   }
 }

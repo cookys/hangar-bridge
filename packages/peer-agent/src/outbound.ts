@@ -2,6 +2,12 @@ import { ulid } from 'ulid'
 import type { Envelope, OutboundMessage } from '@hangar-bridge/shared'
 
 export interface RelayClientOpts {
+  /**
+   * Per-process instance id (P4'a). Sent as x-hangar-instance on publish so the
+   * relay can STAMP attribution rather than trusting sender-declared meta — the
+   * fix for a forged-denial incident must not itself be forgeable.
+   */
+  instance?: string | undefined
   relayUrl: string
   token: string
   /** Optional per-request deadline, used by the NATS claim-compatibility probe. */
@@ -105,6 +111,7 @@ export class RelayClient implements PeerTransport, ClaimClient, InboxClient {
         authorization: `Bearer ${this.opts.token}`,
         'content-type': 'application/json',
         'idempotency-key': idempotencyKey,
+        ...(this.opts.instance ? { 'x-hangar-instance': this.opts.instance } : {}),
       },
       body: JSON.stringify(msg),
     })

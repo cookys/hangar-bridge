@@ -45,6 +45,16 @@ export function defaultCursorStatePath(): string {
 }
 
 /**
+ * First-detected-deaf timestamp (P4'c). deaf-check runs at startup only, so
+ * without this every restart would reset deaf_since and a receiver could never
+ * tell "deaf for two months" from "deaf for five minutes" — the distinction that
+ * decides whether this sender's claims about conversation history are worthless.
+ */
+export function defaultHealthStatePath(): string {
+  return join(configDir(), 'health-state.json')
+}
+
+/**
  * Host-global (not project-config-local) lock path for a NATS fleet handle.
  * Different Claude projects may set different HANGAR_CONFIG_DIR values, but a
  * handle-level durable consumer still permits only one local live process.
