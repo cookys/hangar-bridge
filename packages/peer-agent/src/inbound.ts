@@ -58,6 +58,17 @@ export class InboundDispatcher {
       logJson('warn', 'peer.inbound.sender_gate_drop', { from: e.from, msg_id: e.id })
       return 'rejected'
     }
+    // presence_update is heartbeat traffic, not a message anyone addressed to us:
+    // every peer broadcasts one every few seconds, and a host-global self_handle
+    // means each session on a peer box broadcasts its own. Emitting those as
+    // <channel> tags floods the session context with zero-information
+    // "(connected)" noise and crowds out real peer traffic. Presence is
+    // pull-shaped instead: list_peers queries /v1/peers live (outbound.ts), so
+    // absorbing it here loses nothing. Advance the cursor so it is not replayed.
+    if (e.kind === 'presence_update') {
+      this.opts.setCursor(e.id)
+      return 'delivered'
+    }
     // Local interest narrowing (fail-open: interest only, never ownership).
     const interest = this.opts.interest
     if (e.subject !== null && interest && interest.length > 0 && !matchesInterest(e.subject, interest)) {

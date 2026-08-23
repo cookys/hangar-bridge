@@ -33,6 +33,32 @@ describe('InboundDispatcher', () => {
     expect(sent[0]!.method).toBe('notifications/claude/channel')
   })
 
+  it('absorbs presence_update without emitting a channel notification', async () => {
+    // Every peer broadcasts presence every few seconds. Emitting those as <channel>
+    // tags floods the session context with zero-information "(connected)" noise.
+    await expect(d.handle(envelope({ kind: 'presence_update', content: '(connected)' })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(0)
+  })
+
+  it('advances the cursor past an absorbed presence_update', async () => {
+    const seenCursor: string[] = []
+    const dp = new InboundDispatcher({
+      gate: new SenderGate(['alice','bob']),
+      emit: n => { sent.push(n) },
+      setCursor: id => { seenCursor.push(id) },
+    })
+    await dp.handle(envelope({ kind: 'presence_update', content: '(connected)' }))
+    expect(seenCursor).toEqual(['msg_01HRK7Y0000000000000000000'])
+    expect(sent).toHaveLength(0)
+  })
+
+  it('still emits a presence-carrying summary sent as chat', async () => {
+    await expect(d.handle(envelope({ kind: 'chat', content: 'build is green' })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
   it('drops messages from unknown peers', async () => {
     await expect(d.handle(envelope({ from: 'mallory' }))).resolves.toBe('rejected')
     expect(sent).toHaveLength(0)
