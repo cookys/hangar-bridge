@@ -9,7 +9,10 @@ import { logJson } from './logger.ts'
 
 export interface InboundDispatcherOpts {
   gate: SenderGate
-  emit: (notification: { method: string; params: Record<string, unknown> }) => void | Promise<void>
+  emit: (
+    notification: { method: string; params: Record<string, unknown> },
+    envelope: Envelope,
+  ) => void | Promise<void>
   setCursor: (id: string) => void
   // Local interest narrowing (exact or trailing '>'). FAIL-OPEN relative to the
   // relay (M5): only narrows by interest, NEVER drops on ownership — the relay's
@@ -153,7 +156,7 @@ export class InboundDispatcher {
     }
     const notification = envelopeToChannelNotification(e)
     try {
-      await this.opts.emit(notification)
+      await this.opts.emit(notification, e)
       logJson('info', 'peer.inbound.emitted', { method: notification.method, msg_id: e.id })
     } catch (err) {
       logJson('error', 'peer.inbound.emit_error', {

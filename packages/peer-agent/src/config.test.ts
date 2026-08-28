@@ -9,6 +9,47 @@ beforeEach(() => { workdir = mkdtempSync(join(tmpdir(), 'mesh-')) })
 afterEach(() => { rmSync(workdir, { recursive: true, force: true }) })
 
 describe('loadConfig', () => {
+  it('defaults final-mile delivery to the existing Claude Channel', () => {
+    const p = join(workdir, 'final-mile-default.json')
+    writeFileSync(p, JSON.stringify({ relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok') }))
+    expect(loadConfig(p).final_mile).toEqual({ kind: 'claude-channel' })
+  })
+
+  it('accepts an exact Agent Call final-mile target and optional binary path', () => {
+    const p = join(workdir, 'final-mile-agent-call.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      final_mile: { kind: 'agent-call', target: 'local-codex', bin: '/opt/bin/agent-call' },
+    }))
+    expect(loadConfig(p).final_mile).toEqual({
+      kind: 'agent-call', target: 'local-codex', bin: '/opt/bin/agent-call',
+    })
+  })
+
+  it('defaults the Agent Call binary to PATH lookup', () => {
+    const p = join(workdir, 'final-mile-agent-call-default-bin.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      final_mile: { kind: 'agent-call', target: 'local-codex' },
+    }))
+    expect(loadConfig(p).final_mile).toEqual({
+      kind: 'agent-call', target: 'local-codex', bin: 'agent-call',
+    })
+  })
+
+  it('rejects permission relay with Agent Call final-mile', () => {
+    const p = join(workdir, 'final-mile-permission.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      final_mile: { kind: 'agent-call', target: 'local-codex', bin: 'agent-call' },
+      permission_relay: { enabled: true, routing: 'never_relay' },
+    }))
+    expect(() => loadConfig(p)).toThrow(/peer authority cannot approve permissions/)
+  })
+
   it('loads a valid config file', () => {
     const p = join(workdir, 'config.json')
     writeFileSync(p, JSON.stringify({

@@ -262,6 +262,44 @@ In Claude Code, `/mcp` should show the server connected. `list_peers` is a usefu
 consumes anything. Use it when a turn was busy enough to miss a pushed `<channel>` tag, and as the
 inbound mainline on any harness that does not render server notifications at all.
 
+### Optional Agent Call final-mile
+
+For an already-running local persistent session that is not the peer-agent's Claude Channel host,
+the authenticated SSE/NATS transport can hand inbound envelopes to Agent Call instead:
+
+```json
+{
+  "relay_url": "http://relay-host:8443",
+  "token_path": "/absolute/path/to/secret",
+  "final_mile": {
+    "kind": "agent-call",
+    "target": "local-codex",
+    "bin": "agent-call"
+  }
+}
+```
+
+`target` must already be registered and exact. The peer-agent executes
+`agent-call receive --stdin --json` without a shell and preserves remote `from`, message id, kind,
+correlation, and subject as peer data. Agent Call remains the local ingress authority: its receipt
+is still only `channel_accepted` or `injected_unverified`, never model observation.
+
+Because the authenticated remote `from` handle is not a local Agent Call registration, the adapter
+sets Agent Call's trusted transport-only `reply: "none"` framing field. The receiving harness is not
+shown a bogus local Agent Call reply command. A reply may use only a separately configured Hangar
+Bridge outbound surface; if it has none, the reply route is unavailable. It must not try another
+local session or start a worker. This mode therefore requires Agent Call newer than commit
+`920ce87d8a87b5cfec0eca157d0e15e2623a4430`, which introduced the final-mile acceptance baseline
+but did not yet support disabling its generic local reply hint.
+
+This mode has no fallback. A missing binary, offline target, oversized/control-character content,
+or refused adapter leaves the transport message retryable; it never emits the same message through
+Claude Channel and never starts another worker. Agent Call's 12,288-byte content ceiling applies
+even though the hangar-bridge wire format accepts larger envelopes. Permission relay is rejected at
+config load because a remote peer cannot approve local permissions. Reverse cross-host replies
+remain separately configured hangar-bridge outbound traffic; this adapter is only the
+destination-host final mile and does not by itself make a remote round-trip available.
+
 ## NATS setup (opt-in, pre-cutover)
 
 Do not flip a production fleet from this README alone. Follow the version-pinned provisioning guide

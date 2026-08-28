@@ -11,12 +11,13 @@
 
 ## 1. What it is
 
-A self-hosted **coordination control-plane for a single-operator Claude Code fleet**.
-Claude Code instances on different hosts message each other, broadcast, thread, relay
+A self-hosted **coordination control-plane for a single-operator coding-agent fleet**.
+Coding-agent sessions on different hosts message each other, broadcast, thread, relay
 tool-permission approvals, and — the fork's headline addition — **dispatch tasks and
-collect structured results** across machines. Inbound peer messages are injected into a
-Claude's context as `<channel source="hangar-bridge" …>` tags; outbound goes through MCP
-tools (`send_to_peer`, `dispatch_task`, `list_peers`, `set_summary`, `respond_to_permission`).
+collect structured results** across machines. By default, inbound peer messages are injected into
+Claude's context as `<channel source="hangar-bridge" …>` tags. An opt-in destination adapter may
+instead call Agent Call's local ingress for an already-running exact target. Outbound Claude traffic
+goes through MCP tools (`send_to_peer`, `dispatch_task`, `list_peers`, `set_summary`, `respond_to_permission`).
 Relay-backed claim tools (`claim_asset`, `list_claims`, `release_claim`) are also exposed when a
 claim coordination client is available.
 
@@ -68,7 +69,7 @@ then layer subject-routing ACL, task dispatch, cooperative claims, and an opt-in
 |---|---|
 | `@hangar-bridge/shared` | One envelope schema, channel serialization/escaping, monotonic message IDs, subject matchers, claim bounds, and shared constants. Both transports depend on it. |
 | `@hangar-bridge/relay` | Default Hono HTTP/SSE messaging hub, bearer identity, bidirectional subject ACL, SQLite/WAL schema v6, TTL presence, claim API, durable buffer, fanout, and audit. |
-| `@hangar-bridge/peer-agent` | MCP stdio server, SSE and NATS transport implementations, tool registration, inbound sender gate, app-side NATS ACL, correlation, permissions, task dedup, and lifecycle cleanup. |
+| `@hangar-bridge/peer-agent` | MCP stdio server, SSE and NATS transport implementations, tool registration, inbound sender gate, optional Agent Call final-mile adapter, app-side NATS ACL, correlation, permissions, task dedup, and lifecycle cleanup. |
 | `@hangar-bridge/e2e` | Cross-package loopback tests, configuration checks, and live local-NATS integration oracles. |
 | `@hangar-bridge/operations` | Relay/NATS systemd units, NATS config and provisioning, fleet roster, NKeys workflow, and Claude Code registration artifacts. |
 
@@ -84,6 +85,17 @@ Its `transport` config defaults to `sse`. SSE can retain the legacy multi-sessio
 current NATS durable address is handle-scoped, so NATS mode enforces one live local process per
 handle with a host-global file lock; a second same-handle session fails closed. Session-addressed
 NATS routing is deferred.
+
+When `final_mile.kind` is `agent-call`, the network transport still owns remote authentication and
+the peer-agent still runs every sender/ACL/dedupe gate. Only the last local delivery step changes:
+the accepted envelope is converted to an `origin=transport`, `authority=peer` Agent Call envelope
+and sent to `agent-call receive --stdin --json`. Failure is terminal for that attempt and remains
+retryable upstream; there is no Channel or worker-spawn fallback. Permission relay is incompatible
+with this mode. The authenticated remote handle is not a local Agent Call registration, so the
+adapter uses Agent Call's trusted transport-only `reply: "none"` field to remove its generic local
+reply hint. Agent Call does not provide the reverse network path; a separately
+configured hangar-bridge outbound surface remains responsible for replies. Without one, this path
+is intentionally one-way and must not substitute a local session or spawn a worker.
 
 ### 4.1 SSE/default path
 

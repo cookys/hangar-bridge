@@ -37,6 +37,7 @@ import { FileNatsInstanceGuard } from './nats-instance-lock.ts'
 import { verifyClaimCompatibility } from './claims-compat.ts'
 import { pathToFileURL } from 'node:url'
 import { logJson } from './logger.ts'
+import { deliverViaAgentCall } from './agent-call-ingress.ts'
 
 async function main(): Promise<void> {
   const cfg = loadConfig()
@@ -175,7 +176,21 @@ async function main(): Promise<void> {
   const presenceTracker = createPresenceTracker(PRESENCE_TTL_MS)
   const dispatcher = new InboundDispatcher({
     gate,
-    emit: n => server.notification(n as never),
+    emit: async (notification, envelope) => {
+      if (cfg.final_mile.kind === 'claude-channel') {
+        await server.notification(notification as never)
+        return
+      }
+      const receipt = await deliverViaAgentCall(envelope, {
+        target: cfg.final_mile.target,
+        bin: cfg.final_mile.bin,
+      })
+      logJson('info', 'peer.inbound.agent_call_accepted', {
+        msg_id: envelope.id,
+        target: cfg.final_mile.target,
+        receipt_status: receipt.status,
+      })
+    },
     setCursor: cursorSink(cfg.transport, cursorStore),
     interest: cfg.subjects.interest,
     permissionTracker,

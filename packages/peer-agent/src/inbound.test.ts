@@ -34,6 +34,19 @@ describe('InboundDispatcher', () => {
     expect(sent[0]!.method).toBe('notifications/claude/channel')
   })
 
+  it('passes the authenticated envelope to the selected final-mile emitter', async () => {
+    let accepted: Envelope | undefined
+    const dp = new InboundDispatcher({
+      gate: new SenderGate(['alice']),
+      emit: (_notification, authenticatedEnvelope) => { accepted = authenticatedEnvelope },
+      setCursor: () => { /* no-op */ },
+    })
+    const input = envelope({ content: 'final-mile' })
+
+    await expect(dp.handle(input)).resolves.toBe('delivered')
+    expect(accepted).toBe(input)
+  })
+
   it('absorbs presence_update without emitting a channel notification', async () => {
     // Every peer broadcasts presence every few seconds. Emitting those as <channel>
     // tags floods the session context with zero-information "(connected)" noise.

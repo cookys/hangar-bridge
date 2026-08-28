@@ -15,6 +15,14 @@ export const ConfigSchema = z.object({
   }).optional(),
   relay_url: z.string().url(),
   token_path: z.string(),
+  final_mile: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('claude-channel') }).strict(),
+    z.object({
+      kind: z.literal('agent-call'),
+      target: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+      bin: z.string().min(1).max(4096).refine(value => !/[\u0000-\u001F\u007F]/.test(value)).default('agent-call'),
+    }).strict(),
+  ]).default({ kind: 'claude-channel' }),
   // This peer's own handle. Optional/back-compat: only used to exclude self when the
   // outbound-permission ApprovalRouter policy is `ask_specific_peer:<self>`. The relay
   // remains the authority on identity (`from` is server-stamped); this is a local hint.
@@ -51,6 +59,13 @@ export const ConfigSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['permission_relay', 'routing'],
       message: "ask_team is unavailable on NATS; choose a direct peer routing policy",
+    })
+  }
+  if (value.final_mile.kind === 'agent-call' && value.permission_relay.enabled) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['permission_relay', 'enabled'],
+      message: 'permission relay is unavailable with Agent Call final-mile; peer authority cannot approve permissions',
     })
   }
 })
