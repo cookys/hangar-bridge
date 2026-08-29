@@ -37,7 +37,7 @@ new_fixture() {
     'if [[ -n "${SYSTEMCTL_FAIL_MATCH:-}" && "$*" == *"${SYSTEMCTL_FAIL_MATCH}"* ]]; then exit 17; fi' \
     'if [[ "$*" == "--user restart hangar-bridge-relay.service" || "$*" == "--user enable --now hangar-bridge-relay.service" ]]; then' \
     '  [[ -f "${REVISION_FILE}" && -f "${INSTALLED_UNIT}" ]] || exit 19' \
-    '  rg -q "^EnvironmentFile=%h/.config/hangar-bridge/relay.env$" "${INSTALLED_UNIT}" || exit 19' \
+    '  grep -q "^EnvironmentFile=%h/.config/hangar-bridge/relay.env$" "${INSTALLED_UNIT}" || exit 19' \
     'fi' \
     'if [[ "$*" == "--user is-active --quiet hangar-bridge-relay.service" ]]; then' \
     '  [[ "${RELAY_ACTIVE:-false}" == "true" ]]' \
@@ -97,7 +97,7 @@ test_with_nats_without_enable_does_not_enable_nats() {
     cleanup_fixture
     return
   fi
-  if rg -Fxq -- '--user enable --now hangar-bridge-nats.service' "${SYSTEMCTL_LOG}"; then
+  if grep -Fqx -- '--user enable --now hangar-bridge-nats.service' "${SYSTEMCTL_LOG}"; then
     fail '--with-nats without --enable must not enable or start NATS'
   fi
 
@@ -114,10 +114,10 @@ test_active_service_is_restarted_on_upgrade() {
     return
   fi
 
-  if ! rg -Fxq -- "--user restart ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
+  if ! grep -Fqx -- "--user restart ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
     fail 'active relay upgrade must restart the relay after daemon-reload'
   fi
-  if rg -Fxq -- "--user enable --now ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
+  if grep -Fqx -- "--user enable --now ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
     fail 'active relay upgrade must not use first-install enable --now path'
   fi
 
@@ -134,10 +134,10 @@ test_enable_on_active_service_enables_then_restarts() {
     return
   fi
 
-  if ! rg -Fxq -- "--user enable ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
+  if ! grep -Fqx -- "--user enable ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
     fail '--enable must enable an already-active relay unit'
   fi
-  if ! rg -Fxq -- "--user restart ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
+  if ! grep -Fqx -- "--user restart ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
     fail 'an already-active relay must still restart to load the new build'
   fi
 
@@ -154,7 +154,7 @@ test_inactive_first_install_is_enabled_and_started() {
     return
   fi
 
-  if ! rg -Fxq -- "--user enable --now ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
+  if ! grep -Fqx -- "--user enable --now ${UNIT_NAME}" "${SYSTEMCTL_LOG}"; then
     fail 'inactive relay first install must use enable --now'
   fi
 
@@ -274,7 +274,7 @@ test_unsupported_node_fails_before_writes_or_systemctl() {
   if find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
     fail 'unsupported Node must fail before writing deployment files'
   fi
-  if ! rg -q 'Node.*22' "${FIXTURE_DIR}/install.out"; then
+  if ! grep -q 'Node.*22' "${FIXTURE_DIR}/install.out"; then
     fail 'unsupported Node failure must explain the Node 22 requirement'
   fi
 
@@ -302,7 +302,7 @@ test_missing_node_fails_before_writes_or_systemctl() {
   if find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
     fail 'missing Node must fail before writing deployment files'
   fi
-  if ! rg -q 'Node.*22' "${FIXTURE_DIR}/install.out"; then
+  if ! grep -q 'Node.*22' "${FIXTURE_DIR}/install.out"; then
     fail 'missing Node failure must explain the Node 22 requirement'
   fi
 
@@ -310,10 +310,10 @@ test_missing_node_fails_before_writes_or_systemctl() {
 }
 
 test_unit_uses_installer_pinned_node_path() {
-  if rg -q '^Environment=PATH=' "${SCRIPT_DIR}/hangar-bridge-relay.service"; then
+  if grep -q '^Environment=PATH=' "${SCRIPT_DIR}/hangar-bridge-relay.service"; then
     fail 'relay unit must not carry a static host-specific Node path'
   fi
-  if ! rg -q '^EnvironmentFile=%h/.config/hangar-bridge/relay.env$' \
+  if ! grep -q '^EnvironmentFile=%h/.config/hangar-bridge/relay.env$' \
     "${SCRIPT_DIR}/hangar-bridge-relay.service"; then
     fail 'relay unit must load the installer-pinned Node path from relay.env'
   fi
@@ -326,7 +326,7 @@ test_help_is_read_only_and_documents_required_revision() {
     bash "${INSTALLER}" --help > "${FIXTURE_DIR}/help.out" 2>&1; then
     fail 'relay installer --help should succeed'
   fi
-  if ! rg -q -- '--revision' "${FIXTURE_DIR}/help.out"; then
+  if ! grep -q -- '--revision' "${FIXTURE_DIR}/help.out"; then
     fail 'relay installer help must document --revision'
   fi
   if [[ -s "${SYSTEMCTL_LOG}" ]] || find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
@@ -344,7 +344,7 @@ test_systemctl_failure_propagates_without_success_claim() {
   if run_installer > "${FIXTURE_DIR}/install.out" 2>&1; then
     fail 'relay installer must fail when restart fails'
   fi
-  if rg -q 'Restarted.*hangar-bridge-relay' "${FIXTURE_DIR}/install.out"; then
+  if grep -q 'Restarted.*hangar-bridge-relay' "${FIXTURE_DIR}/install.out"; then
     fail 'relay installer must not claim restart success after systemctl failure'
   fi
 
@@ -359,7 +359,7 @@ test_failed_health_check_is_a_failed_install() {
   if run_installer > "${FIXTURE_DIR}/install.out" 2>&1; then
     fail 'relay installer must fail when the post-start health check never succeeds'
   fi
-  if ! rg -q 'ERROR:.*health' "${FIXTURE_DIR}/install.out"; then
+  if ! grep -q 'ERROR:.*health' "${FIXTURE_DIR}/install.out"; then
     fail 'relay installer must explain the failed health check'
   fi
 
@@ -374,7 +374,7 @@ test_mismatched_health_revision_is_a_failed_install() {
   if run_installer > "${FIXTURE_DIR}/install.out" 2>&1; then
     fail 'relay installer must fail when health reports a different build revision'
   fi
-  if ! rg -q 'ERROR:.*revision' "${FIXTURE_DIR}/install.out"; then
+  if ! grep -q 'ERROR:.*revision' "${FIXTURE_DIR}/install.out"; then
     fail 'relay installer must explain the mismatched health revision'
   fi
 

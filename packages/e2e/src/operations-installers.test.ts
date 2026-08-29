@@ -9,9 +9,13 @@ describe('operations installer regressions', () => {
     'packages/operations/claude-config/install-mcp.test.sh',
     'packages/operations/systemd/install-relay.test.sh',
   ])('%s passes in an isolated fake HOME', script => {
+    const env = script.includes('/systemd/')
+      ? { ...process.env, PATH: '/usr/bin:/bin' }
+      : process.env
     const output = execFileSync('bash', [resolve(repoRoot, script)], {
       cwd: repoRoot,
       encoding: 'utf8',
+      env,
       timeout: 30_000,
     })
 
