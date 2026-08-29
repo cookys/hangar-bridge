@@ -121,6 +121,8 @@ all**, not "no `task_result`".
 
 ```bash
 corepack pnpm install --frozen-lockfile
+corepack pnpm audit --prod --audit-level high
+corepack pnpm audit --audit-level high
 corepack pnpm -r build
 corepack pnpm -r typecheck
 corepack pnpm -r test:ci
@@ -389,6 +391,8 @@ packages/operations/   relay/NATS config, provisioning, and systemd artifacts
 Before pushing:
 
 ```bash
+corepack pnpm audit --prod --audit-level high
+corepack pnpm audit --audit-level high
 corepack pnpm -r build
 corepack pnpm -r typecheck
 corepack pnpm -r test:ci

@@ -25,6 +25,8 @@ pnpm -r build                                  # build every package
 pnpm -r typecheck                              # tsc --noEmit across the workspace
 pnpm -r test                                   # vitest watch across packages
 pnpm -r test:ci                                # vitest run + coverage thresholds
+pnpm audit --prod --audit-level high           # production high/critical advisory gate
+pnpm audit --audit-level high                  # full dependency high/critical advisory gate
 
 # Scope to one package:
 pnpm -F @hangar-bridge/shared exec vitest run

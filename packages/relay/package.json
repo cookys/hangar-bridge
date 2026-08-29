@@ -16,8 +16,8 @@
   },
   "dependencies": {
     "@hangar-bridge/shared": "workspace:*",
-    "hono": "^4.6.3",
-    "@hono/node-server": "^1.13.1",
+    "hono": "^4.13.5",
+    "@hono/node-server": "^1.19.17",
     "better-sqlite3": "^12.11.1",
     "ulid": "^2.3.0",
     "zod": "^3.23.8"
@@ -25,6 +25,6 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
     "tsx": "^4.19.1",
-    "@vitest/coverage-v8": "^2.1.2"
+    "@vitest/coverage-v8": "^3.2.7"
   }
 }

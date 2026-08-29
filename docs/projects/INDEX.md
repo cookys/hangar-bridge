@@ -11,6 +11,7 @@ One row per tracked L-size project. Archived projects move to `_archive/`.
 
 | Status | Project | Plan | Notes |
 |--------|---------|------|-------|
+| 🔄 in progress | [dependency hardening](2026-08-30-dependency-hardening/README.md) | [docs/plans/2026-08-30-dependency-hardening.md](../plans/2026-08-30-dependency-hardening.md) | Remove runtime/dev high+critical advisories; ratchet hosted CI |
 | 🔄 in progress | [relay→NATS migration](2026-07-02-relay-to-nats-migration/README.md) | [docs/plans/2026-07-02-relay-to-nats-migration.md](../plans/2026-07-02-relay-to-nats-migration.md) | /l6 hetero 執行;P0–P4 自主,P5/P6 Board 閘 |
 
 ## Archive
