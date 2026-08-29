@@ -276,7 +276,8 @@ if [[ "${RELAY_ACTIVATED}" == "true" ]]; then
 
   echo ""
   HEALTH_VERIFIED="false"
-  for _ in 1 2 3 4 5; do
+  HEALTH_MAX_ATTEMPTS=30
+  for ((HEALTH_ATTEMPT = 1; HEALTH_ATTEMPT <= HEALTH_MAX_ATTEMPTS; HEALTH_ATTEMPT += 1)); do
     if HEALTH_JSON="$(curl -sf "http://192.168.101.6:8443/health" -m 2 2>/dev/null)"; then
       HEALTH_REVISION=""
       if PARSED_REVISION="$(printf '%s\n' "${HEALTH_JSON}" | \
@@ -290,7 +291,9 @@ if [[ "${RELAY_ACTIVATED}" == "true" ]]; then
         break
       fi
     fi
-    sleep 1
+    if (( HEALTH_ATTEMPT < HEALTH_MAX_ATTEMPTS )); then
+      sleep 1
+    fi
   done
 
   if [[ "${HEALTH_VERIFIED}" != "true" ]]; then

@@ -19,10 +19,12 @@ new_fixture() {
   SYSTEMCTL_FAIL_MATCH=""
   CURL_HEALTHY=true
   CURL_REVISION="${REVISION}"
+  CURL_FAILS_BEFORE_SUCCESS=0
   FIXTURE_DIR="$(mktemp -d)"
   TEST_HOME="${FIXTURE_DIR}/home"
   MOCK_BIN="${FIXTURE_DIR}/bin"
   SYSTEMCTL_LOG="${FIXTURE_DIR}/systemctl.log"
+  CURL_COUNT_FILE="${FIXTURE_DIR}/curl-count"
   REVISION_FILE="${TEST_HOME}/.config/hangar-bridge/relay.env"
   INSTALLED_UNIT="${TEST_HOME}/.config/systemd/user/${UNIT_NAME}"
   NATS_STATE_DIR="${FIXTURE_DIR}/nats-state"
@@ -56,6 +58,11 @@ new_fixture() {
   # shellcheck disable=SC2016 # variables expand when the generated mock runs
   printf '%s\n' \
     '#!/usr/bin/env bash' \
+    'count=0' \
+    'if [[ -f "${CURL_COUNT_FILE}" ]]; then read -r count < "${CURL_COUNT_FILE}"; fi' \
+    'count=$((count + 1))' \
+    'printf "%s\n" "${count}" > "${CURL_COUNT_FILE}"' \
+    'if (( count <= ${CURL_FAILS_BEFORE_SUCCESS:-0} )); then exit 22; fi' \
     'if [[ "${CURL_HEALTHY:-true}" == "true" ]]; then' \
     '  printf "{\"ok\":true,\"build_revision\":\"%s\"}\n" "${CURL_REVISION}"' \
     '  exit 0' \
@@ -85,6 +92,8 @@ run_installer() {
     SYSTEMCTL_FAIL_MATCH="${SYSTEMCTL_FAIL_MATCH:-}" \
     CURL_HEALTHY="${CURL_HEALTHY:-true}" \
     CURL_REVISION="${CURL_REVISION:-${REVISION}}" \
+    CURL_COUNT_FILE="${CURL_COUNT_FILE}" \
+    CURL_FAILS_BEFORE_SUCCESS="${CURL_FAILS_BEFORE_SUCCESS:-0}" \
     HANGAR_REPO_ROOT="${HANGAR_REPO_ROOT:-${REPO_ROOT}}" \
     PROC_ROOT="${PROC_ROOT}" \
     NATS_STATE_DIR="${NATS_STATE_DIR}" \
@@ -438,6 +447,20 @@ test_failed_health_check_is_a_failed_install() {
   cleanup_fixture
 }
 
+test_slow_start_within_thirty_probe_budget_succeeds() {
+  new_fixture
+  RELAY_ACTIVE=false
+  CURL_FAILS_BEFORE_SUCCESS=6
+
+  if ! run_installer > "${FIXTURE_DIR}/install.out" 2>&1; then
+    fail 'relay installer must tolerate a healthy service that needs more than five probes'
+  elif [[ "$(< "${CURL_COUNT_FILE}")" != 7 ]]; then
+    fail 'slow-start regression must observe six failed probes before success'
+  fi
+
+  cleanup_fixture
+}
+
 test_mismatched_health_revision_is_a_failed_install() {
   new_fixture
   RELAY_ACTIVE=false
@@ -481,6 +504,7 @@ test_missing_node_fails_before_writes_or_systemctl
 test_help_is_read_only_and_documents_required_revision
 test_systemctl_failure_propagates_without_success_claim
 test_failed_health_check_is_a_failed_install
+test_slow_start_within_thirty_probe_budget_succeeds
 test_mismatched_health_revision_is_a_failed_install
 test_start_limits_are_in_unit_section
 test_unit_uses_installer_pinned_node_path
