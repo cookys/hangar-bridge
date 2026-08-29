@@ -1,5 +1,6 @@
 # qc-gate-config — per-project qc-gate forcing-function strength (hangar-bridge)
-# Resolved by autopilot scripts/resolve-qc-gate.sh; consulted by .githooks/pre-push and finish-flow.
+# Resolved by Autopilot `<autopilot>/scripts/resolve-qc-gate.sh`; consulted by
+# the Autopilot pre-push hook and finish-flow.
 
 ## Settings (one key: value per line; first match wins)
 - mode: warn

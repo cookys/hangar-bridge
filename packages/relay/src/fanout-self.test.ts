@@ -55,6 +55,18 @@ describe('Fanout self-delivery', () => {
     expect(mine).toHaveLength(1)
   })
 
+  it('does not exclude a different sender handle that happens to reuse the instance string', () => {
+    const fanout = new Fanout()
+    const got: string[] = []
+    fanout.subscribe({
+      handle: 'bob', team_id: 't1', instance: 'inst-A',
+      deliver: e => got.push(e.id),
+    })
+    const e = env({ from: 'alice', to: 'bob', meta: { sender_instance: 'inst-A' } })
+    expect(fanout.deliverDetailed(e)).toEqual({ delivered: true, selfExcluded: false })
+    expect(got).toEqual([e.id])
+  })
+
   it('still delivers a direct message addressed to a DIFFERENT handle', () => {
     const f = new Fanout()
     const mine: Envelope[] = []

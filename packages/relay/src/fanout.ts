@@ -95,7 +95,7 @@ export class Fanout {
     let selfExcluded = false
     for (const sub of set) {
       // Legacy (either side lacks an instance) keeps exactly the old behaviour.
-      if (senderInstance !== undefined && sub.instance === senderInstance) {
+      if (e.from === e.to && senderInstance !== undefined && sub.instance === senderInstance) {
         selfExcluded = true
         continue
       }

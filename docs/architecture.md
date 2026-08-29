@@ -68,7 +68,7 @@ then layer subject-routing ACL, task dispatch, cooperative claims, and an opt-in
 | Package | Current responsibility |
 |---|---|
 | `@hangar-bridge/shared` | One envelope schema, channel serialization/escaping, monotonic message IDs, subject matchers, claim bounds, and shared constants. Both transports depend on it. |
-| `@hangar-bridge/relay` | Default Hono HTTP/SSE messaging hub, bearer identity, bidirectional subject ACL, SQLite/WAL schema v6, TTL presence, claim API, durable buffer, fanout, and audit. |
+| `@hangar-bridge/relay` | Default Hono HTTP/SSE messaging hub, bearer identity, bidirectional subject ACL, SQLite/WAL schema v7, TTL presence, claim API, durable buffer, fanout, and audit. |
 | `@hangar-bridge/peer-agent` | MCP stdio server, SSE and NATS transport implementations, tool registration, inbound sender gate, optional Agent Call final-mile adapter, app-side NATS ACL, correlation, permissions, task dedup, and lifecycle cleanup. |
 | `@hangar-bridge/e2e` | Cross-package loopback tests, configuration checks, and live local-NATS integration oracles. |
 | `@hangar-bridge/operations` | Relay/NATS systemd units, NATS config and provisioning, fleet roster, NKeys workflow, and Claude Code registration artifacts. |
@@ -89,11 +89,15 @@ NATS routing is deferred.
 When `final_mile.kind` is `agent-call`, the network transport still owns remote authentication and
 the peer-agent still runs every sender/ACL/dedupe gate. Only the last local delivery step changes:
 the accepted envelope is converted to an `origin=transport`, `authority=peer` Agent Call envelope
-and sent to `agent-call receive --stdin --json`. Failure is terminal for that attempt and remains
-retryable upstream; there is no Channel or worker-spawn fallback. Permission relay is incompatible
-with this mode. The authenticated remote handle is not a local Agent Call registration, so the
-adapter uses Agent Call's trusted transport-only `reply: "none"` field to remove its generic local
-reply hint. Agent Call does not provide the reverse network path; a separately
+and sent to `agent-call receive --stdin --json`. Failure is terminal for that attempt; there is no
+Channel or worker-spawn fallback. SSE replays from its unchanged cursor and JetStream leaves the
+task unacknowledged, while Core NATS remains at-most-once and records an explicit delivery-failure
+log instead of claiming redelivery. Agent Call final-mile health remains `unverified`: the Claude
+Channel process probe is not applicable, and transport receipts are not model observation.
+Permission relay is incompatible with this mode. The
+authenticated remote handle is not a local Agent Call registration, so the adapter uses Agent
+Call's trusted transport-only `reply: "none"` field to remove its generic local reply hint. Agent
+Call does not provide the reverse network path; a separately
 configured hangar-bridge outbound surface remains responsible for replies. Without one, this path
 is intentionally one-way and must not substitute a local session or spawn a worker.
 
@@ -268,7 +272,7 @@ processed, and a cold-starting client — which drains `delivered_at IS NULL` on
 them. With a persisted cursor the client resumes via `?since=`, which filters on the id cursor
 alone, and cold start becomes the rare path instead of the default one.
 
-### 5.7 Durable model (`db/schema.sql`, SQLite WAL, schema v6)
+### 5.7 Durable model (`db/schema.sql`, SQLite WAL, schema v7)
 
 `team` (single fixed `'hangar'` row) · `human` (peer roster + `subjects` JSON ACL) · `token`
 (hashed secrets, revocable) · `message` (the durable buffer; indexed by `(team,id)`,

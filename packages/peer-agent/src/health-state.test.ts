@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { HealthState } from './health-state.ts'
+import {
+  HealthState, resolveFinalMileHealth, shouldClearPersistedDeafState,
+} from './health-state.ts'
 import type { DeafCheckResult } from './deaf-check.ts'
 
 /**
@@ -44,5 +46,27 @@ describe('HealthState', () => {
     expect(new HealthState(ok).deliveryState()).toBe('verified')
     expect(new HealthState(deaf).deliveryState()).toBe('deaf')
     expect(new HealthState(skip).deliveryState()).toBe('unverified')
+  })
+
+  it('keeps the deaf beacon sendable when persisted deaf_since is corrupt', () => {
+    expect(new HealthState(deaf, Number.POSITIVE_INFINITY).outboundMeta()).toEqual({
+      sender_health: 'deaf',
+    })
+  })
+
+  it('does not apply unused Claude Channel health to Agent Call final-mile', () => {
+    let called = false
+    const result = resolveFinalMileHealth('agent-call', () => {
+      called = true
+      return deaf
+    })
+    expect(called).toBe(false)
+    expect(result.state).toBe('skip')
+  })
+
+  it('clears persisted deaf state only after verified recovery, never on skip', () => {
+    expect(shouldClearPersistedDeafState(ok)).toBe(true)
+    expect(shouldClearPersistedDeafState(skip)).toBe(false)
+    expect(shouldClearPersistedDeafState(deaf)).toBe(false)
   })
 })

@@ -195,10 +195,9 @@ export function dispatchToolDescriptor(client: PeerTransport) {
  * nothing and is simply excluded, instead of manufacturing false alarms during
  * a mixed-version rollout.
  */
-// attribution-v1 (P4'a): tells a receiver how to read a MISSING stamped instance.
-// From a peer advertising this bit, absence means stripped or concealed; from a
-// peer without it, absence just means an older build. Without the bit the two are
-// indistinguishable, which is exactly the ambiguity the 8/22 thread turned on.
+// attribution-v1 (P4'a): advertises support for relay-stamped per-message
+// attribution_status. Modern SSE publishers also declare v1 on each POST so the
+// relay can distinguish an absent instance (`unverifiable`) from a legacy message.
 export const BASE_PEER_CAPS = 'disposition,attribution-v1'
 
 /**

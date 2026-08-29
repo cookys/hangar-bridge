@@ -4,10 +4,13 @@ import type { Envelope, OutboundMessage } from '@hangar-bridge/shared'
 export interface RelayClientOpts {
   /**
    * Per-process instance id (P4'a). Sent as x-hangar-instance on publish so the
-   * relay can STAMP attribution rather than trusting sender-declared meta — the
-   * fix for a forged-denial incident must not itself be forgeable.
+   * relay can STAMP attribution rather than trusting sender-declared message meta.
+   * This is observability/self-exclusion data, not an authorization principal:
+   * processes sharing one handle bearer remain mutually trusted for this header.
    */
   instance?: string | undefined
+  /** Declares support for relay-stamped per-message attribution status. */
+  attributionVersion?: 'v1' | undefined
   relayUrl: string
   token: string
   /** Optional per-request deadline, used by the NATS claim-compatibility probe. */
@@ -112,6 +115,9 @@ export class RelayClient implements PeerTransport, ClaimClient, InboxClient {
         'content-type': 'application/json',
         'idempotency-key': idempotencyKey,
         ...(this.opts.instance ? { 'x-hangar-instance': this.opts.instance } : {}),
+        ...(this.opts.attributionVersion
+          ? { 'x-hangar-attribution': this.opts.attributionVersion }
+          : {}),
       },
       body: JSON.stringify(msg),
     })

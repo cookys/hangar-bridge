@@ -50,7 +50,7 @@ flowchart LR
 
   PAA <-->|"default: HTTP + SSE"| R["relay"]
   PAB <-->|"default: HTTP + SSE"| R
-  R --- DB[("SQLite WAL / schema v6")]
+  R --- DB[("SQLite WAL / schema v7")]
 
   PAA <-.->|"opt-in: NATS"| N["NATS + JetStream/KV"]
   PAB <-.->|"opt-in: NATS"| N
@@ -282,7 +282,9 @@ the authenticated SSE/NATS transport can hand inbound envelopes to Agent Call in
 `target` must already be registered and exact. The peer-agent executes
 `agent-call receive --stdin --json` without a shell and preserves remote `from`, message id, kind,
 correlation, and subject as peer data. Agent Call remains the local ingress authority: its receipt
-is still only `channel_accepted` or `injected_unverified`, never model observation.
+is still only `channel_accepted` or `injected_unverified`, never model observation. Accordingly,
+this final-mile mode reports delivery health as `unverified`; it does not reuse Claude Channel's
+process probe or turn an Agent Call receipt into a verified model-observation signal.
 
 Because the authenticated remote `from` handle is not a local Agent Call registration, the adapter
 sets Agent Call's trusted transport-only `reply: "none"` framing field. The receiving harness is not
@@ -293,12 +295,15 @@ local session or start a worker. This mode therefore requires Agent Call newer t
 but did not yet support disabling its generic local reply hint.
 
 This mode has no fallback. A missing binary, offline target, oversized/control-character content,
-or refused adapter leaves the transport message retryable; it never emits the same message through
-Claude Channel and never starts another worker. Agent Call's 12,288-byte content ceiling applies
-even though the hangar-bridge wire format accepts larger envelopes. Permission relay is rejected at
-config load because a remote peer cannot approve local permissions. Reverse cross-host replies
-remain separately configured hangar-bridge outbound traffic; this adapter is only the
-destination-host final mile and does not by itself make a remote round-trip available.
+or refused adapter propagates as a failed local delivery; it never emits the same message through
+Claude Channel and never starts another worker. SSE reconnects from the unchanged accepted-delivery
+cursor, and JetStream leaves the task unacknowledged for redelivery. Core NATS chat remains
+at-most-once by transport contract: the failure is logged as `peer.nats.core_delivery_failed` but
+cannot be replayed. Agent Call's 12,288-byte content ceiling applies even though the hangar-bridge
+wire format accepts larger envelopes. Permission relay is rejected at config load because a remote
+peer cannot approve local permissions. Reverse cross-host replies remain separately configured
+hangar-bridge outbound traffic; this adapter is only the destination-host final mile and does not
+by itself make a remote round-trip available.
 
 ## NATS setup (opt-in, pre-cutover)
 
@@ -354,7 +359,7 @@ invocation is equivalent in a source checkout.
 
 ```text
 packages/shared/       envelope, channel serialization, subjects, constants
-packages/relay/        HTTP/SSE relay, SQLite schema v6, claims, presence, ACLs
+packages/relay/        HTTP/SSE relay, SQLite schema v7, claims, presence, ACLs
 packages/peer-agent/   MCP server, SSE/NATS transports, tools, correlation, permissions
 packages/e2e/          cross-package and live local-NATS integration tests
 packages/operations/   relay/NATS config, provisioning, and systemd artifacts

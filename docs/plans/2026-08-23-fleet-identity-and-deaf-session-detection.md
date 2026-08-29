@@ -176,11 +176,13 @@ README：兩條安裝路徑並列、config-key 警告（已寫）、`--resume` �
 **權威性裁決（gen-3；kimi Major-1 勝過 Fable F3）**：peer 自宣告的 meta 不足 —— 「**我們要修的是偽造否認事故，而修法本身可偽造**」。Fable 的「同信任域內本可互冒」不足以當設計理由，因為它自己也承認偽造某活 sibling 的 instance 會造成**選擇性致盲**（該 sibling 收不到該則訊息）。攻擊有實效 ⇒ 走 relay stamp，成本低（基礎設施已存在）。
 
 - peer-agent 於 `POST /v1/messages` 帶 `X-Hangar-Instance` header（沿用既有 `parseInstanceHeader`）
-- **relay 從 header 蓋 `meta.instance`，並在 `messages.ts` 的 chokepoint 剝除 client 自帶的 `meta.instance` / `meta.session_id`**（延伸既有 strip 清單）
+- **relay 從 header 蓋 `meta.instance`，並在 `messages.ts` 的 chokepoint 剝除 client 自帶的 `meta.instance` / `meta.sender_instance` / `meta.session_id` / `meta.attribution_status`**（延伸既有 strip 清單）
 - `CLAUDE_CODE_SESSION_ID` **relay 無法驗證** ⇒ 若保留，須明確命名為 display-only 宣稱（`peer_session_claim`），不得與 stamped instance 混為一談
-- 加 `caps` 位 `attribution-v1`：**有 cap 卻無 stamped instance = 隱匿/被剝**，render 為不可驗證；**無 cap = 舊 peer**（解 R13(b) 的區分問題，與 §2.5 capability gate 同型）
-- 收訊端可見 `from=cuda` + 權威 instance，能自證「這則不是我發的」、能過濾非本線 inbound
+- 加 `caps` 位 `attribution-v1`。SSE 由 modern publish header 讓 relay 逐訊息蓋 `attribution_status=stamped|unverifiable`；NATS 沒有 HTTP relay chokepoint，改由 production harness adapter 在剝除 caller meta 後蓋 `adapter-stamped|unverifiable`。legacy 無此位。如此 missing instance 不必靠事後 presence cap 猜測，也能區分「modern 但不可驗證」與舊 peer。
+- 收訊端可見 `from=cuda` + relay-stamped instance，能辨識「這則不是本 process 發的」、能過濾非本線 inbound
 - 不動 handle / roster / relay 重啟
+
+**信任邊界補正（adversarial review）**：現行 bearer 驗證到 handle，不驗證到 process；同 handle 的多個 process 共用 bearer，因此可互填 `X-Hangar-Instance`。relay stamp 解的是「模型/訊息 body 直接偽造 meta」與一致 self-exclusion，不是 per-process cryptographic identity。instance 僅可用於 observability 與負向 self-exclusion，**不得**成為 permission、ownership 或正向 `to_instance` 路由依據。若未來要把 instance 提升為 authority 或精準正向路由，必須先引入 per-process authenticated credential/binding；不得沿用此 header 當安全邊界。
 
 **P4'b — fanout 直達分支排除寄件 instance**
 `fanout.ts` 的 `@team` 分支有 `if (handle === e.from) continue`，**直達分支沒有** → 同機送給自己的 handle 時訊息原封回到自己（cuda 2026-08-24 實地踩到）。
@@ -194,7 +196,7 @@ README：兩條安裝路徑並列、config-key 警告（已寫）、`--resume` �
 **P4'c — 失聰 fail-safe**（`msg_01M0QSH107…` / `msg_01M0QSHV9R…`）
 > 一個聾掉的 peer-agent 繼續 send，可能比它安靜死掉更糟 —— 它發出看似正常、實則基於殘缺 context 的發言，收訊端無從分辨。8/22 那個 thread 就是這樣長出來的。
 
-採用：**outbound 每則自動掛 DEAF 標記**（非硬拒 —— 聾掉的 session 仍需能對外求救，硬拒會殺掉唯一的信標；標記讓收訊端自行折算）。
+採用：**outbound 每則自動掛 DEAF 標記**（非硬拒 —— 聾掉的 session 仍需能對外求救，硬拒會殺掉唯一的信標；標記讓收訊端自行折算）。`deaf_since` state 以 stable Claude session id 的 hash 分檔；無 stable id 的 harness 才退回 process instance，避免共享 config dir 的 healthy sibling 刪掉 deaf sibling 的時間戳。
 
 **實作方式（gen-3 Fable F2 —— 原以為撞紅線，實為假二分）**：`SUBJECT_ROUTING_SPEC` B1 明文 meta key 會 render 進 channel meta，**即直接出現在收訊端 `<channel>` 的呈現上**（要主動查詢才看得到的是 relay DB，不是 channel meta）。故做成 outbound meta key —— `sender_health="deaf"` + `deaf_since=<ts>` —— **同時滿足「算繪在信封上」與「不改 `<channel>` tag 形狀」，兩邊都不必讓**。`deaf_since` 須**跨重啟持久化**（deaf-check 是 startup 檢查，首次偵測時間戳存 config dir），否則「聾兩個月 vs 五分鐘」的語意做不到。
 

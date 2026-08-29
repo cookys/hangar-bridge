@@ -1,4 +1,4 @@
--- hangar-bridge relay schema v6
+-- hangar-bridge relay schema v7
 --
 -- D10 stub posture: single-tenant. `team_id` is constant `'hangar'` everywhere
 -- in application code. Schema retains the column + FK for minimal churn vs
@@ -108,6 +108,9 @@ INSERT OR IGNORE INTO schema_version(version) VALUES (3);
 INSERT OR IGNORE INTO schema_version(version) VALUES (4);
 INSERT OR IGNORE INTO schema_version(version) VALUES (5);
 INSERT OR IGNORE INTO schema_version(version) VALUES (6);
+-- Version 7 is recorded by migrateV6ToV7 only after legacy attribution meta
+-- has been scrubbed. Do not pre-insert it here: existing databases execute this
+-- file before migrations too.
 
 -- D10: single fixed team row. All authenticated requests bind to this team.
 INSERT OR IGNORE INTO team(id, name, retention_days, created_at)

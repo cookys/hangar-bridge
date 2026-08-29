@@ -23,6 +23,15 @@ function transportContent(envelope: Envelope): string {
     ...(envelope.thread_root ? { thread_root: envelope.thread_root } : {}),
     ...(envelope.meta.correlation_id ? { correlation_id: envelope.meta.correlation_id } : {}),
     ...(envelope.meta.task_kind ? { task_kind: envelope.meta.task_kind } : {}),
+    ...(envelope.meta.instance ? { instance: envelope.meta.instance } : {}),
+    ...(envelope.meta.peer_session_claim
+      ? { peer_session_claim: envelope.meta.peer_session_claim }
+      : {}),
+    ...(envelope.meta.attribution_status
+      ? { attribution_status: envelope.meta.attribution_status }
+      : {}),
+    ...(envelope.meta.sender_health ? { sender_health: envelope.meta.sender_health } : {}),
+    ...(envelope.meta.deaf_since ? { deaf_since: envelope.meta.deaf_since } : {}),
   }
   return `${JSON.stringify(metadata)}\n${envelope.content}`
 }

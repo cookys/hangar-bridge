@@ -1,3 +1,4 @@
+import type { OutboundMessage } from '@hangar-bridge/shared'
 import type { DeafCheckResult } from './deaf-check.ts'
 
 /**
@@ -15,6 +16,35 @@ const DEAF_PREFIX = 'DEAF(inbound-dropped): '
  * default for a session whose inbound rendering we cannot observe.
  */
 export type DeliveryState = 'unverified' | 'verified' | 'deaf'
+
+/** Agent Call receipts do not prove model observation, so Channel health is irrelevant. */
+export function resolveFinalMileHealth(
+  kind: 'claude-channel' | 'agent-call',
+  checkChannel: () => DeafCheckResult,
+): DeafCheckResult {
+  if (kind === 'agent-call') {
+    return { state: 'skip', reason: 'agent-call final-mile has no model-observation health probe' }
+  }
+  return checkChannel()
+}
+
+/** Only a positive observation is recovery; unknown/skip must preserve prior evidence. */
+export function shouldClearPersistedDeafState(check: DeafCheckResult): boolean {
+  return check.state === 'verified'
+}
+
+/**
+ * Decorate every transport's outbound payload at the shared send boundary.
+ * Health keys are process-observed state and therefore override caller meta.
+ */
+export function withOutboundHealth(
+  message: OutboundMessage,
+  health: HealthState,
+): OutboundMessage {
+  const marker = health.outboundMeta()
+  if (Object.keys(marker).length === 0) return message
+  return { ...message, meta: { ...(message.meta ?? {}), ...marker } }
+}
 
 export class HealthState {
   /**
@@ -74,7 +104,15 @@ export class HealthState {
   outboundMeta(): Record<string, string> {
     if (!this.isDeaf()) return {}
     const meta: Record<string, string> = { sender_health: 'deaf' }
-    if (this.deafSinceMs !== undefined) {
+    // Corrupt or hostile persisted state must never suppress the only outbound
+    // beacon a deaf process still has. Keep the health marker and omit only the
+    // unusable timestamp.
+    if (
+      this.deafSinceMs !== undefined
+      && Number.isFinite(this.deafSinceMs)
+      && this.deafSinceMs >= 0
+      && this.deafSinceMs <= 8_640_000_000_000_000
+    ) {
       meta['deaf_since'] = new Date(this.deafSinceMs).toISOString()
     }
     return meta

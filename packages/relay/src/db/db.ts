@@ -17,7 +17,41 @@ export function openDatabase(path: string): Db {
   migrateV3ToV4(db)
   migrateV4ToV5(db)
   migrateV5ToV6(db)
+  migrateV6ToV7(db)
   return db
+}
+
+/**
+ * Attribution keys became routing-relevant in v7. Older rows accepted these keys
+ * directly from body meta, so scrub them before any v7 stream can apply
+ * self-exclusion. The migration is transactional and idempotent.
+ */
+function migrateV6ToV7(db: Db): void {
+  const done = db.prepare('SELECT 1 AS x FROM schema_version WHERE version=7').get()
+  if (done) return
+  const rows = db.prepare('SELECT id, meta_json FROM message').all() as Array<{
+    id: string
+    meta_json: string
+  }>
+  const update = db.prepare('UPDATE message SET meta_json=? WHERE id=?')
+  db.transaction(() => {
+    for (const row of rows) {
+      let meta: Record<string, unknown> = {}
+      try {
+        const parsed = JSON.parse(row.meta_json) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          meta = parsed as Record<string, unknown>
+        }
+      } catch { /* corrupt legacy meta becomes an empty, safe object */ }
+      delete meta.instance
+      delete meta.sender_instance
+      delete meta.session_id
+      delete meta.attribution_status
+      const sanitized = JSON.stringify(meta)
+      if (sanitized !== row.meta_json) update.run(sanitized, row.id)
+    }
+    db.exec('INSERT INTO schema_version(version) VALUES (7)')
+  })()
 }
 
 /**

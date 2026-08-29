@@ -45,7 +45,17 @@ describe('Agent Call final-mile ingress', () => {
   it('hands a transport-origin peer envelope to agent-call receive without raising its authority', async () => {
     const fake = fakeAgentCall('{"status":"injected_unverified"}')
 
-    await deliverViaAgentCall(envelope(), { target: 'local-codex', bin: fake.bin })
+    await deliverViaAgentCall(envelope({
+      meta: {
+        correlation_id: '01KWH8XGB9W51SBCJST9NTJNB9',
+        task_kind: 'review',
+        instance: '01HRK7Y0000000000000000000',
+        peer_session_claim: 'session-display-only',
+        attribution_status: 'stamped',
+        sender_health: 'deaf',
+        deaf_since: '2026-08-01T00:00:00.000Z',
+      },
+    }), { target: 'local-codex', bin: fake.bin })
 
     const delivered = JSON.parse(readFileSync(fake.input, 'utf8'))
     expect(readFileSync(fake.args, 'utf8').trim()).toBe('receive --stdin --json')
@@ -61,6 +71,11 @@ describe('Agent Call final-mile ingress', () => {
     expect(delivered.content).toContain('"source":"hangar-bridge"')
     expect(delivered.content).toContain('"remote_msg_id":"msg_01KWH8XGC78TM94AB8DRVW9NWX"')
     expect(delivered.content).toContain('"kind":"task_dispatch"')
+    expect(delivered.content).toContain('"instance":"01HRK7Y0000000000000000000"')
+    expect(delivered.content).toContain('"peer_session_claim":"session-display-only"')
+    expect(delivered.content).toContain('"attribution_status":"stamped"')
+    expect(delivered.content).toContain('"sender_health":"deaf"')
+    expect(delivered.content).toContain('"deaf_since":"2026-08-01T00:00:00.000Z"')
     expect(delivered.content).toContain('inspect commit 920ce87')
   })
 

@@ -4,7 +4,8 @@
 - `pnpm -r typecheck && pnpm -r test:ci`
 
 ## Scan Command
-- Completeness scan (no incomplete implementation or test-double leakage): autopilot `scripts/completeness-scan.sh` over `packages/*/src`.
+- Completeness scan (no incomplete implementation or test-double leakage):
+  `<autopilot>/scripts/completeness-scan.sh` over `packages/*/src`.
 
 ## Code Review
 - `autopilot:reviewer` (only entry — superpowers is NOT installed). See `.claude/dispatch-config.md`.

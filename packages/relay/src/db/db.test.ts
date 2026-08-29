@@ -10,7 +10,7 @@ describe('openDatabase', () => {
   beforeEach(() => { db = openDatabase(':memory:') })
 
   it('applies schema and reports latest version', () => {
-    expect(getSchemaVersion(db)).toBe(6)
+    expect(getSchemaVersion(db)).toBe(7)
   })
 
   it('human table has last_active_at column (v2)', () => {
@@ -110,7 +110,7 @@ describe('migrateV3ToV4 (rebuild path)', () => {
 
   it('rebuilds message table to accept new kinds and preserves existing rows', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(6)
+    expect(getSchemaVersion(upgraded)).toBe(7)
     const legacy = upgraded.prepare("SELECT content FROM message WHERE id='msg_legacy_chat'").get() as { content: string } | undefined
     expect(legacy?.content).toBe('pre-migration')
     expect(() =>
@@ -124,9 +124,9 @@ describe('migrateV3ToV4 (rebuild path)', () => {
   it('is idempotent: second open does not rebuild again', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(6)
+    expect(getSchemaVersion(second)).toBe(7)
     const versions = second.prepare("SELECT version FROM schema_version ORDER BY version").all() as Array<{ version: number }>
-    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7])
     second.close()
   })
 })
@@ -159,7 +159,7 @@ describe('migrateV5ToV6 (claim table)', () => {
 
   it('adds the claim table to an existing v5 DB and records version 6', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(6)
+    expect(getSchemaVersion(upgraded)).toBe(7)
     const has = upgraded.prepare(
       "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='claim'"
     ).get()
@@ -176,7 +176,59 @@ describe('migrateV5ToV6 (claim table)', () => {
   it('is idempotent: re-open keeps version 6 and one claim table', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(6)
+    expect(getSchemaVersion(second)).toBe(7)
     second.close()
+  })
+})
+
+describe('migrateV6ToV7 (legacy attribution scrub)', () => {
+  let tmpDir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v7-'))
+    dbPath = join(tmpDir, 'v6.db')
+    const raw = new Database(dbPath)
+    raw.exec(`
+      CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+      CREATE TABLE team(id TEXT PRIMARY KEY, name TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 7, created_at TEXT NOT NULL);
+      CREATE TABLE human(id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id), handle TEXT NOT NULL, display_name TEXT NOT NULL, public_key BLOB, created_at TEXT NOT NULL, disabled_at TEXT, last_active_at TEXT, subjects TEXT, UNIQUE(team_id, handle));
+      CREATE TABLE token(id TEXT PRIMARY KEY, human_id TEXT NOT NULL REFERENCES human(id), token_hash BLOB NOT NULL UNIQUE, label TEXT NOT NULL, tier TEXT NOT NULL CHECK(tier IN ('human','admin')), created_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE TABLE message(id TEXT PRIMARY KEY, v INTEGER NOT NULL, team_id TEXT NOT NULL REFERENCES team(id), from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, in_reply_to TEXT, thread_root TEXT, kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')), content TEXT NOT NULL, meta_json TEXT NOT NULL DEFAULT '{}', sent_at TEXT NOT NULL, delivered_at TEXT, subject TEXT);
+      CREATE TABLE idempotency_key(key_hash BLOB PRIMARY KEY, token_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL REFERENCES team(id), at TEXT NOT NULL, actor_human_id TEXT, event TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
+      CREATE TABLE claim(team_id TEXT NOT NULL REFERENCES team(id), claim_key TEXT NOT NULL, owner_handle TEXT NOT NULL, owner_label TEXT, note TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(team_id, claim_key));
+      INSERT INTO schema_version(version) VALUES (1),(2),(3),(4),(5),(6);
+      INSERT INTO team(id,name,retention_days,created_at) VALUES ('hangar','hangar',7,'2026-05-17T00:00:00Z');
+    `)
+    raw.prepare(
+      'INSERT INTO message(id,v,team_id,from_handle,to_handle,kind,content,meta_json,sent_at) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run(
+      'msg_legacy_attribution', 2, 'hangar', 'alice', 'alice', 'chat', 'legacy',
+      JSON.stringify({
+        instance: 'forged', sender_instance: 'forged', session_id: 'forged',
+        attribution_status: 'stamped', keep: 'yes',
+      }),
+      '2026-05-17T00:00:00Z',
+    )
+    raw.close()
+  })
+
+  afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }) })
+
+  it('removes newly reserved routing meta before recording v7', () => {
+    const upgraded = openDatabase(dbPath)
+    expect(getSchemaVersion(upgraded)).toBe(7)
+    const row = upgraded.prepare(
+      "SELECT meta_json FROM message WHERE id='msg_legacy_attribution'"
+    ).get() as { meta_json: string }
+    expect(JSON.parse(row.meta_json)).toEqual({ keep: 'yes' })
+    upgraded.close()
+
+    const reopened = openDatabase(dbPath)
+    expect(JSON.parse((reopened.prepare(
+      "SELECT meta_json FROM message WHERE id='msg_legacy_attribution'"
+    ).get() as { meta_json: string }).meta_json)).toEqual({ keep: 'yes' })
+    reopened.close()
   })
 })

@@ -81,9 +81,12 @@ export function messagesRoute(deps: Deps) {
 
     // P4'a attribution. The 8/22 incident was a thread of mutually-denying messages
     // behind one handle: every "that wasn't me" was sincere, but nobody could tell
-    // WHICH session spoke. The fix for a forged-denial incident must not itself be
-    // forgeable, so these keys are stamped here from the authenticated connection and
-    // any client-supplied value is dropped first — same chokepoint treatment as B1.
+    // WHICH session spoke. These keys are stamped here from request headers instead
+    // of sender-declared message meta, and client-supplied values are dropped first —
+    // same chokepoint treatment as B1. A handle's bearer authenticates the HANDLE,
+    // not an individual process: sibling processes sharing that bearer are mutually
+    // trusted for the instance header. Therefore instance is observability and
+    // negative self-exclusion only; it is never authorization or positive routing.
     // `instance` identifies the sending PROCESS; it is what fanout uses to keep a
     // direct message from echoing back into the session that sent it.
     // A peer's own Claude session id cannot be verified by the relay at all, so it may
@@ -92,13 +95,24 @@ export function messagesRoute(deps: Deps) {
     if (!stampedInstance.ok) {
       return c.json({ error: 'invalid_instance_header' }, 400)
     }
+    const attributionVersion = c.req.header('x-hangar-attribution')
+    if (attributionVersion !== undefined && attributionVersion !== 'v1') {
+      return c.json({ error: 'invalid_attribution_header' }, 400)
+    }
     const meta = (data.meta ?? {}) as Record<string, string>
     delete meta['instance']
     delete meta['session_id']
+    delete meta['sender_instance']
+    delete meta['attribution_status']
     if (stampedInstance.instance !== undefined) {
       meta['instance'] = stampedInstance.instance
       // fanout reads this to exclude the sending process (never to address one).
       meta['sender_instance'] = stampedInstance.instance
+    }
+    if (attributionVersion === 'v1') {
+      meta['attribution_status'] = stampedInstance.instance === undefined
+        ? 'unverifiable'
+        : 'stamped'
     }
     if (Object.keys(meta).length > 0) data.meta = meta
 

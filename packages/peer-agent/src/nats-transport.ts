@@ -31,6 +31,8 @@ type ConnectOpts = Parameters<typeof connect>[0]
 
 interface NatsTransportOpts {
   selfHandle: string
+  /** Process attribution; observability only, never authorization or routing. */
+  instance?: string
   natsUrl: string
   nkeySeed: string
   roster: RosterMap
@@ -199,6 +201,23 @@ export class NatsTransport implements PeerTransport {
 
   async send(msg: OutboundMessage, opts: { idempotency_key?: string } = {}): Promise<Envelope> {
     const parsedMessage = OutboundMessageSchema.parse(msg)
+    const meta = { ...(parsedMessage.meta ?? {}) }
+    delete meta['instance']
+    delete meta['sender_instance']
+    delete meta['session_id']
+    delete meta['attribution_status']
+    if (this.opts.instance) {
+      // NATS has no relay POST chokepoint. Stamp at the trusted harness-adapter
+      // boundary instead, after stripping caller/model-controlled reserved meta.
+      // A process sharing this handle's NKey is still in the same trust class;
+      // these fields remain observability-only.
+      meta['instance'] = this.opts.instance
+      meta['sender_instance'] = this.opts.instance
+      meta['attribution_status'] = 'adapter-stamped'
+    } else {
+      meta['attribution_status'] = 'unverifiable'
+    }
+    parsedMessage.meta = meta
     if (parsedMessage.to === TEAM_BROADCAST_HANDLE && !TEAM_LANE_ALLOWED_KINDS.has(parsedMessage.kind)) {
       throw new Error(`publish to ${TEAM_BROADCAST_HANDLE} requires kind chat|presence_update`)
     }

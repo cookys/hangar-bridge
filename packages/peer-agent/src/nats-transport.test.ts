@@ -246,6 +246,46 @@ function mkTransport(
 }
 
 describe('NatsTransport', () => {
+  it('strips caller attribution meta and adapter-stamps the production process instance', async () => {
+    const conn = new FakeNatsConnection()
+    const js = new FakeJetStreamClient()
+    const transport = new NatsTransport({
+      selfHandle: 'alice',
+      instance: '01HRK7Y0000000000000000000',
+      natsUrl: 'nats://127.0.0.1:4222',
+      nkeySeed: 'seed-A',
+      roster: mkRoster(),
+      onEnvelope: async () => 'delivered',
+      onAuthError: vi.fn(),
+      instanceGuard: noOpInstanceGuard(),
+      auditWriter: vi.fn(),
+      dedup: memoryDedup(),
+      connector: async () => conn as unknown as NatsConnection,
+      jsFactory: () => ({
+        publish: js.publish.bind(js), consumers: js.consumersApi(),
+      }) as any,
+    })
+    await transport.start()
+    conn.published.length = 0
+
+    await transport.send({
+      to: 'bob', kind: 'chat', content: 'hello',
+      meta: {
+        instance: 'forged', sender_instance: 'forged',
+        session_id: 'forged', attribution_status: 'stamped', keep: 'yes',
+      },
+    })
+    const envelope = JSON.parse(new TextDecoder().decode(conn.published[0]!.data)) as Envelope
+    expect(envelope.meta).toMatchObject({
+      keep: 'yes',
+      instance: '01HRK7Y0000000000000000000',
+      sender_instance: '01HRK7Y0000000000000000000',
+      attribution_status: 'adapter-stamped',
+    })
+    expect(envelope.meta.session_id).toBeUndefined()
+    await transport.stop()
+  })
+
   it('routes all six kinds to exactly one tier', async () => {
     const conn = new FakeNatsConnection()
     const js = new FakeJetStreamClient()

@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
 
 /**
  * Where hangar-bridge stores per-peer config + secret on the local box.
@@ -50,8 +51,14 @@ export function defaultCursorStatePath(): string {
  * tell "deaf for two months" from "deaf for five minutes" — the distinction that
  * decides whether this sender's claims about conversation history are worthless.
  */
-export function defaultHealthStatePath(): string {
-  return join(configDir(), 'health-state.json')
+export function defaultHealthStatePath(sessionScope: string): string {
+  // Several Claude sessions can share one project config directory while having
+  // different channel health. Hash the stable Claude session id so one healthy
+  // sibling cannot clear another sibling's deaf_since marker, and do not expose
+  // the upstream session identifier in a filename. Callers fall back to the
+  // process instance id when the harness supplies no stable session id.
+  const scope = createHash('sha256').update(sessionScope).digest('hex').slice(0, 24)
+  return join(configDir(), `health-state-${scope}.json`)
 }
 
 /**

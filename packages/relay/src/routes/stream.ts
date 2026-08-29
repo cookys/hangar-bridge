@@ -58,6 +58,14 @@ export function streamRoute(deps: Deps) {
       // the authenticated handle. null-subject ⇒ pass (back-compat). Ownership is
       // the fail-closed authority; interest only narrows within owned.
       const deliverable = (e: Envelope): boolean => {
+        // Apply self-exclusion to the durable drain too. Live delivery already
+        // excludes this instance in Fanout; without this check a message queued
+        // while offline echoes back on the sender process's next cold start.
+        if (
+          e.from === handle
+          && instance !== undefined
+          && e.meta['sender_instance'] === instance
+        ) return false
         if (e.subject === null) return true
         if (!ownsNamespace(e.subject, owned)) return false
         if (interest.length > 0) return matchesInterest(e.subject, interest)
@@ -79,6 +87,7 @@ export function streamRoute(deps: Deps) {
       const sub: Subscriber = {
         handle,
         team_id,
+        instance,
         accept: deliverable,
         deliver: (e: Envelope) => { queue.push(e); notify?.() }
       }
