@@ -48,8 +48,11 @@ jobs:
           tar --extract --gzip --file "$archive"
           printf '%s\n' "$PWD/nats-server-v2.14.3-linux-amd64" >> "$GITHUB_PATH"
 
-      - name: Install dependencies without lifecycle scripts
-        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared workspace dependency
+        run: pnpm --filter @hangar-bridge/shared build
 
       - name: Typecheck
         run: pnpm -r typecheck
