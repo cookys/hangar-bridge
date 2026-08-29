@@ -29,9 +29,25 @@ not in the code.
 ## Install
 
 ```bash
-packages/operations/systemd/install-relay.sh            # install + daemon-reload, do not enable
-packages/operations/systemd/install-relay.sh --enable   # install, enable, start, smoke /health
+revision="$(git rev-parse HEAD)"
+packages/operations/systemd/install-relay.sh --revision "$revision"
+packages/operations/systemd/install-relay.sh --enable --revision "$revision"
 ```
+
+`--revision` is mandatory and must be a full 40-hex commit SHA. The
+installer normalizes it to lowercase, requires the active `node` binary
+to report Node.js 22 or newer, resolves that binary to its real directory,
+and atomically writes both the revision and pinned runtime `PATH` to the
+mode-0600 `~/.config/hangar-bridge/relay.env`. The unit loads these as
+`HANGAR_BUILD_REVISION` and `PATH`. Do not pass a branch name or abbreviated
+SHA. Re-run the installer after replacing or removing the selected Node
+installation.
+
+If the relay is already active, either command restarts it after the
+new revision file and unit are ready. If it is inactive, only
+`--enable` enables and starts it. A successful start is not enough:
+the installer waits for `/health` to report the requested
+`build_revision` and exits nonzero if it cannot verify the exact build.
 
 The script:
 1. Creates `~/.config/hangar-bridge/peers.json` as `{}` if missing
@@ -39,21 +55,26 @@ The script:
    secrets per [the relay's peers-file.ts schema](../../relay/src/auth/peers-file.ts)).
 2. Copies `hangar-bridge-relay.service` into
    `~/.config/systemd/user/`.
-3. `systemctl --user daemon-reload`.
-4. Optionally `enable --now` + smoke-tests `GET /health` on
-   `192.168.101.6:8443`.
+3. Atomically installs the exact build revision and validated Node path EnvironmentFile.
+4. `systemctl --user daemon-reload`.
+5. Restarts an active relay, or optionally `enable --now` for an
+   inactive relay.
+6. Verifies `GET /health` on `192.168.101.6:8443` reports that exact
+   `build_revision`.
 
 ## What's in the unit
 
 - `Type=simple` — relay logs to journald and stays in the foreground.
 - `Environment=HANGAR_DATA=%h/.local/share/hangar-bridge` — SQLite
   DB + idempotency cache live under `$HOME/.local/share/`.
+- `EnvironmentFile=%h/.config/hangar-bridge/relay.env` — immutable
+  build identity and installer-validated Node `PATH` for the running process.
 - `Environment=HOST=192.168.101.6 PORT=8443` — binds LAN so gentoo
   can reach it. To rebind (subnet move, VPN), edit the unit + reload.
-- `Environment=PATH=%h/.nvm/versions/node/v22.22.3/bin:/usr/local/bin:/usr/bin:/bin` —
-  fallback chain covers both openclaw (system node 24) and gentoo
-  (nvm node 22). Future node bumps mean editing the PATH version
-  pin in one place.
+- `PATH=<validated-node-dir>:/usr/local/bin:/usr/bin:/bin` in `relay.env` —
+  the installer resolves the current Node binary and pins its real directory.
+  This avoids relying on shell initialization or an NVM alias file that systemd
+  cannot execute as a directory.
 - `Restart=on-failure RestartSec=5s StartLimitBurst=5` —
   five rapid failures inside 60s trip the burst limiter so a
   pathologically broken binary doesn't spin-loop the CPU.
@@ -70,13 +91,22 @@ The script:
 - "peers file not found" — the install script seeds `{}` but if
   someone deleted it, re-run install-relay.sh.
 
-## Rollback
+## Rollback and uninstall
+
+Stopping or removing the unit is **not** a release rollback. A release rollback must restore the
+pre-upgrade SQLite backup together with its exact prior source revision; follow
+[`docs/DEPLOYMENT.md`](../../../docs/DEPLOYMENT.md#5-rollback). That procedure preserves the failed
+candidate data for forensics and verifies the restored SHA through `/health`.
+
+If the operator instead intends to uninstall the service while preserving its data, use a
+recoverable unit move:
 
 ```bash
 systemctl --user disable --now hangar-bridge-relay
-rm ~/.config/systemd/user/hangar-bridge-relay.service
+mv ~/.config/systemd/user/hangar-bridge-relay.service \
+  ~/.config/systemd/user/hangar-bridge-relay.service.disabled
 systemctl --user daemon-reload
 ```
 
-The `~/.local/share/hangar-bridge/` data dir survives so any in-flight
-messages persist across re-enables.
+The `~/.local/share/hangar-bridge/` data directory and disabled unit survive for recovery. This
+uninstall path does not claim to restore a prior release.

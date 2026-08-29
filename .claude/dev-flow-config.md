@@ -26,9 +26,9 @@
   (see autopilot `skills/project-lifecycle/references/plan-bootstrap.md` for the structure).
 
 ## Branch Rules
-- Default branch: `main`
-- `main` is NEVER force-pushed (鐵律). Feature branches: `feat/<scope>`, `fix/<scope>`, `chore/<scope>`, `docs/<scope>`.
-- Branch freshness: rebase/merge `main` before merging if >20 commits behind.
+- Default/integration branch: `develop`
+- `develop` is NEVER force-pushed (鐵律). Feature branches: `feat/<scope>`, `fix/<scope>`, `chore/<scope>`, `docs/<scope>`.
+- Branch freshness: rebase/merge `develop` before merging if >20 commits behind.
 
 ## Knowledge Paths
 - Memory dir: `~/.claude/projects/-home-cookys-projects-hangar-bridge/memory/`
@@ -58,4 +58,4 @@
 - `pnpm -r typecheck && pnpm -r test:ci`
 
 ## L-5 / H-9 Closing
-- Delegated to autopilot:finish-flow. Merge target: `main`. See `.claude/finish-flow-config.md` if present.
+- Delegated to autopilot:finish-flow. Merge target: `develop`. See `.claude/finish-flow-config.md` if present.

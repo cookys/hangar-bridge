@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { openDatabase, type Db } from '../../src/db/db.ts'
 import { MessageStore } from '../../src/messages/store.ts'
 import { Fanout } from '../../src/fanout.ts'
@@ -11,6 +11,7 @@ describe('GET /health', () => {
   let db: Db
   let app: ReturnType<typeof buildApp>
   beforeEach(() => {
+    vi.stubEnv('HANGAR_BUILD_REVISION', '')
     db = openDatabase(':memory:')
     app = buildApp({
       db,
@@ -20,15 +21,59 @@ describe('GET /health', () => {
       now: () => new Date(),
     })
   })
+  afterEach(() => vi.unstubAllEnvs())
 
-  it('returns 200 with ok:true + version + uptime_ms — NO bearer required', async () => {
+  it('returns 200 with ok:true + version + build_revision + uptime_ms — NO bearer required', async () => {
     const res = await app.request('/health')
     expect(res.status).toBe(200)
-    const body = await res.json() as { ok: boolean; version: string; uptime_ms: number }
+    const body = await res.json() as { ok: boolean; version: string; build_revision: string; uptime_ms: number }
     expect(body.ok).toBe(true)
     expect(body.version).toBe(RELAY_VERSION)
+    expect(body.build_revision).toBe('unknown')
     expect(typeof body.uptime_ms).toBe('number')
     expect(body.uptime_ms).toBeGreaterThanOrEqual(0)
+  })
+
+  it.each([
+    ['0123456789abcdef0123456789abcdef01234567', '0123456789abcdef0123456789abcdef01234567'],
+    ['ABCDEF0123456789ABCDEF0123456789ABCDEF01', 'abcdef0123456789abcdef0123456789abcdef01'],
+  ])('reports the canonical full Git SHA supplied at deploy time', async (revision, expected) => {
+    vi.stubEnv('HANGAR_BUILD_REVISION', revision)
+    const revisionApp = buildApp({
+      db,
+      store: new MessageStore(db),
+      fanout: new Fanout(),
+      presence: new PresenceRegistry(), claims: new ClaimStore(db),
+      now: () => new Date(),
+    })
+
+    const res = await revisionApp.request('/health')
+    expect(res.status).toBe(200)
+    const body = await res.json() as { build_revision: string }
+    expect(body.build_revision).toBe(expected)
+  })
+
+  it.each([
+    'develop',
+    '0.4.0',
+    '0123456789abcdef0123456789abcdef0123456',
+    '0123456789abcdef0123456789abcdef012345678',
+    '0123456789abcdef0123456789abcdef0123456g',
+    ' 0123456789abcdef0123456789abcdef01234567',
+  ])('reports unknown instead of accepting invalid revision %j', async invalidRevision => {
+    vi.stubEnv('HANGAR_BUILD_REVISION', invalidRevision)
+    const revisionApp = buildApp({
+      db,
+      store: new MessageStore(db),
+      fanout: new Fanout(),
+      presence: new PresenceRegistry(), claims: new ClaimStore(db),
+      now: () => new Date(),
+    })
+
+    const res = await revisionApp.request('/health')
+    expect(res.status).toBe(200)
+    const body = await res.json() as { build_revision: string }
+    expect(body.build_revision).toBe('unknown')
   })
 
   it('rejects no path that requires auth (sanity — confirms /health bypass is local)', async () => {

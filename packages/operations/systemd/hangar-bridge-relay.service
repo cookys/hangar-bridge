@@ -3,28 +3,27 @@ Description=hangar-bridge relay — single-tenant peer message relay
 Documentation=https://github.com/cookys/hangar-bridge
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 # %h expands to the user's home dir at unit-start time.
 Environment=HANGAR_DATA=%h/.local/share/hangar-bridge
 Environment=HANGAR_PEERS_FILE=%h/.config/hangar-bridge/peers.json
+# Written atomically by install-relay.sh. It supplies both the exact source
+# identity and a PATH pinned to the validated Node >=22 binary used at install
+# time. The relay exposes the revision from /health so deployment verification
+# cannot confuse a 200 from an older process with the requested build.
+EnvironmentFile=%h/.config/hangar-bridge/relay.env
 Environment=PORT=8443
 Environment=HOST=192.168.101.6
 # Default-off sweeper — peer rotation goes through peers.json on this fork.
 Environment=HANGAR_INACTIVE_DAYS=0
-# `%h/.nvm/alias/node22/bin` (symlink to current nvm node 22.x) is
-# for gentoo; openclaw falls through to system node via the rest of PATH.
-# Set the symlink with: `ln -sfT $(nvm which 22) ~/.nvm/alias/node22`
-# (or just `mkdir -p ~/.nvm/alias && ln -sfT ~/.nvm/versions/node/v$(nvm version 22) ~/.nvm/alias/node22`).
-# Avoids the v22.x.y minor-bump trap where the unit silently breaks on `nvm install 22 --reinstall`.
-Environment=PATH=%h/.nvm/alias/node22/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/projects/hangar-bridge
 ExecStart=/usr/bin/env node packages/relay/dist/index.js
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=60
 StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true

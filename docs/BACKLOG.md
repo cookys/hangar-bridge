@@ -12,7 +12,6 @@ Deferred work, ideas, and known gaps. autopilot:next scans this file. Promote an
 - [ ] Port or explicitly retire relay-backed cooperative claims before NATS P6 — deleting the relay currently removes `claim_asset` / `list_claims` / `release_claim` and SQLite schema-v6 claim state.  (size: L)
 - [ ] Add an SSE↔NATS bridge only if seamless mixed-mode cutover is required — current cohorts are intentionally isolated; whole-fleet cutover is the supported P5 path.  (size: L)
 - [ ] Complete real-fleet subject-ACL rollout — update muyan `peers.json` ownership, restart/re-seed relay, and set each peer's interest filters; requires operator/fleet access.  (size: S)
-- [ ] Repair or formally remove the legacy Docker packaging — current Docker artifacts predate the fork package/env rename and are excluded from the verified closeout gate.  (size: S)
 - [ ] CLAUDE.md "Windows-specific notes" section may be stale — dev now on Linux (zsh); audit & trim.  (size: S)
 - [ ] Live-peer e2e for outbound permission relay — two real Claude sessions under `CLAUDE_DRIVER=cli` (CC v2.1.81+) confirming CC emits `notifications/claude/channel/permission_request` and applies the returned verdict; current coverage is unit-level only (P2.3).  (size: S)
 - [ ] DispatchTracker: clear a matched correlation on task_result instead of leaving it to TTL (`inbound.ts` dispatch-matched branch) — tightens the correlation window; today a matched entry lingers until DISPATCH_REQUEST_TIMEOUT_MS.  (size: S)
@@ -24,4 +23,6 @@ Deferred work, ideas, and known gaps. autopilot:next scans this file. Promote an
 - [ ] Design session-addressed NATS task/result routing with transactional shared correlation state — current handle-scoped WorkQueue semantics are protected by a host-global one-process-per-handle lock.  (size: L)
 
 ## Done
-_(move completed items here with the commit/date)_
+- [x] 2026-08-30 — Repaired legacy relay Docker packaging in the
+  [exact-SHA deployment-hardening project](./projects/2026-08-30-exact-sha-deployment-hardening/README.md):
+  current workspace names/runtime env, exact build revision, and explicit read-only peers roster.

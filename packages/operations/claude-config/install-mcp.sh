@@ -27,6 +27,12 @@ REPO_DIR="${REPO_DIR:-${HOME}/projects/hangar-bridge}"
 PEER_AGENT_JS="${REPO_DIR}/packages/peer-agent/dist/index.js"
 PEER_AGENT_SH="${REPO_DIR}/packages/peer-agent/bin/peer-agent.sh"
 DRY_RUN="${1:-}"
+MCP_KEY="hangar-bridge-peer-agent"
+
+if [[ $# -gt 1 ]] || [[ -n "${DRY_RUN}" && "${DRY_RUN}" != "--dry-run" ]]; then
+  echo "Usage: $0 [--dry-run]" >&2
+  exit 2
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq not on PATH. Install jq first." >&2
@@ -43,39 +49,69 @@ if [[ ! -x "${PEER_AGENT_SH}" ]]; then
   exit 1
 fi
 
-if [[ ! -f "${CLAUDE_JSON}" ]]; then
-  echo "WARN: ${CLAUDE_JSON} does not exist; creating with just the MCP entry."
-  echo '{"mcpServers":{}}' > "${CLAUDE_JSON}"
-  chmod 600 "${CLAUDE_JSON}"
-fi
-
-BACKUP="${CLAUDE_JSON}.bak.$(date +%Y%m%d-%H%M%S)"
-cp -p "${CLAUDE_JSON}" "${BACKUP}"
-echo "Backup: ${BACKUP}"
-
 # Merge: set .mcpServers["hangar-bridge-peer-agent"] = {command, args, env}.
 # `command` is the wrapper, not `node` directly — Claude Code's MCP execvp
 # does not inherit nvm's PATH, so bare `node` breaks on hosts that install
 # node via nvm (the wrapper finds node via a fallback chain).
-PATCHED="$(jq --arg p "${PEER_AGENT_SH}" '
+# shellcheck disable=SC2016 # jq variables, not shell variables
+PATCH_FILTER='
   .mcpServers //= {} |
   .mcpServers["hangar-bridge-peer-agent"] = {
     command: $p,
     args: [],
-    env: {}
+    env: ((.mcpServers["hangar-bridge-peer-agent"].env // {}) + {HANGAR_MCP_KEY: $key})
   }
-' "${CLAUDE_JSON}")"
+'
 
-echo "--- diff (BEFORE → AFTER, .mcpServers section only) ---"
-echo "${PATCHED}" | jq '.mcpServers' > /tmp/.hb-mcp-after.json
-jq '.mcpServers // {}' "${CLAUDE_JSON}" > /tmp/.hb-mcp-before.json
-diff -u /tmp/.hb-mcp-before.json /tmp/.hb-mcp-after.json || true
-rm -f /tmp/.hb-mcp-before.json /tmp/.hb-mcp-after.json
+if [[ -f "${CLAUDE_JSON}" ]]; then
+  PATCHED="$(jq --arg p "${PEER_AGENT_SH}" --arg key "${MCP_KEY}" \
+    "${PATCH_FILTER}" "${CLAUDE_JSON}")"
+  BEFORE_TARGET="$(jq --arg key "${MCP_KEY}" '.mcpServers[$key] // null' "${CLAUDE_JSON}")"
+else
+  echo "WARN: ${CLAUDE_JSON} does not exist; the install would create it with just the MCP entry."
+  PATCHED="$(printf '{"mcpServers":{}}\n' | \
+    jq --arg p "${PEER_AGENT_SH}" --arg key "${MCP_KEY}" "${PATCH_FILTER}")"
+  BEFORE_TARGET="null"
+fi
+
+# Show only the entry this installer owns. Redact every field value so a
+# pre-existing command argument or environment secret can never leak through
+# installer output; key names and structural changes remain reviewable.
+redact_target() {
+  jq '
+    if . == null then null else {
+      command: (if has("command") then "<redacted>" else null end),
+      args: ((.args // []) | map("<redacted>")),
+      env_keys: ((.env // {}) | keys)
+    } end
+  '
+}
+
+AFTER_TARGET="$(printf '%s\n' "${PATCHED}" | jq --arg key "${MCP_KEY}" '.mcpServers[$key]')"
+
+echo "--- diff (BEFORE → AFTER, managed MCP entry; field values redacted) ---"
+set +e
+diff -u \
+  <(printf '%s\n' "${BEFORE_TARGET}" | redact_target) \
+  <(printf '%s\n' "${AFTER_TARGET}" | redact_target)
+DIFF_STATUS=$?
+set -e
+if ((DIFF_STATUS > 1)); then
+  echo "ERROR: failed to render the managed MCP entry diff." >&2
+  exit "${DIFF_STATUS}"
+fi
 
 if [[ "${DRY_RUN}" == "--dry-run" ]]; then
   echo ""
-  echo "DRY-RUN: not writing. Backup left at ${BACKUP}."
+  echo "DRY-RUN: no files written."
   exit 0
+fi
+
+BACKUP=""
+if [[ -f "${CLAUDE_JSON}" ]]; then
+  BACKUP="${CLAUDE_JSON}.bak.$(date +%Y%m%d-%H%M%S).$$"
+  cp -p "${CLAUDE_JSON}" "${BACKUP}"
+  echo "Backup: ${BACKUP}"
 fi
 
 # Atomic write: jq writes to a tempfile, then mv replaces the original.
@@ -92,4 +128,8 @@ echo "Expected: server 'hangar-bridge-peer-agent' connected, tools include"
 echo "  send_to_peer, list_peers, set_summary, dispatch_task,"
 echo "  and (if permission_relay.enabled in config) respond_to_permission."
 echo ""
-echo "To rollback: cp ${BACKUP} ${CLAUDE_JSON}"
+if [[ -n "${BACKUP}" ]]; then
+  echo "To rollback: cp ${BACKUP} ${CLAUDE_JSON}"
+else
+  echo "To rollback: rm ${CLAUDE_JSON}"
+fi
