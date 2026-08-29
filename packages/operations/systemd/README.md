@@ -43,6 +43,12 @@ mode-0600 `~/.config/hangar-bridge/relay.env`. The unit loads these as
 SHA. Re-run the installer after replacing or removing the selected Node
 installation.
 
+The relay unit deliberately runs `%h/projects/hangar-bridge`. The installer
+fails before writing anything unless that path resolves to the same repository
+as the installer source and its `HEAD` equals `--revision`. After activation it
+also checks the running service's `MainPID` cwd through `/proc`; a healthy
+process from another checkout is not accepted as revision proof.
+
 If the relay is already active, either command restarts it after the
 new revision file and unit are ready. If it is inactive, only
 `--enable` enables and starts it. A successful start is not enough:
@@ -55,12 +61,13 @@ The script:
    secrets per [the relay's peers-file.ts schema](../../relay/src/auth/peers-file.ts)).
 2. Copies `hangar-bridge-relay.service` into
    `~/.config/systemd/user/`.
-3. Atomically installs the exact build revision and validated Node path EnvironmentFile.
-4. `systemctl --user daemon-reload`.
-5. Restarts an active relay, or optionally `enable --now` for an
+3. Verifies the unit repository's `HEAD` is the requested revision.
+4. Atomically installs the exact build revision and validated Node path EnvironmentFile.
+5. `systemctl --user daemon-reload`.
+6. Restarts an active relay, or optionally `enable --now` for an
    inactive relay.
-6. Verifies `GET /health` on `192.168.101.6:8443` reports that exact
-   `build_revision`.
+7. Verifies `GET /health` reports that exact `build_revision` and the
+   service `MainPID` runs from the verified repository.
 
 ## What's in the unit
 

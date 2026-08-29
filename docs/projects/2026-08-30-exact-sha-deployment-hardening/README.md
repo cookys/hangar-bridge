@@ -33,7 +33,7 @@
 
 | Phase | Status | Evidence |
 |---|---|---|
-| P0 regressions | complete | relay health RED 7; MCP installer RED 5; relay installer RED 15; systemd limiter RED 1; Docker RED 2; Node-path repair RED 6; health-revision mutant RED 1 |
+| P0 regressions | complete | relay health RED 7; MCP installer RED 5; relay installer RED 15; systemd limiter RED 1; Docker RED 2; Node-path repair RED 6; health-revision mutant RED 1; checkout/cwd binding RED 4 |
 | P1 implementation | complete | focused GREEN; shellcheck; systemd-analyze; relay deploy artifact generated |
 | P2 runbook/docs | complete | `docs/DEPLOYMENT.md`; deterministic doc-drift links/fences/script-refs PASS |
 | P3 quality/review | in progress | full typecheck/test/build/audit PASS; heterogeneous final review pending |

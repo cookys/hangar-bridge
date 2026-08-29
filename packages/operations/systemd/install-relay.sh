@@ -33,6 +33,7 @@ UNIT_DEST="${UNIT_DEST_DIR}/${UNIT_NAME}"
 PEERS_FILE="${HOME}/.config/hangar-bridge/peers.json"
 REVISION_FILE="${HOME}/.config/hangar-bridge/relay.env"
 NATS_STATE_DIR="${NATS_STATE_DIR:-/var/lib/hangar-bridge/jetstream}"
+PROC_ROOT="${PROC_ROOT:-/proc}"
 
 NATS_UNIT_NAME="hangar-bridge-nats.service"
 NATS_UNIT_SRC="$(dirname "$0")/${NATS_UNIT_NAME}"
@@ -111,7 +112,7 @@ if [[ ! "${REVISION}" =~ ^[[:xdigit:]]{40}$ ]]; then
 fi
 REVISION="${REVISION,,}"
 
-for REQUIRED_COMMAND in systemctl curl jq readlink; do
+for REQUIRED_COMMAND in systemctl curl git grep jq readlink; do
   if ! command -v "${REQUIRED_COMMAND}" >/dev/null 2>&1; then
     echo "ERROR: required command not found: ${REQUIRED_COMMAND}" >&2
     exit 1
@@ -139,6 +140,39 @@ if [[ "${NODE_DIR}" == *:* || "${NODE_DIR}" =~ [[:space:]] ]]; then
 fi
 if [[ ! -f "${UNIT_SRC}" ]]; then
   echo "ERROR: relay unit source not found: ${UNIT_SRC}" >&2
+  exit 1
+fi
+if ! grep -Fxq 'WorkingDirectory=%h/projects/hangar-bridge' "${UNIT_SRC}"; then
+  echo "ERROR: relay unit WorkingDirectory is not the installer-managed repository path." >&2
+  exit 1
+fi
+
+EXPECTED_REPO_ROOT="${HOME}/projects/hangar-bridge"
+if [[ ! -d "${EXPECTED_REPO_ROOT}" ]]; then
+  echo "ERROR: relay unit repository does not exist: ${EXPECTED_REPO_ROOT}" >&2
+  exit 1
+fi
+EXPECTED_REPO_ROOT="$(readlink -f -- "${EXPECTED_REPO_ROOT}")"
+if [[ -n "${HANGAR_REPO_ROOT:-}" ]]; then
+  if [[ ! -d "${HANGAR_REPO_ROOT}" ]]; then
+    echo "ERROR: HANGAR_REPO_ROOT is not a directory: ${HANGAR_REPO_ROOT}" >&2
+    exit 1
+  fi
+  REPO_ROOT="$(readlink -f -- "${HANGAR_REPO_ROOT}")"
+else
+  if ! REPO_ROOT="$(git -C "$(dirname -- "${UNIT_SRC}")" rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "ERROR: cannot resolve the source repository for ${UNIT_SRC}." >&2
+    exit 1
+  fi
+  REPO_ROOT="$(readlink -f -- "${REPO_ROOT}")"
+fi
+if [[ "${REPO_ROOT}" != "${EXPECTED_REPO_ROOT}" ]]; then
+  echo "ERROR: installer source ${REPO_ROOT} does not match unit working directory ${EXPECTED_REPO_ROOT}." >&2
+  exit 1
+fi
+if ! REPO_REVISION="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null)" || \
+  [[ "${REPO_REVISION}" != "${REVISION}" ]]; then
+  echo "ERROR: unit working directory HEAD does not match requested revision ${REVISION}." >&2
   exit 1
 fi
 if [[ "${NATS_INSTALL}" == "true" && ! -f "${NATS_UNIT_SRC}" ]]; then
@@ -263,6 +297,18 @@ if [[ "${RELAY_ACTIVATED}" == "true" ]]; then
     echo "ERROR: relay health did not report requested build revision ${REVISION}." >&2
     exit 1
   fi
+
+  if ! MAIN_PID="$(systemctl --user show --property MainPID --value "${UNIT_NAME}")" || \
+    [[ ! "${MAIN_PID}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: cannot resolve the running relay MainPID." >&2
+    exit 1
+  fi
+  if ! PROCESS_CWD="$(readlink -f -- "${PROC_ROOT}/${MAIN_PID}/cwd" 2>/dev/null)" || \
+    [[ "${PROCESS_CWD}" != "${REPO_ROOT}" ]]; then
+    echo "ERROR: running relay working directory does not match deployed repository ${REPO_ROOT}." >&2
+    exit 1
+  fi
+  echo "Verified ${UNIT_NAME} process working directory at requested revision ${REVISION}."
 else
   echo ""
   echo "Unit installed but NOT enabled. To start:"

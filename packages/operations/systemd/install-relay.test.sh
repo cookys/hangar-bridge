@@ -5,7 +5,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER="${SCRIPT_DIR}/install-relay.sh"
 UNIT_NAME="hangar-bridge-relay.service"
-REVISION="0123456789abcdef0123456789abcdef01234567"
+REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
+REVISION="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 FAILURES=0
 
 fail() {
@@ -25,7 +26,10 @@ new_fixture() {
   REVISION_FILE="${TEST_HOME}/.config/hangar-bridge/relay.env"
   INSTALLED_UNIT="${TEST_HOME}/.config/systemd/user/${UNIT_NAME}"
   NATS_STATE_DIR="${FIXTURE_DIR}/nats-state"
-  mkdir -p "${TEST_HOME}" "${MOCK_BIN}" "${NATS_STATE_DIR}"
+  PROC_ROOT="${FIXTURE_DIR}/proc"
+  mkdir -p "${TEST_HOME}/projects" "${MOCK_BIN}" "${NATS_STATE_DIR}" "${PROC_ROOT}/4242"
+  ln -s "${REPO_ROOT}" "${TEST_HOME}/projects/hangar-bridge"
+  ln -s "${REPO_ROOT}" "${PROC_ROOT}/4242/cwd"
   : > "${SYSTEMCTL_LOG}"
 
   cp "${SCRIPT_DIR}/hangar-bridge-relay.service" "${FIXTURE_DIR}/relay.service"
@@ -43,6 +47,7 @@ new_fixture() {
     '  [[ "${RELAY_ACTIVE:-false}" == "true" ]]' \
     '  exit' \
     'fi' \
+    'if [[ "$*" == "--user show --property MainPID --value hangar-bridge-relay.service" ]]; then printf "4242\n"; exit 0; fi' \
     'if [[ "$*" == "--user is-enabled "* ]]; then exit 1; fi' \
     'exit 0' \
     > "${MOCK_BIN}/systemctl"
@@ -80,8 +85,15 @@ run_installer() {
     SYSTEMCTL_FAIL_MATCH="${SYSTEMCTL_FAIL_MATCH:-}" \
     CURL_HEALTHY="${CURL_HEALTHY:-true}" \
     CURL_REVISION="${CURL_REVISION:-${REVISION}}" \
+    HANGAR_REPO_ROOT="${HANGAR_REPO_ROOT:-${REPO_ROOT}}" \
+    PROC_ROOT="${PROC_ROOT}" \
     NATS_STATE_DIR="${NATS_STATE_DIR}" \
     bash "${INSTALLER}" --enable --revision "${REVISION}"
+}
+
+deployment_writes_exist() {
+  [[ -e "${REVISION_FILE}" || -e "${INSTALLED_UNIT}" || \
+    -e "${TEST_HOME}/.config/hangar-bridge/peers.json" ]]
 }
 
 test_with_nats_without_enable_does_not_enable_nats() {
@@ -91,6 +103,7 @@ test_with_nats_without_enable_does_not_enable_nats() {
     SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" REVISION_FILE="${REVISION_FILE}" \
     INSTALLED_UNIT="${INSTALLED_UNIT}" RELAY_ACTIVE=true CURL_HEALTHY=true \
     CURL_REVISION="${REVISION}" NATS_STATE_DIR="${NATS_STATE_DIR}" \
+    HANGAR_REPO_ROOT="${REPO_ROOT}" PROC_ROOT="${PROC_ROOT}" \
     bash "${INSTALLER}" --with-nats --revision "${REVISION}" \
     > "${FIXTURE_DIR}/install.out" 2>&1; then
     fail 'active relay upgrade with NATS artifacts should succeed'
@@ -185,13 +198,14 @@ test_revision_is_written_before_service_activation() {
 
 test_uppercase_revision_is_normalized() {
   new_fixture
-  UPPER_REVISION="ABCDEF0123456789ABCDEF0123456789ABCDEF01"
-  LOWER_REVISION="abcdef0123456789abcdef0123456789abcdef01"
+  UPPER_REVISION="${REVISION^^}"
+  LOWER_REVISION="${REVISION}"
 
   if ! HOME="${TEST_HOME}" PATH="${MOCK_BIN}:${PATH}" \
     SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" REVISION_FILE="${REVISION_FILE}" \
     INSTALLED_UNIT="${INSTALLED_UNIT}" RELAY_ACTIVE=false CURL_HEALTHY=true \
-    CURL_REVISION="${LOWER_REVISION}" bash "${INSTALLER}" --enable --revision "${UPPER_REVISION}" \
+    CURL_REVISION="${LOWER_REVISION}" HANGAR_REPO_ROOT="${REPO_ROOT}" PROC_ROOT="${PROC_ROOT}" \
+    bash "${INSTALLER}" --enable --revision "${UPPER_REVISION}" \
     > "${FIXTURE_DIR}/install.out" 2>&1; then
     fail 'uppercase 40-hex revision should be accepted'
     cleanup_fixture
@@ -199,6 +213,62 @@ test_uppercase_revision_is_normalized() {
   fi
   if [[ "$(<"${REVISION_FILE}")" != $'HANGAR_BUILD_REVISION='"${LOWER_REVISION}"$'\nPATH='"${MOCK_BIN}"':/usr/local/bin:/usr/bin:/bin' ]]; then
     fail 'uppercase revision must be normalized to lowercase in the EnvironmentFile'
+  fi
+
+  cleanup_fixture
+}
+
+test_source_checkout_must_match_unit_working_directory() {
+  new_fixture
+  OTHER_REPO="${FIXTURE_DIR}/other-repo"
+  mkdir -p "${OTHER_REPO}"
+
+  if HOME="${TEST_HOME}" PATH="${MOCK_BIN}:${PATH}" SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" \
+    HANGAR_REPO_ROOT="${OTHER_REPO}" PROC_ROOT="${PROC_ROOT}" \
+    bash "${INSTALLER}" --enable --revision "${REVISION}" \
+    > "${FIXTURE_DIR}/install.out" 2>&1; then
+    fail 'relay installer must reject a checkout different from the unit WorkingDirectory'
+  fi
+  if [[ -s "${SYSTEMCTL_LOG}" ]]; then
+    fail 'checkout mismatch must fail before invoking systemctl'
+  fi
+  if [[ -e "${REVISION_FILE}" || -e "${INSTALLED_UNIT}" ]]; then
+    fail 'checkout mismatch must fail before writing deployment identity or unit files'
+  fi
+
+  cleanup_fixture
+}
+
+test_source_checkout_head_must_match_requested_revision() {
+  new_fixture
+  OTHER_REVISION="ffffffffffffffffffffffffffffffffffffffff"
+  [[ "${OTHER_REVISION}" != "${REVISION}" ]] || OTHER_REVISION="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+  if HOME="${TEST_HOME}" PATH="${MOCK_BIN}:${PATH}" SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" \
+    HANGAR_REPO_ROOT="${REPO_ROOT}" PROC_ROOT="${PROC_ROOT}" \
+    bash "${INSTALLER}" --enable --revision "${OTHER_REVISION}" \
+    > "${FIXTURE_DIR}/install.out" 2>&1; then
+    fail 'relay installer must reject a requested revision different from unit repository HEAD'
+  fi
+  if [[ -s "${SYSTEMCTL_LOG}" ]] || deployment_writes_exist; then
+    fail 'repository HEAD mismatch must fail before writes or systemctl'
+  fi
+
+  cleanup_fixture
+}
+
+test_running_process_cwd_must_match_deployed_repo() {
+  new_fixture
+  OTHER_CWD="${FIXTURE_DIR}/other-cwd"
+  mkdir -p "${OTHER_CWD}"
+  ln -sfn "${OTHER_CWD}" "${PROC_ROOT}/4242/cwd"
+  RELAY_ACTIVE=false
+
+  if run_installer > "${FIXTURE_DIR}/install.out" 2>&1; then
+    fail 'relay installer must reject a healthy process running from another checkout'
+  fi
+  if ! grep -q 'working directory' "${FIXTURE_DIR}/install.out"; then
+    fail 'process cwd mismatch must explain the working-directory failure'
   fi
 
   cleanup_fixture
@@ -215,7 +285,7 @@ test_invalid_revision_fails_before_writes_or_systemctl() {
   if [[ -s "${SYSTEMCTL_LOG}" ]]; then
     fail 'invalid revision must fail before invoking systemctl'
   fi
-  if find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
+  if deployment_writes_exist; then
     fail 'invalid revision must fail before writing deployment files'
   fi
 
@@ -232,7 +302,7 @@ test_missing_revision_fails_before_writes_or_systemctl() {
   if [[ -s "${SYSTEMCTL_LOG}" ]]; then
     fail 'missing revision must fail before invoking systemctl'
   fi
-  if find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
+  if deployment_writes_exist; then
     fail 'missing revision must fail before writing deployment files'
   fi
 
@@ -251,7 +321,7 @@ test_missing_revision_value_and_unknown_argument_fail_closed() {
     > "${FIXTURE_DIR}/unknown.out" 2>&1; then
     fail 'relay installer must reject unknown arguments'
   fi
-  if [[ -s "${SYSTEMCTL_LOG}" ]] || find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
+  if [[ -s "${SYSTEMCTL_LOG}" ]] || deployment_writes_exist; then
     fail 'argument validation failures must happen before writes or systemctl'
   fi
 
@@ -271,7 +341,7 @@ test_unsupported_node_fails_before_writes_or_systemctl() {
   if [[ -s "${SYSTEMCTL_LOG}" ]]; then
     fail 'unsupported Node must fail before invoking systemctl'
   fi
-  if find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
+  if deployment_writes_exist; then
     fail 'unsupported Node must fail before writing deployment files'
   fi
   if ! grep -q 'Node.*22' "${FIXTURE_DIR}/install.out"; then
@@ -287,6 +357,8 @@ test_missing_node_fails_before_writes_or_systemctl() {
   mkdir -p "${NO_NODE_BIN}"
   ln -s "$(command -v dirname)" "${NO_NODE_BIN}/dirname"
   ln -s "$(command -v jq)" "${NO_NODE_BIN}/jq"
+  ln -s "$(command -v git)" "${NO_NODE_BIN}/git"
+  ln -s "$(command -v grep)" "${NO_NODE_BIN}/grep"
   ln -s "$(command -v readlink)" "${NO_NODE_BIN}/readlink"
   ln -s "${MOCK_BIN}/curl" "${NO_NODE_BIN}/curl"
   ln -s "${MOCK_BIN}/systemctl" "${NO_NODE_BIN}/systemctl"
@@ -299,7 +371,7 @@ test_missing_node_fails_before_writes_or_systemctl() {
   if [[ -s "${SYSTEMCTL_LOG}" ]]; then
     fail 'missing Node must fail before invoking systemctl'
   fi
-  if find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
+  if deployment_writes_exist; then
     fail 'missing Node must fail before writing deployment files'
   fi
   if ! grep -q 'Node.*22' "${FIXTURE_DIR}/install.out"; then
@@ -329,7 +401,7 @@ test_help_is_read_only_and_documents_required_revision() {
   if ! grep -q -- '--revision' "${FIXTURE_DIR}/help.out"; then
     fail 'relay installer help must document --revision'
   fi
-  if [[ -s "${SYSTEMCTL_LOG}" ]] || find "${TEST_HOME}" -mindepth 1 -print -quit | grep -q .; then
+  if [[ -s "${SYSTEMCTL_LOG}" ]] || deployment_writes_exist; then
     fail 'relay installer --help must not write or invoke systemctl'
   fi
 
@@ -398,6 +470,9 @@ test_with_nats_without_enable_does_not_enable_nats
 test_inactive_first_install_is_enabled_and_started
 test_revision_is_written_before_service_activation
 test_uppercase_revision_is_normalized
+test_source_checkout_must_match_unit_working_directory
+test_source_checkout_head_must_match_requested_revision
+test_running_process_cwd_must_match_deployed_repo
 test_invalid_revision_fails_before_writes_or_systemctl
 test_missing_revision_fails_before_writes_or_systemctl
 test_missing_revision_value_and_unknown_argument_fail_closed

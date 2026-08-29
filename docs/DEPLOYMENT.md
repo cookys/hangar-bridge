@@ -74,16 +74,19 @@ set -euo pipefail
 
 candidate="${CANDIDATE_SHA:?export CANDIDATE_SHA as the admitted full 40-hex SHA}"
 relay_url="${HANGAR_RELAY_URL:-http://192.168.101.6:8443}"
+repo_root="$HOME/projects/hangar-bridge"
 data_dir="${HANGAR_DATA:-$HOME/.local/share/hangar-bridge}"
 db_path="$data_dir/hangar-bridge.sqlite"
 peers_file="${HANGAR_PEERS_FILE:-$HOME/.config/hangar-bridge/peers.json}"
 backup_root="${XDG_STATE_HOME:-$HOME/.local/state}/hangar-bridge/backups"
 
 [[ "$candidate" =~ ^[0-9a-f]{40}$ ]]
+cd "$repo_root"
+command -v readlink >/dev/null
+test "$(readlink -f -- "$PWD")" = "$(readlink -f -- "$repo_root")"
 command -v jq >/dev/null
 command -v sqlite3 >/dev/null
 command -v rg >/dev/null
-command -v readlink >/dev/null
 node_bin="$(readlink -f -- "$(command -v node)")"
 node_version="$("$node_bin" --version)"
 [[ "$node_version" =~ ^v([0-9]+)(\.[0-9]+){1,2}$ ]]
@@ -137,9 +140,11 @@ fresh backup is the explicit rollback target prepared by this procedure.
 
 ### 2.2 Install, restart, and prove the revision
 
-`--revision` is mandatory. The installer validates it before any write, atomically writes the
-systemd environment file, reloads the unit, and explicitly restarts an already-active relay. On a
-first install it enables and starts the unit.
+`--revision` is mandatory. Before any write, the installer binds it to the `HEAD` of the repository
+used by the unit (`~/projects/hangar-bridge`). It atomically writes the systemd environment file,
+reloads the unit, and explicitly restarts an already-active relay. On a first install it enables and
+starts the unit. Acceptance also requires the running `MainPID` cwd to resolve to that repository;
+HTTP health plus an asserted revision from a different checkout is rejected.
 
 ```bash
 packages/operations/systemd/install-relay.sh \
@@ -273,7 +278,8 @@ chmod 700 "$data_dir"
 cp -p "$backup_dir/hangar-bridge.sqlite" "$db_path"
 
 if [[ "$previous_live" =~ ^[0-9a-f]{40}$ ]]; then
-  "$backup_dir/hardened-install-relay.sh" \
+  HANGAR_REPO_ROOT="$(git rev-parse --show-toplevel)" \
+    "$backup_dir/hardened-install-relay.sh" \
     --revision "$previous_source" \
     --enable
 
