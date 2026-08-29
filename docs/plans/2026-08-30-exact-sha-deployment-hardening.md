@@ -78,4 +78,3 @@ with the prior exact source revision.
 - P2 — Write the exact-SHA runbook and synchronize operator/architecture docs.
 - P3 — Full deterministic gates plus independent adversarial review and bounded repair loop.
 - P4 — Merge/push `develop`, confirm hosted CI, then deploy relay before peers and record sanitized evidence.
-
