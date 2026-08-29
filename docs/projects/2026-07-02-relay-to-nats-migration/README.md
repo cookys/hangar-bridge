@@ -1,9 +1,10 @@
 # Project — relay→NATS migration(Direction A 執行)
 
-> **Status:** 🟡 P0–P4 完成、live-verified；2026-07-21 closeout 是否已正式交付，以
-> [`docs/HANDOFF.md`](../../HANDOFF.md) 所列 pushed `origin/main` SHA 為準；
+> **Status:** 🟡 P0–P4 完成、live-verified；[`docs/HANDOFF.md`](../../HANDOFF.md) 是 2026-07-21
+> closeout 的歷史快照，不是當前 release/deployment identity 的權威來源。當前整合來源以
+> `git rev-parse origin/develop` 為準；線上 SSE relay 必須再以 `/health.build_revision` 驗證。
 > **P5/P6 停在 Board 升級閘**（真實 fleet cutover/soak + 不可逆 relay 刪除，超出 DOA）。
-> 最終 main SHA 與交接狀態見 [`docs/HANDOFF.md`](../../HANDOFF.md)。
+> 當前 exact-SHA 部署與交接見 [`docs/DEPLOYMENT.md`](../../DEPLOYMENT.md)。
 > **Plan:** [docs/plans/2026-07-02-relay-to-nats-migration.md](../../plans/2026-07-02-relay-to-nats-migration.md)(CONVERGED @ `128ff64`)
 > **Survey:** [docs/plans/2026-07-02-relay-to-nats-survey.md](../../plans/2026-07-02-relay-to-nats-survey.md)
 > **Delivery:** P0–P4 原始 commits `932bba1` / `2329e0a` / `e6cbbe7` / `64565d0` /

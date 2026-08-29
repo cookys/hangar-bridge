@@ -308,7 +308,9 @@ compatibility are specified in [`CLAIMS.md`](./CLAIMS.md).
   recipient-identity check, not eliminated.
 - **Intra-namespace blast radius**: namespace ownership is all-or-nothing; an owner sees every
   subject under it.
-- **Operational gap**: the SQLite is fleet-coordination SoT but has **no backup/restore story** yet.
+- **Operational residual**: SQLite backup/restore is operator-run, not automated. The exact-SHA SSE
+  [deployment runbook](./DEPLOYMENT.md) requires a consistent pre-upgrade backup and restores the
+  database together with its matching prior source revision; there is no unattended backup service.
 - **Mixed-mode gap**: SSE and NATS message cohorts do not bridge. P5 needs a whole-fleet cutover or
   explicit isolation; seamless mixed mode requires a separate bridge.
 - **NATS session-addressing gap**: durable consumers are handle-scoped, so NATS mode currently

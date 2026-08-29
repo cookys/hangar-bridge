@@ -42,7 +42,7 @@ Coverage thresholds (each package's own `vitest.config.ts`, enforced as CI gates
 ### Deployable units (per README / spec §1) — all implemented
 
 ```text
-Claude Code ──stdio──▶ peer-agent ──default HTTP/SSE──▶ relay (Hono + SQLite v6)
+Claude Code ──stdio──▶ peer-agent ──default HTTP/SSE──▶ relay (Hono + SQLite v7)
                                   └─opt-in NATS───────▶ NATS + JetStream/KV
 ```
 
@@ -76,7 +76,7 @@ If you discover a bug in a doc/plan during execution, fix the code AND the doc i
 
 This repo is set up for cookys's **autopilot + codeforge + mnemos** ecosystem (no superpowers / voltagent / other third-party plugins — autopilot runs standalone).
 
-- **DI config** lives in `.claude/*-config.md` (tracked in git). autopilot skills `cat` these at runtime. They calibrate autopilot to this repo: `docs/` (plural) project paths, pnpm/vitest commands, real coverage thresholds, `main`-never-force-pushed, autopilot-only methodology chains. Runtime state under `.claude/` (tasks/, *-state.json, knowledge/) is gitignored.
+- **DI config** lives in `.claude/*-config.md` (tracked in git). autopilot skills `cat` these at runtime. They calibrate autopilot to this repo: `docs/` (plural) project paths, pnpm/vitest commands, real coverage thresholds, `develop`-never-force-pushed, autopilot-only methodology chains. Runtime state under `.claude/` (tasks/, *-state.json, knowledge/) is gitignored.
 - **Project tracking**: `docs/projects/` (+ `INDEX.md`, `_archive/`), plans in `docs/plans/`, deferred work in `docs/BACKLOG.md`.
 - **Knowledge / memory** goes to the mnemos project memory dir (`~/.claude/projects/-home-cookys-projects-hangar-bridge/memory/`), not a `.claude/knowledge/` tree. codeforge supplies hooks / statusline / session-digest at the global level.
 

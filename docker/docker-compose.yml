@@ -3,14 +3,18 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.relay
+      args:
+        HANGAR_BUILD_REVISION: "${HANGAR_BUILD_REVISION:?set HANGAR_BUILD_REVISION to the exact 40-hex Git SHA}"
     image: hangar-bridge/relay:latest
     restart: always
     environment:
       PORT: 8443
       HOST: 0.0.0.0
       HANGAR_DATA: /data
+      HANGAR_PEERS_FILE: /config/peers.json
     volumes:
       - mesh-data:/data
+      - "${HANGAR_PEERS_FILE_HOST:?set HANGAR_PEERS_FILE_HOST to the absolute peers.json path}:/config/peers.json:ro"
     expose: ["8443"]
 
   caddy:

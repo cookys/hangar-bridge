@@ -220,6 +220,9 @@ node packages/relay/dist/index.js
 Serve also re-seeds the roster at startup, so later secret/ACL changes take effect after updating
 `peers.json` and restarting the relay. A user-systemd installer is available at
 [`packages/operations/systemd/install-relay.sh`](./packages/operations/systemd/install-relay.sh).
+For upgrades, do not improvise from these first-install commands: follow the
+[exact-SHA SSE deployment runbook](./docs/DEPLOYMENT.md), which pins source identity, backs up SQLite,
+restarts the central relay before peer rollout, and verifies the loaded revision.
 
 Verify:
 
@@ -383,8 +386,9 @@ packages/operations/   relay/NATS config, provisioning, and systemd artifacts
 - The wire schema supports `task_result`, but the production MCP surface does not yet expose a
   structured response tool. Current receiver completion is chat; a correlated response tool and
   its real-Claude smoke remain deferred.
-- Docker artifacts inherited from the earlier packaging path are not part of the verified closeout
-  gate; repair or deprecation is tracked in [`docs/BACKLOG.md`](./docs/BACKLOG.md).
+- The relay Docker artifacts use the current `@hangar-bridge/*` workspaces and require both an exact
+  `HANGAR_BUILD_REVISION` and an explicit read-only peers roster mount. The systemd path remains the
+  production fleet path covered by the [deployment runbook](./docs/DEPLOYMENT.md).
 
 ## Contributing
 

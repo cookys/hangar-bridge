@@ -32,7 +32,17 @@ packages/operations/claude-config/install-mcp.sh --dry-run # diff only, no write
 
 The script is idempotent. It backs up `~/.claude.json` to
 `~/.claude.json.bak.<timestamp>` before patching. To roll back,
-restore the most recent backup.
+restore the most recent backup. `--dry-run` is strictly read-only: it
+does not create a missing config, backup, or temporary file.
+
+The managed entry always sets
+`HANGAR_MCP_KEY=hangar-bridge-peer-agent`. This must match the
+`server:hangar-bridge-peer-agent` launch argument so the peer-agent's
+startup deaf-check can distinguish a correctly loaded channel from a
+session that cannot receive notifications. Other environment keys on
+the managed entry are preserved. Installer diff output is
+limited to this managed entry and redacts all field values while
+retaining key names and structure for review.
 
 ## Verify
 

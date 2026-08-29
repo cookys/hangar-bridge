@@ -1,7 +1,8 @@
 # Cutover Runbook — P5 fleet cutover + P6 relay deletion
 
 > **Status:** Board-gated. The 2026-07-21 closeout is not considered delivered merely because this
-> file exists: verify the pushed `origin/main` SHA in [`docs/HANDOFF.md`](../../HANDOFF.md) first.
+> file exists: pin and verify the intended `origin/develop` SHA first. [`docs/HANDOFF.md`](../../HANDOFF.md)
+> is a historical closeout snapshot, not current deployment identity.
 > The NATS substrate remains behind `transport: 'nats'`, **SSE is the default and the relay is
 > untouched**, so nothing has changed operationally yet. This runbook is for when the Board
 > authorises cutover. Spec: [../../plans/2026-07-02-relay-to-nats-migration.md](../../plans/2026-07-02-relay-to-nats-migration.md) §4 Phase 5/6.

@@ -14,9 +14,9 @@
 #     terminate-user; the relay isn't that load-bearing yet).
 #
 # Usage:
-#   packages/operations/systemd/install-relay.sh                # install + reload
-#   packages/operations/systemd/install-relay.sh --enable       # install + enable + start
-#   packages/operations/systemd/install-relay.sh --with-nats    # also install/reload nats unit
+#   packages/operations/systemd/install-relay.sh --revision <40-hex-sha>
+#   packages/operations/systemd/install-relay.sh --enable --revision <40-hex-sha>
+#   packages/operations/systemd/install-relay.sh --with-nats --revision <40-hex-sha>
 #
 # Prereqs:
 #   - dist built (`pnpm -r build`)
@@ -31,7 +31,8 @@ UNIT_SRC="$(dirname "$0")/${UNIT_NAME}"
 UNIT_DEST_DIR="${HOME}/.config/systemd/user"
 UNIT_DEST="${UNIT_DEST_DIR}/${UNIT_NAME}"
 PEERS_FILE="${HOME}/.config/hangar-bridge/peers.json"
-NATS_STATE_DIR="/var/lib/hangar-bridge/jetstream"
+REVISION_FILE="${HOME}/.config/hangar-bridge/relay.env"
+NATS_STATE_DIR="${NATS_STATE_DIR:-/var/lib/hangar-bridge/jetstream}"
 
 NATS_UNIT_NAME="hangar-bridge-nats.service"
 NATS_UNIT_SRC="$(dirname "$0")/${NATS_UNIT_NAME}"
@@ -39,6 +40,17 @@ NATS_UNIT_DEST="${UNIT_DEST_DIR}/${NATS_UNIT_NAME}"
 
 ENABLE_NOW=""
 NATS_INSTALL="false"
+REVISION=""
+
+usage() {
+  cat <<'EOF'
+Usage: install-relay.sh [--enable] [--with-nats] --revision <40-hex-sha>
+
+Installs the relay user unit at an exact source revision. --revision is
+mandatory. An already-active relay is restarted after the unit and revision
+EnvironmentFile are ready. An inactive relay starts only with --enable.
+EOF
+}
 
 reload_nats_unit_if_running() {
   if systemctl --user is-active --quiet "${NATS_UNIT_NAME}"; then
@@ -57,12 +69,82 @@ reload_nats_unit_if_running() {
   fi
 }
 
-for ARG in "$@"; do
-  case "${ARG}" in
-    --enable) ENABLE_NOW="--enable" ;;
-    --with-nats) NATS_INSTALL="true" ;;
+while (($# > 0)); do
+  case "$1" in
+    --enable)
+      ENABLE_NOW="--enable"
+      shift
+      ;;
+    --with-nats)
+      NATS_INSTALL="true"
+      shift
+      ;;
+    --revision)
+      if (($# < 2)) || [[ "$2" == --* ]]; then
+        echo "ERROR: --revision requires a 40-hex value." >&2
+        usage >&2
+        exit 2
+      fi
+      REVISION="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
   esac
 done
+
+if [[ -z "${REVISION}" ]]; then
+  echo "ERROR: --revision <40-hex-sha> is required." >&2
+  usage >&2
+  exit 2
+fi
+if [[ ! "${REVISION}" =~ ^[[:xdigit:]]{40}$ ]]; then
+  echo "ERROR: revision must be exactly 40 hexadecimal characters." >&2
+  exit 2
+fi
+REVISION="${REVISION,,}"
+
+for REQUIRED_COMMAND in systemctl curl jq readlink; do
+  if ! command -v "${REQUIRED_COMMAND}" >/dev/null 2>&1; then
+    echo "ERROR: required command not found: ${REQUIRED_COMMAND}" >&2
+    exit 1
+  fi
+done
+
+if ! NODE_BIN="$(type -P node)" || [[ -z "${NODE_BIN}" || ! -x "${NODE_BIN}" ]]; then
+  echo "ERROR: an executable Node.js >=22 binary is required." >&2
+  exit 1
+fi
+NODE_BIN="$(readlink -f -- "${NODE_BIN}")"
+if ! NODE_VERSION="$("${NODE_BIN}" --version 2>/dev/null)"; then
+  echo "ERROR: Node.js >=22 is required; ${NODE_BIN} could not report its version." >&2
+  exit 1
+fi
+if [[ ! "${NODE_VERSION}" =~ ^v([0-9]+)(\.[0-9]+){1,2}$ ]] || \
+  ((10#${BASH_REMATCH[1]:-0} < 22)); then
+  echo "ERROR: Node.js >=22 is required; ${NODE_BIN} reported ${NODE_VERSION:-no version}." >&2
+  exit 1
+fi
+NODE_DIR="$(dirname -- "${NODE_BIN}")"
+if [[ "${NODE_DIR}" == *:* || "${NODE_DIR}" =~ [[:space:]] ]]; then
+  echo "ERROR: Node.js binary directory cannot contain whitespace or ':': ${NODE_DIR}" >&2
+  exit 1
+fi
+if [[ ! -f "${UNIT_SRC}" ]]; then
+  echo "ERROR: relay unit source not found: ${UNIT_SRC}" >&2
+  exit 1
+fi
+if [[ "${NATS_INSTALL}" == "true" && ! -f "${NATS_UNIT_SRC}" ]]; then
+  echo "ERROR: NATS unit source not found: ${NATS_UNIT_SRC}" >&2
+  exit 1
+fi
 
 mkdir -p "${UNIT_DEST_DIR}"
 mkdir -p "$(dirname "${PEERS_FILE}")"
@@ -102,6 +184,20 @@ cp -f "${UNIT_SRC}" "${UNIT_DEST}"
 chmod 644 "${UNIT_DEST}"
 echo "Installed: ${UNIT_DEST}"
 
+# Publish source identity atomically before systemd can start or restart the
+# service. This file contains no credential, but mode 600 prevents unrelated
+# local users from mutating deployment identity through a shared config path.
+REVISION_TMP="$(mktemp "${REVISION_FILE}.XXXXXX")"
+cleanup_revision_tmp() {
+  rm -f "${REVISION_TMP}"
+}
+trap cleanup_revision_tmp EXIT
+printf 'HANGAR_BUILD_REVISION=%s\nPATH=%s:/usr/local/bin:/usr/bin:/bin\n' \
+  "${REVISION}" "${NODE_DIR}" > "${REVISION_TMP}"
+chmod 600 "${REVISION_TMP}"
+mv "${REVISION_TMP}" "${REVISION_FILE}"
+trap - EXIT
+
 if [[ "${NATS_INSTALL}" == "true" ]]; then
   ensure_nats_state_dir
   cp -f "${NATS_UNIT_SRC}" "${NATS_UNIT_DEST}"
@@ -118,13 +214,26 @@ if [[ "${NATS_INSTALL}" == "true" ]]; then
   reload_nats_unit_if_running
 fi
 
-if [[ "${ENABLE_NOW}" == "--enable" ]]; then
+RELAY_ACTIVATED="false"
+if systemctl --user is-active --quiet "${UNIT_NAME}"; then
+  if [[ "${ENABLE_NOW}" == "--enable" ]]; then
+    systemctl --user enable "${UNIT_NAME}"
+    echo "Enabled ${UNIT_NAME}."
+  fi
+  systemctl --user restart "${UNIT_NAME}"
+  echo "Restart command completed for ${UNIT_NAME}; verifying revision ${REVISION}."
+  RELAY_ACTIVATED="true"
+elif [[ "${ENABLE_NOW}" == "--enable" ]]; then
   systemctl --user enable --now "${UNIT_NAME}"
-  echo "Enabled + started ${UNIT_NAME}."
+  echo "Enable/start command completed for ${UNIT_NAME}; verifying revision ${REVISION}."
+  RELAY_ACTIVATED="true"
+fi
+
+if [[ "${RELAY_ACTIVATED}" == "true" ]]; then
   echo ""
   systemctl --user status "${UNIT_NAME}" --no-pager -l --lines=20
 
-  if [[ "${NATS_INSTALL}" == "true" ]]; then
+  if [[ "${NATS_INSTALL}" == "true" && "${ENABLE_NOW}" == "--enable" ]]; then
     systemctl --user enable --now "${NATS_UNIT_NAME}"
     echo "Enabled + started ${NATS_UNIT_NAME}."
     echo ""
@@ -132,20 +241,34 @@ if [[ "${ENABLE_NOW}" == "--enable" ]]; then
   fi
 
   echo ""
-  for i in 1 2 3 4 5; do
-    if curl -sf "http://192.168.101.6:8443/health" -m 2 >/dev/null 2>&1; then
-      curl -sf "http://192.168.101.6:8443/health"
-      echo ""
-      break
+  HEALTH_VERIFIED="false"
+  for _ in 1 2 3 4 5; do
+    if HEALTH_JSON="$(curl -sf "http://192.168.101.6:8443/health" -m 2 2>/dev/null)"; then
+      HEALTH_REVISION=""
+      if PARSED_REVISION="$(printf '%s\n' "${HEALTH_JSON}" | \
+        jq -er '.build_revision | select(type == "string")' 2>/dev/null)"; then
+        HEALTH_REVISION="${PARSED_REVISION}"
+      fi
+      if [[ "${HEALTH_REVISION}" == "${REVISION}" ]]; then
+        printf '%s\n' "${HEALTH_JSON}"
+        echo "Verified ${UNIT_NAME} at revision ${REVISION}."
+        HEALTH_VERIFIED="true"
+        break
+      fi
     fi
     sleep 1
   done
+
+  if [[ "${HEALTH_VERIFIED}" != "true" ]]; then
+    echo "ERROR: relay health did not report requested build revision ${REVISION}." >&2
+    exit 1
+  fi
 else
   echo ""
   echo "Unit installed but NOT enabled. To start:"
   echo "  systemctl --user enable --now ${UNIT_NAME}"
   echo "  systemctl --user status ${UNIT_NAME}"
-  echo "  curl -sf http://192.168.101.6:8443/health"
+  echo "  curl -sf http://192.168.101.6:8443/health  # build_revision must be ${REVISION}"
 
   if [[ "${NATS_INSTALL}" == "true" ]]; then
     echo ""
