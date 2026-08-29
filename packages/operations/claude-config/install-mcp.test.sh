@@ -120,7 +120,7 @@ test_output_does_not_expose_existing_environment_secrets() {
     return
   fi
 
-  if rg -q 'SECRET_SENTINEL_DO_NOT_PRINT' "${FIXTURE_DIR}/dry-run.out"; then
+  if grep -Fq 'SECRET_SENTINEL_DO_NOT_PRINT' "${FIXTURE_DIR}/dry-run.out"; then
     fail 'MCP installer output must not expose existing environment secrets'
   fi
 
