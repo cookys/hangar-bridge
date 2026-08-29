@@ -1,7 +1,7 @@
 # Project — dependency hardening
 
-> **Status:** in progress
-> **Plan:** [dependency-hardening plan](../../plans/2026-08-30-dependency-hardening.md)
+> **Status:** complete
+> **Plan:** [dependency-hardening plan](../../../plans/2026-08-30-dependency-hardening.md)
 > **Base:** `49ecd7522abd5d2579ede69da203cc22ef9b55fa`
 > **Branch policy:** direct `develop`, then verified fast-forward to `main`; no unattended PR.
 
@@ -41,8 +41,8 @@
 |---|---|---|---|
 | D1 | Runtime dependency remediation | production audit has zero high/critical | complete |
 | D2 | Development toolchain remediation | full audit has zero high/critical; coverage unchanged | complete |
-| D3 | CI ratchet and clean-install verification | hosted develop/main CI green | in progress |
-| D4 | Heterogeneous review and closeout | reviewer PASS; exact SHAs recorded | pending |
+| D3 | CI ratchet and clean-install verification | hosted develop/main CI green | complete |
+| D4 | Heterogeneous review and closeout | reviewer PASS; exact SHAs recorded | complete |
 
 ## Decisions
 
@@ -51,3 +51,10 @@
 - 2026-08-30: Existing owner policy overrides feature-branch/PR defaults: commit verified fixes to
   `develop`, then fast-forward `main` only after hosted CI passes.
 - 2026-08-30: Mission routing returned `LEGACY`; no READY/admission authority is claimed.
+- 2026-08-30: A SHA-bound mutation holdout downgraded `undici` to `6.20.0`; the audit
+  gate correctly failed with four high advisories while the unmodified candidate reported none.
+- 2026-08-30: Remediation SHA `356f5f1473ca0dec01413c2982351e40b6d19acc` passed hosted CI
+  on [`develop`](https://github.com/cookys/hangar-bridge/actions/runs/33269704732) and
+  [`main`](https://github.com/cookys/hangar-bridge/actions/runs/33269758967).
+- 2026-08-30: Independent heterogeneous review by `kimi-code/k3` returned `SHIP-AS-IS`
+  with no findings; no Copilot pipeline was used.
