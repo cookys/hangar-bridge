@@ -18,7 +18,7 @@
     "@hangar-bridge/shared": "workspace:*",
     "hono": "^4.6.3",
     "@hono/node-server": "^1.13.1",
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^12.11.1",
     "ulid": "^2.3.0",
     "zod": "^3.23.8"
   },
