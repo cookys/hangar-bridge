@@ -36,7 +36,8 @@ Run this independently in a clean checkout before touching a fleet host. Set `ca
 owner-approved commit; do not derive it from a mutable branch after admission.
 
 The complete suite intentionally exercises live JetStream/KV behavior. Put the checksum-pinned
-`nats-server` v2.14.3 test binary on `PATH` first, using the exact archive and SHA-256 in the
+`nats-server` v2.14.3 test binary on `PATH` first and export its absolute path as
+`NATS_SERVER_BIN`, using the exact archive and SHA-256 in the
 [`Install pinned NATS server` CI step](../.github/workflows/ci.yml). On an SSE-only host this may be
 an ephemeral test-tool directory; do not enable the NATS service. The commands below also pin pnpm
 to the repository's `10.32.1` version even when the host has no global pnpm binary.
@@ -55,7 +56,9 @@ git switch develop
 git merge --ff-only "$candidate"
 test "$(git rev-parse HEAD)" = "$candidate"
 
-test "$(nats-server --version)" = 'nats-server: v2.14.3'
+nats_server_bin="$(command -v nats-server)"
+export NATS_SERVER_BIN="$nats_server_bin"
+test "$($NATS_SERVER_BIN --version)" = 'nats-server: v2.14.3'
 run_pnpm() {
   if command -v corepack >/dev/null; then
     corepack pnpm@10.32.1 "$@"
@@ -65,6 +68,7 @@ run_pnpm() {
 }
 test "$(run_pnpm --version)" = '10.32.1'
 run_pnpm install --frozen-lockfile
+run_pnpm -F @hangar-bridge/shared build
 run_pnpm -r typecheck
 run_pnpm -r test:ci
 run_pnpm -r build
@@ -101,7 +105,9 @@ command -v readlink >/dev/null
 test "$(readlink -f -- "$PWD")" = "$(readlink -f -- "$repo_root")"
 command -v jq >/dev/null
 command -v sqlite3 >/dev/null
-test "$(nats-server --version)" = 'nats-server: v2.14.3'
+nats_server_bin="$(command -v nats-server)"
+export NATS_SERVER_BIN="$nats_server_bin"
+test "$($NATS_SERVER_BIN --version)" = 'nats-server: v2.14.3'
 run_pnpm() {
   if command -v corepack >/dev/null; then
     corepack pnpm@10.32.1 "$@"
@@ -129,6 +135,7 @@ git merge --ff-only "$candidate"
 test "$(git rev-parse HEAD)" = "$candidate"
 
 run_pnpm install --frozen-lockfile
+run_pnpm -F @hangar-bridge/shared build
 run_pnpm -r typecheck
 run_pnpm -r test:ci
 run_pnpm -r build
@@ -300,6 +307,7 @@ run_pnpm() {
 }
 test "$(run_pnpm --version)" = '10.32.1'
 run_pnpm install --frozen-lockfile
+run_pnpm -F @hangar-bridge/shared build
 run_pnpm -r typecheck
 run_pnpm -r test:ci
 run_pnpm -r build
