@@ -37,7 +37,10 @@ packages/operations/systemd/install-relay.sh --enable --revision "$revision"
 `--revision` is mandatory and must be a full 40-hex commit SHA. The
 installer normalizes it to lowercase, requires the active `node` binary
 to report Node.js 22 or newer, resolves that binary to its real directory,
-and atomically writes both the revision and pinned runtime `PATH` to the
+requires a clean checkout, performs a frozen install, and rebuilds the workspace with pinned pnpm 10.32.1
+before changing the live unit or revision file. This prevents a stale `dist/`
+tree from being relabeled as a newer commit. It then atomically writes both
+the revision and pinned runtime `PATH` to the
 mode-0600 `~/.config/hangar-bridge/relay.env`. The unit loads these as
 `HANGAR_BUILD_REVISION` and `PATH`. Do not pass a branch name or abbreviated
 SHA. Re-run the installer after replacing or removing the selected Node
@@ -61,12 +64,13 @@ The script:
    secrets per [the relay's peers-file.ts schema](../../relay/src/auth/peers-file.ts)).
 2. Copies `hangar-bridge-relay.service` into
    `~/.config/systemd/user/`.
-3. Verifies the unit repository's `HEAD` is the requested revision.
-4. Atomically installs the exact build revision and validated Node path EnvironmentFile.
-5. `systemctl --user daemon-reload`.
-6. Restarts an active relay, or optionally `enable --now` for an
+3. Verifies the unit repository is clean and its `HEAD` is the requested revision.
+4. Runs a frozen install, rebuilds with pinned pnpm 10.32.1, and verifies the relay entry artifact exists.
+5. Atomically installs the exact build revision and validated Node path EnvironmentFile.
+6. `systemctl --user daemon-reload`.
+7. Restarts an active relay, or optionally `enable --now` for an
    inactive relay.
-7. Verifies `GET /health` reports that exact `build_revision` and the
+8. Verifies `GET /health` reports that exact `build_revision` and the
    service `MainPID` runs from the verified repository.
 
 ## What's in the unit

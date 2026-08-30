@@ -19,7 +19,7 @@
 #   packages/operations/systemd/install-relay.sh --with-nats --revision <40-hex-sha>
 #
 # Prereqs:
-#   - dist built (`pnpm -r build`)
+#   - clean exact-revision checkout (the installer builds dist itself)
 #   - ~/.config/hangar-bridge/peers.json exists (even `{}` is OK)
 #   - Linger=yes for this user (`loginctl show-user $USER | grep Linger`)
 #   - port 8443 free on 192.168.101.6
@@ -173,6 +173,35 @@ fi
 if ! REPO_REVISION="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null)" || \
   [[ "${REPO_REVISION}" != "${REVISION}" ]]; then
   echo "ERROR: unit working directory HEAD does not match requested revision ${REVISION}." >&2
+  exit 1
+fi
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=all)" ]]; then
+  echo "ERROR: unit working directory must be clean before building revision ${REVISION}." >&2
+  exit 1
+fi
+
+# Build from the admitted clean checkout before mutating the unit, environment,
+# or live service. This closes the stale-dist gap where a newly stamped
+# HANGAR_BUILD_REVISION could otherwise accompany yesterday's JavaScript.
+run_pnpm() {
+  if command -v corepack >/dev/null 2>&1; then
+    corepack pnpm@10.32.1 "$@"
+  else
+    npx --yes pnpm@10.32.1 "$@"
+  fi
+}
+if [[ "$(run_pnpm --version)" != "10.32.1" ]]; then
+  echo "ERROR: pnpm 10.32.1 is required to build the admitted relay source." >&2
+  exit 1
+fi
+(cd "${REPO_ROOT}" && run_pnpm install --frozen-lockfile)
+(cd "${REPO_ROOT}" && run_pnpm -r build)
+if [[ ! -s "${REPO_ROOT}/packages/relay/dist/index.js" ]]; then
+  echo "ERROR: relay build did not produce packages/relay/dist/index.js." >&2
+  exit 1
+fi
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=all)" ]]; then
+  echo "ERROR: relay build changed tracked or untracked source state; refusing deployment." >&2
   exit 1
 fi
 if [[ "${NATS_INSTALL}" == "true" && ! -f "${NATS_UNIT_SRC}" ]]; then

@@ -101,7 +101,6 @@ command -v readlink >/dev/null
 test "$(readlink -f -- "$PWD")" = "$(readlink -f -- "$repo_root")"
 command -v jq >/dev/null
 command -v sqlite3 >/dev/null
-command -v rg >/dev/null
 test "$(nats-server --version)" = 'nats-server: v2.14.3'
 run_pnpm() {
   if command -v corepack >/dev/null; then
@@ -292,10 +291,18 @@ test "$(sqlite3 "$backup_dir/hangar-bridge.sqlite" 'PRAGMA quick_check;')" = 'ok
 test -z "$(git status --porcelain)"
 git switch --detach "$previous_source"
 test "$(git rev-parse HEAD)" = "$previous_source"
-pnpm install --frozen-lockfile
-pnpm -r typecheck
-pnpm -r test:ci
-pnpm -r build
+run_pnpm() {
+  if command -v corepack >/dev/null; then
+    corepack pnpm@10.32.1 "$@"
+  else
+    npx --yes pnpm@10.32.1 "$@"
+  fi
+}
+test "$(run_pnpm --version)" = '10.32.1'
+run_pnpm install --frozen-lockfile
+run_pnpm -r typecheck
+run_pnpm -r test:ci
+run_pnpm -r build
 
 systemctl --user stop hangar-bridge-relay.service
 
@@ -345,7 +352,7 @@ else
   [[ "$main_pid" =~ ^[1-9][0-9]*$ ]]
   test "$(readlink "/proc/$main_pid/cwd")" = "$(git rev-parse --show-toplevel)"
   tr '\0' '\n' < "/proc/$main_pid/environ" \
-    | rg -Fx "HANGAR_BUILD_REVISION=$previous_source" >/dev/null
+    | grep -Fx "HANGAR_BUILD_REVISION=$previous_source" >/dev/null
 fi
 ```
 
