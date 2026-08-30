@@ -48,6 +48,10 @@ export interface StreamClientOpts {
   heartbeatMs?: number
   reconnectBaseMs?: number
   reconnectMaxMs?: number
+  stableConnectionMs?: number
+  now?: () => number
+  // Deterministic test seam. Production uses the interruptible timer below.
+  wait?: (ms: number) => Promise<void>
 }
 
 export class StreamClient {
@@ -55,6 +59,8 @@ export class StreamClient {
   private stopped = false
   private attempt = 0
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private finishReconnectWait: (() => void) | null = null
 
   constructor(private opts: StreamClientOpts) {}
 
@@ -81,6 +87,7 @@ export class StreamClient {
   async start(): Promise<void> {
     while (!this.stopped) {
       this.aborter = new AbortController()
+      let openedAt: number | null = null
       try {
         const since = this.opts.sinceCursor()
         const url = new URL('/v1/stream', this.opts.relayUrl)
@@ -95,7 +102,7 @@ export class StreamClient {
         const res = await fetch(url, { headers, signal: this.aborter.signal })
         if (res.status === 401) { this.opts.onAuthError(); return }
         if (res.status !== 200 || !res.body) throw new Error(`stream http ${res.status}`)
-        this.attempt = 0
+        openedAt = (this.opts.now ?? Date.now)()
         logJson('info', 'peer.stream.open', { since: since ?? '' })
         this.fireConnect()
         this.startHeartbeat()
@@ -103,6 +110,13 @@ export class StreamClient {
       } catch (err) {
         logJson('warn', 'peer.stream.disconnect', { err: String(err instanceof Error ? err.message : err) })
       } finally {
+        // A stream can end either through an error or a clean EOF. Both prove
+        // connection stability when they lasted long enough, so clear stale
+        // failure history on the shared exit path.
+        if (openedAt !== null
+            && (this.opts.now ?? Date.now)() - openedAt >= (this.opts.stableConnectionMs ?? 30_000)) {
+          this.attempt = 0
+        }
         this.stopHeartbeat()
       }
       if (this.stopped) break
@@ -110,11 +124,30 @@ export class StreamClient {
         this.opts.reconnectMaxMs ?? 30_000,
         (this.opts.reconnectBaseMs ?? 500) * 2 ** Math.min(this.attempt++, 6)
       )
-      await new Promise(r => setTimeout(r, delay))
+      await (this.opts.wait ? this.opts.wait(delay) : this.waitForReconnect(delay))
     }
   }
 
-  stop(): void { this.stopped = true; this.stopHeartbeat(); this.aborter?.abort() }
+  private waitForReconnect(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      const finish = () => {
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+        this.reconnectTimer = null
+        this.finishReconnectWait = null
+        resolve()
+      }
+      this.finishReconnectWait = finish
+      this.reconnectTimer = setTimeout(finish, ms)
+      this.reconnectTimer.unref?.()
+    })
+  }
+
+  stop(): void {
+    this.stopped = true
+    this.stopHeartbeat()
+    this.aborter?.abort()
+    this.finishReconnectWait?.()
+  }
 
   private async readStream(body: ReadableStream<Uint8Array>): Promise<void> {
     const decoder = new TextDecoder()
@@ -147,6 +180,11 @@ export class StreamClient {
       }
       try {
         await this.opts.onEnvelope(envelope)
+        // A successful transport/final-mile acceptance resets retry backoff; it
+        // does not claim model observation. Merely opening
+        // the SSE socket does not: a poison/offline-target envelope may be
+        // replayed immediately, and resetting there creates a 500 ms hot loop.
+        this.attempt = 0
       } catch (err) {
         logJson('warn', 'peer.stream.delivery_error', {
           msg_id: envelope.id,
