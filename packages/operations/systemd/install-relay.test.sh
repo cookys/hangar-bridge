@@ -7,7 +7,20 @@ INSTALLER="${SCRIPT_DIR}/install-relay.sh"
 UNIT_NAME="hangar-bridge-relay.service"
 REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
 REVISION="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+RELAY_DIST_INDEX="${REPO_ROOT}/packages/relay/dist/index.js"
+RELAY_DIST_PREEXISTED=false
+if [[ -e "${RELAY_DIST_INDEX}" ]]; then
+  RELAY_DIST_PREEXISTED=true
+fi
 FAILURES=0
+
+cleanup_generated_dist() {
+  if [[ "${RELAY_DIST_PREEXISTED}" != "true" ]]; then
+    rm -f "${RELAY_DIST_INDEX}"
+    rmdir "$(dirname -- "${RELAY_DIST_INDEX}")" 2>/dev/null || true
+  fi
+}
+trap cleanup_generated_dist EXIT
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -99,6 +112,7 @@ new_fixture() {
     '#!/usr/bin/env bash' \
     'printf "%s\n" "$*" >> "${COREPACK_LOG}"' \
     'if [[ "$*" == "pnpm@10.32.1 --version" ]]; then printf "10.32.1\n"; fi' \
+    'if [[ "$*" == "pnpm@10.32.1 -r build" ]]; then mkdir -p "$(dirname -- "${RELAY_DIST_INDEX}")"; printf "mock relay build\n" > "${RELAY_DIST_INDEX}"; fi' \
     'exit 0' \
     > "${MOCK_BIN}/corepack"
   chmod +x "${MOCK_BIN}/corepack"
@@ -121,6 +135,7 @@ run_installer() {
     CURL_COUNT_FILE="${CURL_COUNT_FILE}" \
     CURL_FAILS_BEFORE_SUCCESS="${CURL_FAILS_BEFORE_SUCCESS:-0}" \
     COREPACK_LOG="${COREPACK_LOG}" \
+    RELAY_DIST_INDEX="${RELAY_DIST_INDEX}" \
     GIT_STATUS_OUTPUT="${GIT_STATUS_OUTPUT:-}" \
     MOCK_REVISION="${REVISION}" \
     MOCK_REPO_ROOT="${REPO_ROOT}" \
@@ -170,6 +185,7 @@ test_with_nats_without_enable_does_not_enable_nats() {
     INSTALLED_UNIT="${INSTALLED_UNIT}" RELAY_ACTIVE=true CURL_HEALTHY=true \
     CURL_REVISION="${REVISION}" NATS_STATE_DIR="${NATS_STATE_DIR}" \
     COREPACK_LOG="${COREPACK_LOG}" GIT_STATUS_OUTPUT="" \
+    RELAY_DIST_INDEX="${RELAY_DIST_INDEX}" \
     MOCK_REVISION="${REVISION}" MOCK_REPO_ROOT="${REPO_ROOT}" \
     HANGAR_REPO_ROOT="${REPO_ROOT}" PROC_ROOT="${PROC_ROOT}" \
     bash "${INSTALLER}" --with-nats --revision "${REVISION}" \
@@ -273,6 +289,7 @@ test_uppercase_revision_is_normalized() {
     SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" REVISION_FILE="${REVISION_FILE}" \
     INSTALLED_UNIT="${INSTALLED_UNIT}" RELAY_ACTIVE=false CURL_HEALTHY=true \
     COREPACK_LOG="${COREPACK_LOG}" GIT_STATUS_OUTPUT="" \
+    RELAY_DIST_INDEX="${RELAY_DIST_INDEX}" \
     MOCK_REVISION="${REVISION}" MOCK_REPO_ROOT="${REPO_ROOT}" \
     CURL_REVISION="${LOWER_REVISION}" HANGAR_REPO_ROOT="${REPO_ROOT}" PROC_ROOT="${PROC_ROOT}" \
     bash "${INSTALLER}" --enable --revision "${UPPER_REVISION}" \
