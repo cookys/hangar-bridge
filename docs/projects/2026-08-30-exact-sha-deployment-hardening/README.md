@@ -33,11 +33,11 @@
 
 | Phase | Status | Evidence |
 |---|---|---|
-| P0 regressions | complete | relay health RED 7; MCP installer RED 5; relay installer RED 15; systemd limiter RED 1; Docker RED 2; Node-path repair RED 6; health-revision mutant RED 1; checkout/cwd binding RED 4 |
+| P0 regressions | complete | relay health RED 7; MCP installer RED 5; relay installer RED 15; systemd limiter RED 1; Docker RED 2; Node-path repair RED 6; health-revision mutant RED 1; checkout/cwd binding RED 4; live startup-budget RED 1 |
 | P1 implementation | complete | focused GREEN; shellcheck; systemd-analyze; relay deploy artifact generated |
 | P2 runbook/docs | complete | `docs/DEPLOYMENT.md`; deterministic doc-drift links/fences/script-refs PASS |
-| P3 quality/review | in progress | full typecheck/test/build/audit PASS; heterogeneous final review pending |
-| P4 merge/deploy | pending | pending |
+| P3 quality/review | complete | full typecheck/test/build/audit PASS; Gemini/Opus/Cursor-Grok final reviews `SHIP-AS-IS`; hosted develop CI PASS at source candidate |
+| P4 merge/deploy | in progress | openclaw exact-SHA health/cwd/env PASS; gentoo source/MCP/artifact PASS; idle + active-turn fresh-nonce model observation PASS; exact unknown target failure PASS; authenticated relay route and Docker runtime NOT RUN |
 
 ## Decisions
 

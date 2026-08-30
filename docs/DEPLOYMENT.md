@@ -35,6 +35,12 @@ the fleet deployment described below uses the systemd user unit.
 Run this independently in a clean checkout before touching a fleet host. Set `candidate` to the
 owner-approved commit; do not derive it from a mutable branch after admission.
 
+The complete suite intentionally exercises live JetStream/KV behavior. Put the checksum-pinned
+`nats-server` v2.14.3 test binary on `PATH` first, using the exact archive and SHA-256 in the
+[`Install pinned NATS server` CI step](../.github/workflows/ci.yml). On an SSE-only host this may be
+an ephemeral test-tool directory; do not enable the NATS service. The commands below also pin pnpm
+to the repository's `10.32.1` version even when the host has no global pnpm binary.
+
 ```bash
 set -euo pipefail
 
@@ -49,12 +55,21 @@ git switch develop
 git merge --ff-only "$candidate"
 test "$(git rev-parse HEAD)" = "$candidate"
 
-pnpm install --frozen-lockfile
-pnpm -r typecheck
-pnpm -r test:ci
-pnpm -r build
-pnpm audit --prod --audit-level high
-pnpm audit --audit-level high
+test "$(nats-server --version)" = 'nats-server: v2.14.3'
+run_pnpm() {
+  if command -v corepack >/dev/null; then
+    corepack pnpm@10.32.1 "$@"
+  else
+    npx --yes pnpm@10.32.1 "$@"
+  fi
+}
+test "$(run_pnpm --version)" = '10.32.1'
+run_pnpm install --frozen-lockfile
+run_pnpm -r typecheck
+run_pnpm -r test:ci
+run_pnpm -r build
+run_pnpm audit --prod --audit-level high
+run_pnpm audit --audit-level high
 git diff --check
 ```
 
@@ -87,6 +102,15 @@ test "$(readlink -f -- "$PWD")" = "$(readlink -f -- "$repo_root")"
 command -v jq >/dev/null
 command -v sqlite3 >/dev/null
 command -v rg >/dev/null
+test "$(nats-server --version)" = 'nats-server: v2.14.3'
+run_pnpm() {
+  if command -v corepack >/dev/null; then
+    corepack pnpm@10.32.1 "$@"
+  else
+    npx --yes pnpm@10.32.1 "$@"
+  fi
+}
+test "$(run_pnpm --version)" = '10.32.1'
 node_bin="$(readlink -f -- "$(command -v node)")"
 node_version="$("$node_bin" --version)"
 [[ "$node_version" =~ ^v([0-9]+)(\.[0-9]+){1,2}$ ]]
@@ -105,12 +129,12 @@ git switch develop
 git merge --ff-only "$candidate"
 test "$(git rev-parse HEAD)" = "$candidate"
 
-pnpm install --frozen-lockfile
-pnpm -r typecheck
-pnpm -r test:ci
-pnpm -r build
-pnpm audit --prod --audit-level high
-pnpm audit --audit-level high
+run_pnpm install --frozen-lockfile
+run_pnpm -r typecheck
+run_pnpm -r test:ci
+run_pnpm -r build
+run_pnpm audit --prod --audit-level high
+run_pnpm audit --audit-level high
 git diff --check
 
 backup_id="$(date -u +%Y%m%dT%H%M%SZ)-$previous_source"
@@ -211,6 +235,11 @@ exact installed key:
 ```bash
 claude --dangerously-load-development-channels server:hangar-bridge-peer-agent
 ```
+
+Claude Code 2.1.251 hides this development flag from `--help` but still requires it for a custom
+server channel and displays an interactive local-development confirmation. The general
+`--channels` flag can leave the MCP tools connected without admitting custom channel notifications;
+tool connectivity alone is therefore not an inbound acceptance result.
 
 Inside Claude Code, `/mcp` must show the server connected and its tools. Check the peer-agent child
 process resolves to this checkout's wrapper/dist artifact; record only a sanitized path plus the
