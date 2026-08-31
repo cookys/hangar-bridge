@@ -48,7 +48,15 @@ export function presenceRoute(deps: Deps) {
     if (parsed.data.delivery_state !== undefined) meta.delivery_state = parsed.data.delivery_state
     if (parsed.data.caps !== undefined) meta.caps = parsed.data.caps
 
-    const envelope = deps.store.insert(team, handle, {
+    // A heartbeat is a liveness signal, not a message: build the envelope for live
+    // fanout but do NOT persist it. The durable buffer exists so an offline peer
+    // misses nothing, and a heartbeat is not in that contract — a peer coming back
+    // reads current truth from /v1/peers, and a three-day-old "(connected)" tells it
+    // nothing. Persisting them made presence 99.3% of the buffer (measured
+    // 2026-08-31: 8301 rows against 59 substantive), which buried real traffic deep
+    // enough that poll_inbox could only prove the link was alive — not what it is
+    // for. The registry set() above remains the authority for who is online.
+    const envelope = deps.store.buildEnvelope(team, handle, {
       to: TEAM_BROADCAST_HANDLE,
       subject: null,
       kind: 'presence_update',

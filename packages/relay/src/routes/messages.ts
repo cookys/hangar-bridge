@@ -3,6 +3,7 @@ import {
   HANGAR_TEAM_ID,
   OutboundMessageSchema,
   RESERVED_META_KEYS,
+  newMessageId,
   TEAM_BROADCAST_HANDLE,
   type Envelope,
 } from '@hangar-bridge/shared'
@@ -166,7 +167,15 @@ export function messagesRoute(deps: Deps) {
       if (data.kind === 'chat') {
         // Tell the receiver this message has no durable row → reply via
         // meta.correlation_id, not in_reply_to (which would 400 on unknown parent).
-        ;(data.meta ??= {} as Record<string, string>)['ephemeral'] = '1'
+        // An ephemeral message has no durable row, so in_reply_to would 400 on an
+        // unknown parent. The receiver needs SOMETHING to echo, and it cannot be a
+        // sender-supplied correlation_id — those are stripped above as anti-forgery.
+        // So the relay mints one here, authoritative by construction; without it the
+        // documented reply path exists only in this comment and the channel is
+        // one-way (reported first-hand by a peer that hit the 400).
+        const m = (data.meta ??= {} as Record<string, string>)
+        m['ephemeral'] = '1'
+        m['correlation_id'] = newMessageId()
       }
       // Self-target: narrowing to one's own instance can only self-exclude → 0.
       // Report it explicitly instead of a silent matched:0 (§2.7c).

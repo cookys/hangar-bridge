@@ -313,3 +313,68 @@ describe('self-excluded delivery accounting', () => {
     expect(siblingEvents.some(e => e.includes(body.id))).toBe(true)
   })
 })
+
+/**
+ * An ephemeral message documented a reply path that did not exist: the comment
+ * points the receiver at meta.correlation_id instead of in_reply_to (which 400s
+ * on an unknown parent, since there is no durable row to reference), the
+ * anti-forgery strip removes any correlation_id the sender supplied, and the
+ * ephemeral branch generated none. Both routes closed, so a peer that received
+ * one could only open a new, thread-less message. Reported first-hand by the
+ * aimax395 peer after hitting the 400.
+ *
+ * The relay is already editing meta on that exact line, and a relay-generated id
+ * is authoritative by construction — unlike a sender-supplied one.
+ */
+describe('ephemeral messages carry a usable reply handle', () => {
+  let db: Db
+  let app: ReturnType<typeof buildApp>
+  let fanout: Fanout
+  let tok: string
+
+  beforeEach(() => {
+    db = openDatabase(':memory:')
+    const peers = seedPeerSecrets(db, ['alice', 'bob'])
+    tok = peers.alice!.token
+    fanout = new Fanout()
+    app = buildApp({
+      db, store: new MessageStore(db), fanout, presence: new PresenceRegistry(),
+      claims: new ClaimStore(db), now: () => new Date(),
+    })
+  })
+
+  const INST = '01HRK7Y0000000000000000000'
+
+  it('stamps a correlation_id alongside the ephemeral flag', async () => {
+    const got: Envelope[] = []
+    fanout.subscribe({ handle: 'bob', team_id: 'hangar', instance: INST, deliver: e => { got.push(e) } })
+    const r = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        to: 'bob', kind: 'chat', content: 'hello group',
+        to_filter: { instance: INST },
+      }),
+    })
+    expect(r.status).toBe(201)
+    expect(got).toHaveLength(1)
+    expect(got[0]!.meta['ephemeral']).toBe('1')
+    // the whole point: the receiver has something to echo back
+    expect(got[0]!.meta['correlation_id']).toBeTruthy()
+  })
+
+  it('the correlation_id is relay-generated, so a forged one cannot survive', async () => {
+    const got: Envelope[] = []
+    fanout.subscribe({ handle: 'bob', team_id: 'hangar', instance: INST, deliver: e => { got.push(e) } })
+    await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        to: 'bob', kind: 'chat', content: 'hi',
+        to_filter: { instance: INST },
+        meta: { correlation_id: 'FORGED' },
+      }),
+    })
+    expect(got[0]!.meta['correlation_id']).not.toBe('FORGED')
+  })
+})
