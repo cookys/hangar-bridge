@@ -19,11 +19,31 @@ export interface WorkingContext {
 export function detectWorkingContext(cwd: string = process.cwd()): WorkingContext {
   const ctx: WorkingContext = { cwd }
   try {
-    if (existsSync(join(cwd, '.git'))) {
+    // Ask git where the work tree starts rather than looking for .git in cwd:
+    // a session started in a subdirectory is still in the same project, and
+    // checking only cwd made it report the SUBDIRECTORY as its project name.
+    // Harmless while this was a display label; fatal once it is the address —
+    // two sessions in one repo would each name a different project and never
+    // reach each other.
+    let toplevel = ''
+    try {
+      toplevel = execSync('git rev-parse --show-toplevel', { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    } catch { /* not a work tree */ }
+    // A linked worktree marks itself with a .git FILE rather than a directory.
+    // Detect it from cwd too, so a checkout git cannot resolve (a stale gitdir
+    // pointer) is still reported as a worktree rather than as nothing at all.
+    if (!toplevel) {
+      try {
+        if (existsSync(join(cwd, '.git')) && statSync(join(cwd, '.git')).isFile()) {
+          ctx.worktree = basename(cwd)
+        }
+      } catch { /* best-effort */ }
+    }
+    if (toplevel) {
       // In a LINKED worktree `.git` is a file ("gitdir: ..."), not a directory.
       // That is the cheap, git-free discriminator; the name is the directory.
       try {
-        if (statSync(join(cwd, '.git')).isFile()) ctx.worktree = basename(cwd)
+        if (statSync(join(toplevel, '.git')).isFile()) ctx.worktree = basename(toplevel)
       } catch { /* best-effort */ }
       ctx.branch = execSync('git -C . rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf8' }).trim()
       // The remote alone is not enough: a local bare remote (`<project>/origin.git`)
@@ -34,10 +54,6 @@ export function detectWorkingContext(cwd: string = process.cwd()): WorkingContex
       try {
         remote = execSync('git -C . config --get remote.origin.url', { cwd, encoding: 'utf8' }).trim()
       } catch { /* no remote configured — toplevel still names the project */ }
-      let toplevel = ''
-      try {
-        toplevel = execSync('git -C . rev-parse --show-toplevel', { cwd, encoding: 'utf8' }).trim()
-      } catch { /* best-effort */ }
       ctx.repo = deriveRepoName({ remoteUrl: remote, toplevel, cwd })
     } else {
       ctx.repo = basename(cwd)

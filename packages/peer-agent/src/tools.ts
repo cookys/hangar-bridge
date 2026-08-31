@@ -20,8 +20,11 @@ const AddressSchema = z.union([
 
 const SubjectInput = z.string().regex(SUBJECT_REGEX).max(MAX_SUBJECT_LENGTH)
 const SendInput = z.object({
-  to: AddressSchema,
+  // Optional on purpose: omitting it addresses this session's own project,
+  // which is the common case and should be the cheap one.
+  to: AddressSchema.optional(),
   content: z.string(),
+  fleet_wide: z.boolean().optional(),
   subject: SubjectInput.optional(),
   in_reply_to: z.string().optional(),
   meta: z.record(z.string()).optional(),
@@ -63,11 +66,12 @@ const DispatchInput = z.object({
 export const TOOL_DESCRIPTORS = [
   {
     name: 'send_to_peer',
-    description: 'Send a message to a teammate (by handle) or the whole team (@team). When you are ANSWERING a task_dispatch, always carry meta.disposition (accepted | declined | counter_proposal | in_progress | completed) and preserve the correlation_id — declining or counter-proposing is a first-class answer, and a dispatch with no disposition at all is what the fleet reads as a lost session.',
+    description: 'Message other agent sessions. OMIT `to` to reach the sessions working on this same project — that is the default and it is almost always what you want. Give `to: "<handle>"` for every session on one host, or `to_filter: {instance}` for exactly one session (ids from list_peers). `fleet_wide: true` interrupts every session on every host and needs a reason: each one reads it, decides whether it is addressed, and usually answers, so one such message costs the fleet many times what it cost you to write — ask the user before sending one. When ANSWERING a task_dispatch, always carry meta.disposition (accepted | declined | counter_proposal | in_progress | completed) and preserve the correlation_id — declining or counter-proposing is a first-class answer, and a dispatch with no disposition at all is what the fleet reads as a lost session.',
     inputSchema: {
       type: 'object',
       properties: {
-        to: { type: 'string', description: 'handle like "alice" or the literal "@team"' },
+        to: { type: 'string', description: 'OPTIONAL. Omit to address this session\'s own project (the default). A handle like "alice" reaches every session on that host — note a handle is an inbox, not one agent.' },
+        fleet_wide: { type: 'boolean', description: 'Send to every session on every host. Interrupts the whole fleet; ask the user first. Cannot be combined with `to`.' },
         content: { type: 'string' },
         subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); publisher must own the namespace. Allowed on @team only for chat, where receivers are filtered by ownership + interest' },
         in_reply_to: { type: 'string', description: 'msg_id being replied to (optional)' },
@@ -77,7 +81,7 @@ export const TOOL_DESCRIPTORS = [
             instance: { type: 'string', description: 'deliver ONLY to this exact session instance id (from list_peers sessions[].instance)' },
             repo: { type: 'string', description: 'deliver to every online session whose presence repo == this (cross-handle; use with to:"@team" for a fleet-wide repo group)' },
           },
-          description: 'optional presence-backed narrowing of the audience to live sessions matching all set keys. Response reports matched count; matched:0 means nobody received it. Online-only + not durably stored — do NOT rely on it for a session that may be offline, and reply to it via meta.correlation_id (it has no in_reply_to-able row).',
+          description: 'Explicit audience narrowing, matched against live presence. The response reports how many sessions matched; matched:0 means nobody received it — re-run list_peers rather than assuming delivery. A project-scoped send (the default, or an explicit {repo}) IS stored durably, so an offline member receives it on reconnect and you can reply with in_reply_to. An {instance}-narrowed send is online-only and not stored: reply to that one via meta.correlation_id.',
         },
         meta: {
           type: 'object',
@@ -85,7 +89,7 @@ export const TOOL_DESCRIPTORS = [
           description: 'free-form string map. When replying to a task_dispatch, SET meta.disposition to one of "accepted", "declined", "counter_proposal", "in_progress" or "completed", and copy the dispatch\'s correlation_id into meta.correlation_id so the sender can match your answer to its task.',
         },
       },
-      required: ['to', 'content'],
+      required: ['content'],
     },
   },
   {
@@ -353,34 +357,67 @@ export function registerTools(
   async function callTool(name: string, args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
     if (name === 'send_to_peer') {
       const input = SendInput.parse(args)
+      if (input.fleet_wide === true && input.to !== undefined) {
+        throw new Error(
+          'fleet_wide and `to` are contradictory: fleet_wide means every session on every host. '
+          + 'Drop one — omit `to` for this project, name a handle for one host, or keep fleet_wide alone.',
+        )
+      }
+      // Resolve the default audience: this session's own project. Deriving it
+      // here (rather than letting the relay guess) keeps it identical to the
+      // string published in presence, which is what it will be matched against.
+      let resolved: { to: OutboundMessage['to']; to_filter?: { repo?: string | undefined; instance?: string | undefined } } = {
+        to: input.to as OutboundMessage['to'],
+      }
+      if (input.to === undefined && input.to_filter?.instance === undefined) {
+        if (input.fleet_wide === true) {
+          resolved = { to: TEAM_BROADCAST_HANDLE }
+        } else {
+          const repo = input.to_filter?.repo ?? (presence.auto_publish_repo ? detectWorkingContext().repo : undefined)
+          if (!repo) {
+            // Refuse rather than silently widening. Falling back to a fleet-wide
+            // send here would turn "I could not tell which project this is" into
+            // "interrupt everyone", which is the exact failure this default exists
+            // to remove. Falling back to nothing would be a silent non-delivery.
+            throw new Error(
+              'cannot address this session\'s project: no repo name is available '
+              + '(not a git work tree, or presence.auto_publish_repo is off). '
+              + 'Name a recipient with `to`, narrow with to_filter.instance, or pass fleet_wide:true.',
+            )
+          }
+          resolved = { to: TEAM_BROADCAST_HANDLE, to_filter: { ...(input.to_filter ?? {}), repo } }
+        }
+      }
+      if (resolved.to === undefined) resolved.to = input.to as OutboundMessage['to']
       if (
         replyLimiter
-        && typeof input.to === 'string'
-        && input.to !== TEAM_BROADCAST_HANDLE
-        && !replyLimiter.canReplyTo(input.to)
+        && typeof resolved.to === 'string'
+        && resolved.to !== TEAM_BROADCAST_HANDLE
+        && !replyLimiter.canReplyTo(resolved.to)
       ) {
         throw new Error(
-          `reply-storm limiter: too many replies to ${input.to} in the current window; ask the user before continuing`,
+          `reply-storm limiter: too many replies to ${resolved.to} in the current window; ask the user before continuing`,
         )
       }
       const payload: OutboundMessage = {
-        to: input.to,
+        to: resolved.to,
         subject: input.subject ?? null,
         kind: 'chat',
         content: input.content,
         meta: input.meta ?? {},
       }
       if (input.in_reply_to !== undefined) payload.in_reply_to = input.in_reply_to as MessageId
-      if (input.to_filter !== undefined) payload.to_filter = input.to_filter
+      const effectiveFilter = resolved.to_filter ?? input.to_filter
+      if (effectiveFilter !== undefined) payload.to_filter = effectiveFilter
       const env = await client.send(payload)
-      if (replyLimiter && typeof input.to === 'string' && input.to !== TEAM_BROADCAST_HANDLE) {
-        replyLimiter.recordOutbound(input.to)
+      if (replyLimiter && typeof resolved.to === 'string' && resolved.to !== TEAM_BROADCAST_HANDLE) {
+        replyLimiter.recordOutbound(resolved.to)
       }
       // For a to_filter (presence-narrowed) send, report how many live sessions it
       // reached. matched:0 means NOTHING received it (target session gone / repo
       // empty) — the caller should re-run list_peers for a fresh instance, not
       // assume delivery. A plain send has no `matched` field.
-      if (input.to_filter !== undefined) {
+      if (effectiveFilter !== undefined) {
         const matched = env.matched ?? 0
         const where = (env.matched_sessions ?? [])
           .map(s => s.instance ? `${s.handle}#${s.instance}` : s.handle).join(', ')

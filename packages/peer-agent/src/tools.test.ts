@@ -476,3 +476,78 @@ describe('registerTools — poll_inbox', () => {
     expect(text).not.toContain('leak-me')
   })
 })
+
+describe('send_to_peer — the default audience is this session\'s project', () => {
+  const mkClient = () => {
+    const send = vi.fn(async (payload: any) => ({
+      id: 'msg_01HRK7Y000000000000000000A', v: 2, team: 't1', from: 'a', to: payload.to,
+      in_reply_to: null, thread_root: null, kind: 'chat', content: payload.content, meta: {},
+      sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+      matched: 2, matched_sessions: [{ handle: 'bob' }, { handle: 'carol' }],
+    }))
+    return { send, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient & { send: typeof send }
+  }
+  const withRepo = { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: true }
+  const noRepo = { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false }
+
+  it('omitting `to` addresses the project, not the fleet', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, withRepo)
+    await callTool('send_to_peer', { content: 'anyone else on this?' })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload.to).toBe('@team')
+    // Derived from this checkout, and identical to what presence publishes —
+    // the two must agree or the message reaches nobody.
+    expect(payload.to_filter.repo).toBe('hangar-bridge')
+  })
+
+  it('refuses rather than widening when the project cannot be named', async () => {
+    // Falling back to a fleet-wide send would turn "I don't know which project
+    // this is" into "interrupt everyone" — the exact failure being removed.
+    const client = mkClient()
+    const { callTool } = registerTools(client, noRepo)
+    await expect(callTool('send_to_peer', { content: 'hi' })).rejects.toThrow(/cannot address this session's project/)
+    expect((client.send as any)).not.toHaveBeenCalled()
+  })
+
+  it('fleet_wide sends an unqualified broadcast', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, withRepo)
+    await callTool('send_to_peer', { content: 'relay restarting', fleet_wide: true })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload.to).toBe('@team')
+    expect(payload.to_filter).toBeUndefined()
+  })
+
+  it('rejects fleet_wide together with an explicit recipient', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, withRepo)
+    await expect(callTool('send_to_peer', { to: 'bob', content: 'hi', fleet_wide: true }))
+      .rejects.toThrow(/contradictory/)
+    expect((client.send as any)).not.toHaveBeenCalled()
+  })
+
+  it('an explicit handle still addresses that one host', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, withRepo)
+    await callTool('send_to_peer', { to: 'bob', content: 'hi' })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload.to).toBe('bob')
+    expect(payload.to_filter).toBeUndefined()
+  })
+
+  it('an instance-narrowed send is left exactly as given', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, withRepo)
+    await callTool('send_to_peer', { content: 'hi', to_filter: { instance: '01M10TM2TSHBDANZW4PKVC31MN' } })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload.to_filter).toEqual({ instance: '01M10TM2TSHBDANZW4PKVC31MN' })
+  })
+
+  it('reports the matched sessions so a silent non-delivery is visible', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, withRepo)
+    const r = await callTool('send_to_peer', { content: 'hi' })
+    expect((r.content[0] as any).text).toContain('2 session(s)')
+  })
+})
