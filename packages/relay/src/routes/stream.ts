@@ -53,6 +53,10 @@ export function streamRoute(deps: Deps) {
       // startup, which drops all SSE streams, so a live mid-stream ownership change
       // cannot occur — no per-delivery re-read / generation counter needed.
       const owned = loadOwnedSet(deps.db, team_id, handle)
+      // Presence label for THIS connection (same resolver POST /v1/presence writes
+      // with). Hoisted above `deliverable` so the to_filter{repo} check can read
+      // this session's live repo from the presence registry at delivery time.
+      const presenceLabel = effectiveLabel(c.get('token').label, instance)
 
       // The single per-recipient gate, applied to BOTH backlog and live, keyed on
       // the authenticated handle. null-subject ⇒ pass (back-compat). Ownership is
@@ -66,6 +70,16 @@ export function streamRoute(deps: Deps) {
           && instance !== undefined
           && e.meta['sender_instance'] === instance
         ) return false
+        // to_filter: presence-backed audience narrowing (v1 instance|repo). A
+        // filtered message reaches ONLY sessions matching every set key. instance
+        // is compared to this connection's instance; repo is read live from the
+        // registry (single SoT). A legacy connection (no instance) fails an
+        // instance filter fail-closed. All to_filter fields are AND-ed.
+        if (e.to_filter != null) {
+          if (e.to_filter.instance !== undefined && e.to_filter.instance !== instance) return false
+          if (e.to_filter.repo !== undefined
+            && deps.presence.repoOf(team_id, handle, presenceLabel) !== e.to_filter.repo) return false
+        }
         if (e.subject === null) return true
         if (!ownsNamespace(e.subject, owned)) return false
         if (interest.length > 0) return matchesInterest(e.subject, interest)
@@ -125,10 +139,9 @@ export function streamRoute(deps: Deps) {
         stream.writeSSE({ event: 'ping', data: String(Date.now()) }).catch(() => { /* client gone */ })
       }, PING_INTERVAL_MS)
 
-      // The SAME resolver POST /v1/presence uses to WRITE the row. Derived once,
-      // up front, so the acquire and the release can never disagree even if the
-      // request context changes underneath.
-      const presenceLabel = effectiveLabel(c.get('token').label, instance)
+      // presenceLabel derived above (hoisted for the to_filter{repo} gate). The SAME
+      // resolver POST /v1/presence uses to WRITE the row, so acquire and release can
+      // never disagree.
       connections.acquire(team_id, handle, presenceLabel)
 
       // This connection has TWO cleanup paths — the abort listener below and the

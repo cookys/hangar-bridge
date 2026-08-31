@@ -5,8 +5,63 @@ import {
   PROTOCOL_VERSION, TEAM_BROADCAST_HANDLE,
   SUBJECT_REGEX, MAX_SUBJECT_LENGTH
 } from './constants.ts'
+import { isValidInstanceId } from './ulid.ts'
 
 export const SubjectSchema = z.string().regex(SUBJECT_REGEX).max(MAX_SUBJECT_LENGTH)
+
+// A presence-backed audience narrowing (v1: single session by instance, or all
+// sessions in a repo). It only ever SHRINKS the `to` audience (monotonic
+// narrowing → never widens authority). v1 opens exactly `instance` + `repo`;
+// `cwd`/`branch` are deliberately deferred (host-specific / mutable footguns).
+// `.strict()` rejects unknown keys; the refine rejects an empty selector so a
+// no-op `{}` cannot silently mean "everyone".
+export const ToFilterSchema = z.object({
+  instance: z.string().refine(isValidInstanceId, 'must be a valid instance id').optional(),
+  repo: z.string().min(1).max(200).regex(/^[A-Za-z0-9._/-]+$/, 'invalid repo').optional(),
+}).strict().refine(
+  f => f.instance !== undefined || f.repo !== undefined,
+  { message: 'to_filter must set at least one of instance, repo' }
+)
+export type ToFilter = z.infer<typeof ToFilterSchema>
+
+// Shared invariants for `to_filter` on both the stored envelope and the outbound
+// message, so the relay and clients reject the same shapes. Kept as a helper to
+// avoid the two schemas drifting.
+function refineToFilter(
+  e: { to: string; kind: string; subject?: string | null | undefined; to_filter?: ToFilter | null | undefined },
+  ctx: z.RefinementCtx
+): void {
+  if (e.to_filter == null) return
+  // Mutually exclusive with subject: subject is durable/ACL/redelivered, to_filter
+  // is ephemeral/presence/online-only — mixing collides their delivery contracts.
+  if (e.subject != null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to_filter'],
+      message: 'to_filter and subject are mutually exclusive' })
+  }
+  // Kind whitelist: only chat and task_dispatch may carry to_filter.
+  if (e.kind !== 'chat' && e.kind !== 'task_dispatch') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to_filter'],
+      message: `to_filter is not allowed on kind '${e.kind}' (only chat, task_dispatch)` })
+  }
+  // A command must reach exactly one owner: task_dispatch may only narrow by a
+  // single instance (repo could match >1 session → one command, many results on
+  // one correlation_id). Mirrors the "commands are direct DMs" rule (R1).
+  if (e.kind === 'task_dispatch') {
+    if (e.to === TEAM_BROADCAST_HANDLE) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to_filter'],
+        message: 'task_dispatch with to_filter must target a concrete handle, not @team' })
+    }
+    if (e.to_filter.repo !== undefined || e.to_filter.instance === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to_filter'],
+        message: 'task_dispatch with to_filter may only narrow by instance (not repo)' })
+    }
+  }
+  // @team + to_filter is a fan-out narrowing → only chat (mirrors subjected-@team).
+  if (e.to === TEAM_BROADCAST_HANDLE && e.kind !== 'chat') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to_filter'],
+      message: 'to_filter on @team is allowed only for chat' })
+  }
+}
 
 export const AddressSchema = z.union([
   z.string().regex(HANDLE_REGEX, 'handle'),
@@ -45,9 +100,13 @@ export const EnvelopeSchema = z.object({
   kind: KindSchema,
   content: ContentSchema,
   meta: MetaSchema,
+  // Presence-backed audience narrowing (v1: instance | repo). Nullable + default(null)
+  // so legacy rows / pre-to_filter constructors parse to null (= no narrowing).
+  to_filter: ToFilterSchema.nullable().default(null),
   sent_at: z.string().datetime(),
   delivered_at: z.string().datetime().nullable()
 }).superRefine((e, ctx) => {
+  refineToFilter(e, ctx)
   if (e.kind === 'permission_verdict' && e.in_reply_to === null) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -100,8 +159,10 @@ export const OutboundMessageSchema = z.object({
   kind: KindSchema,
   content: ContentSchema,
   meta: MetaSchema.optional(),
-  in_reply_to: MessageIdSchema.nullable().optional()
+  in_reply_to: MessageIdSchema.nullable().optional(),
+  to_filter: ToFilterSchema.nullable().optional()
 }).strict().superRefine((e, ctx) => {
+  refineToFilter(e, ctx)
   // Same @team-subject + ack-channel invariants as EnvelopeSchema, with nullish
   // guards (B2): outbound subject is optional, so `!= null` would misfire on
   // every omitted-subject send (acks, null-subject @team broadcasts) → 400.
@@ -135,6 +196,7 @@ export interface EnvelopeRow {
   kind: Envelope['kind']
   content: string
   meta_json: string
+  to_filter_json: string | null
   sent_at: string
   delivered_at: string | null
 }
@@ -146,6 +208,7 @@ export function envelopeToRow(e: Envelope): EnvelopeRow {
     in_reply_to: e.in_reply_to, thread_root: e.thread_root,
     kind: e.kind, content: e.content,
     meta_json: JSON.stringify(e.meta),
+    to_filter_json: e.to_filter == null ? null : JSON.stringify(e.to_filter),
     sent_at: e.sent_at, delivered_at: e.delivered_at
   }
 }
@@ -157,6 +220,7 @@ export function envelopeFromRow(row: EnvelopeRow): Envelope {
     in_reply_to: row.in_reply_to, thread_root: row.thread_root,
     kind: row.kind, content: row.content,
     meta: JSON.parse(row.meta_json) as Record<string, string>,
+    to_filter: row.to_filter_json == null ? null : JSON.parse(row.to_filter_json) as ToFilter,
     sent_at: row.sent_at, delivered_at: row.delivered_at
   })
 }

@@ -18,6 +18,7 @@ export function openDatabase(path: string): Db {
   migrateV4ToV5(db)
   migrateV5ToV6(db)
   migrateV6ToV7(db)
+  migrateV7ToV8(db)
   return db
 }
 
@@ -26,6 +27,20 @@ export function openDatabase(path: string): Db {
  * directly from body meta, so scrub them before any v7 stream can apply
  * self-exclusion. The migration is transactional and idempotent.
  */
+/**
+ * Adds `message.to_filter_json` (presence-backed audience narrowing {instance?,repo?},
+ * nullable). ALTER TABLE ADD COLUMN guarded by pragma table_info (mirrors migrateV4ToV5) —
+ * CREATE IF NOT EXISTS never adds a column to an existing table. No index: to_filter is
+ * evaluated at delivery time against live presence, never queried from the row.
+ */
+function migrateV7ToV8(db: Db): void {
+  const msgCols = db.pragma('table_info(message)') as Array<{ name: string }>
+  if (!msgCols.some(c => c.name === 'to_filter_json')) {
+    db.exec('ALTER TABLE message ADD COLUMN to_filter_json TEXT')
+  }
+  db.exec('INSERT OR IGNORE INTO schema_version(version) VALUES (8)')
+}
+
 function migrateV6ToV7(db: Db): void {
   const done = db.prepare('SELECT 1 AS x FROM schema_version WHERE version=7').get()
   if (done) return

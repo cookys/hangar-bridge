@@ -63,7 +63,7 @@ describe('Fanout self-delivery', () => {
       deliver: e => got.push(e.id),
     })
     const e = env({ from: 'alice', to: 'bob', meta: { sender_instance: 'inst-A' } })
-    expect(fanout.deliverDetailed(e)).toEqual({ delivered: true, selfExcluded: false })
+    expect(fanout.deliverDetailed(e)).toEqual({ delivered: true, selfExcluded: false, matched: [{ handle: 'bob', instance: 'inst-A' }] })
     expect(got).toEqual([e.id])
   })
 
@@ -98,10 +98,10 @@ describe('Fanout self-delivery', () => {
     const mine: Envelope[] = []
     f.subscribe(sub('cuda', mine, 'inst-A'))
     const e = env({ from: 'cuda', to: 'cuda', meta: { sender_instance: 'inst-A' } })
-    expect(f.deliverDetailed(e)).toEqual({ delivered: false, selfExcluded: true })
+    expect(f.deliverDetailed(e)).toEqual({ delivered: false, selfExcluded: true, matched: [] })
     // and a genuinely absent recipient is NOT self-exclusion
     expect(f.deliverDetailed(env({ from: 'cuda', to: 'nobody' })))
-      .toEqual({ delivered: false, selfExcluded: false })
+      .toEqual({ delivered: false, selfExcluded: false, matched: [] })
   })
 
   it('@team behaviour is unchanged — sender excluded, everyone else served', () => {

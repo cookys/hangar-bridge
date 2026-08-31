@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS message (
   meta_json TEXT NOT NULL DEFAULT '{}',
   sent_at TEXT NOT NULL,
   delivered_at TEXT,
-  subject TEXT               -- dotted routing key, NULL = legacy fan-out (v5)
+  subject TEXT,              -- dotted routing key, NULL = legacy fan-out (v5)
+  to_filter_json TEXT        -- presence-backed audience narrowing {instance?,repo?}, NULL = none (v8)
 );
 CREATE INDEX IF NOT EXISTS idx_message_team_id ON message(team_id, id);
 CREATE INDEX IF NOT EXISTS idx_message_to_handle ON message(team_id, to_handle, id);

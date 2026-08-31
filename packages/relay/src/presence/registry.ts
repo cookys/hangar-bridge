@@ -131,6 +131,17 @@ export class PresenceRegistry {
     if (byLabel.size === 0) this.state.get(team)?.delete(handle)
   }
 
+  /**
+   * The `repo` last published by one exact session (by presence label). Used by
+   * the stream deliverable gate to evaluate `to_filter.repo` at delivery time
+   * against the live registry (single SoT), so a mid-life repo change takes
+   * effect on the next delivery. Absent session / no repo published ⇒ undefined
+   * (fail-closed: a repo filter won't match a session whose repo is unknown).
+   */
+  repoOf(team: string, handle: string, label: string): string | undefined {
+    return this.state.get(team)?.get(handle)?.get(label)?.repo
+  }
+
   get(team: string, handle: string): PresenceSnapshot | undefined {
     const byLabel = this.state.get(team)?.get(handle)
     if (!byLabel || byLabel.size === 0) return undefined

@@ -14,6 +14,7 @@ const validChatEnvelope = (): Envelope => ({
   in_reply_to: null, thread_root: null,
   kind: 'chat', content: 'hello',
   meta: { repo: 'claudes-talking' },
+  to_filter: null,
   sent_at: '2026-04-17T23:01:12.345Z', delivered_at: null
 })
 
@@ -130,6 +131,7 @@ describe('row <-> envelope conversion', () => {
       subject: fc.constant(null),
       in_reply_to: fc.constant(null),
       thread_root: fc.constant(null),
+      to_filter: fc.constant(null),
       kind: fc.constantFrom('chat', 'presence_update', 'task_dispatch'),
       content: fc.string({ maxLength: 1024 }),
       meta: fc.dictionary(
@@ -216,5 +218,65 @@ describe('OutboundMessageSchema subject', () => {
     expect(() => OutboundMessageSchema.parse({
       to: 'bob', kind: 'chat', content: 'x', subject: 'mple2.x', in_reply_to: 'msg_01HRK7Y0000000000000000001'
     })).toThrow(/subject=null/)
+  })
+})
+
+describe('to_filter (presence-narrowed addressing)', () => {
+  const base = { to: 'bob', kind: 'chat' as const, content: 'x' }
+
+  it('accepts a valid instance-only filter', () => {
+    const m = OutboundMessageSchema.parse({ ...base, to_filter: { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' } })
+    expect(m.to_filter).toEqual({ instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' })
+  })
+  it('accepts a valid repo-only filter', () => {
+    expect(OutboundMessageSchema.parse({ ...base, to_filter: { repo: 'llm-playground' } })).toBeDefined()
+  })
+  it('rejects an empty filter object (no-op = would mean everyone)', () => {
+    expect(() => OutboundMessageSchema.parse({ ...base, to_filter: {} })).toThrow()
+  })
+  it('rejects an unknown filter key', () => {
+    expect(() => OutboundMessageSchema.parse({ ...base, to_filter: { cwd: '/x' } })).toThrow()
+  })
+  it('rejects a malformed instance id', () => {
+    expect(() => OutboundMessageSchema.parse({ ...base, to_filter: { instance: 'not-a-ulid' } })).toThrow()
+  })
+  it('rejects subject + to_filter together (mutually exclusive)', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', subject: 'mple2.x', to_filter: { repo: 'r' },
+    })).toThrow()
+  })
+  it('rejects to_filter on a non-chat/dispatch kind (permission_request)', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'permission_request', content: 'x', to_filter: { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' },
+    })).toThrow()
+  })
+  it('accepts task_dispatch narrowed by a single instance', () => {
+    expect(OutboundMessageSchema.parse({
+      to: 'bob', kind: 'task_dispatch', content: 'x', to_filter: { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' },
+    })).toBeDefined()
+  })
+  it('rejects task_dispatch narrowed by repo (a command could hit >1 session)', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'task_dispatch', content: 'x', to_filter: { repo: 'llm-playground' },
+    })).toThrow()
+  })
+  it('rejects task_dispatch + to_filter to @team (must be a concrete handle)', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: '@team', kind: 'task_dispatch', content: 'x', to_filter: { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' },
+    })).toThrow()
+  })
+  it('accepts @team + to_filter for chat (repo group broadcast)', () => {
+    expect(OutboundMessageSchema.parse({
+      to: '@team', kind: 'chat', content: 'x', to_filter: { repo: 'llm-playground' },
+    })).toBeDefined()
+  })
+  it('round-trips a to_filter envelope through the DB row shape', () => {
+    const e = EnvelopeSchema.parse({
+      id: 'msg_01HRK7Y0000000000000000000', v: PROTOCOL_VERSION, team: 't', from: 'a', to: 'bob',
+      subject: null, in_reply_to: null, thread_root: null, kind: 'task_dispatch', content: 'hi',
+      meta: {}, to_filter: { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' },
+      sent_at: '2026-04-17T23:01:12.345Z', delivered_at: null,
+    })
+    expect(envelopeFromRow(envelopeToRow(e))).toEqual(e)
   })
 })

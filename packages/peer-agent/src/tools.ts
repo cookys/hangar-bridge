@@ -4,7 +4,7 @@ import {
   HANDLE_REGEX, TEAM_BROADCAST_HANDLE, SUBJECT_REGEX, MAX_SUBJECT_LENGTH,
   CLAIM_KEY_REGEX, MAX_CLAIM_KEY_LENGTH, MAX_CLAIM_NOTE_LENGTH,
   CLAIM_TTL_MIN_SECONDS, CLAIM_TTL_MAX_SECONDS, CLAIM_DEFAULT_TTL_SECONDS,
-  escapeChannelBody, escapeChannelAttr,
+  escapeChannelBody, escapeChannelAttr, ToFilterSchema,
   type OutboundMessage, type MessageId, type Envelope,
 } from '@hangar-bridge/shared'
 import type { ClaimClient, InboxClient, PeerTransport } from './outbound.ts'
@@ -25,6 +25,7 @@ const SendInput = z.object({
   subject: SubjectInput.optional(),
   in_reply_to: z.string().optional(),
   meta: z.record(z.string()).optional(),
+  to_filter: ToFilterSchema.optional(),
 })
 const ListInput = z.object({}).strict()
 const SummaryInput = z.object({ summary: z.string().max(200) })
@@ -70,6 +71,14 @@ export const TOOL_DESCRIPTORS = [
         content: { type: 'string' },
         subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); publisher must own the namespace. Allowed on @team only for chat, where receivers are filtered by ownership + interest' },
         in_reply_to: { type: 'string', description: 'msg_id being replied to (optional)' },
+        to_filter: {
+          type: 'object',
+          properties: {
+            instance: { type: 'string', description: 'deliver ONLY to this exact session instance id (from list_peers sessions[].instance)' },
+            repo: { type: 'string', description: 'deliver to every online session whose presence repo == this (cross-handle; use with to:"@team" for a fleet-wide repo group)' },
+          },
+          description: 'optional presence-backed narrowing of the audience to live sessions matching all set keys. Response reports matched count; matched:0 means nobody received it. Online-only + not durably stored — do NOT rely on it for a session that may be offline, and reply to it via meta.correlation_id (it has no in_reply_to-able row).',
+        },
         meta: {
           type: 'object',
           additionalProperties: { type: 'string' },
@@ -362,9 +371,23 @@ export function registerTools(
         meta: input.meta ?? {},
       }
       if (input.in_reply_to !== undefined) payload.in_reply_to = input.in_reply_to as MessageId
+      if (input.to_filter !== undefined) payload.to_filter = input.to_filter
       const env = await client.send(payload)
       if (replyLimiter && typeof input.to === 'string' && input.to !== TEAM_BROADCAST_HANDLE) {
         replyLimiter.recordOutbound(input.to)
+      }
+      // For a to_filter (presence-narrowed) send, report how many live sessions it
+      // reached. matched:0 means NOTHING received it (target session gone / repo
+      // empty) — the caller should re-run list_peers for a fresh instance, not
+      // assume delivery. A plain send has no `matched` field.
+      if (input.to_filter !== undefined) {
+        const matched = env.matched ?? 0
+        const where = (env.matched_sessions ?? [])
+          .map(s => s.instance ? `${s.handle}#${s.instance}` : s.handle).join(', ')
+        const tail = matched === 0
+          ? ' — NO live session matched the filter; nothing was delivered (re-run list_peers for a current instance)'
+          : ` to ${matched} session(s): ${where}`
+        return { content: [{ type: 'text', text: `sent ${env.id}${tail}` }] }
       }
       return { content: [{ type: 'text', text: `sent ${env.id}` }] }
     }

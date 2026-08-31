@@ -1,6 +1,18 @@
 import { ulid } from 'ulid'
 import type { Envelope, OutboundMessage } from '@hangar-bridge/shared'
 
+/**
+ * A send response. Extends Envelope with the optional to_filter routing outcome:
+ * `matched` (how many live sessions the presence-narrowed message reached) and
+ * `matched_sessions` (which). Optional so a plain Envelope (e.g. the NATS
+ * transport, or a non-to_filter send) remains a valid SendResult unchanged (B5).
+ */
+export type SendResult = Envelope & {
+  matched?: number
+  matched_sessions?: Array<{ handle: string; instance?: string }>
+  note?: string
+}
+
 export interface RelayClientOpts {
   /**
    * Per-process instance id (P4'a). Sent as x-hangar-instance on publish so the
@@ -38,7 +50,7 @@ export interface PeerTransport {
     teamTaskFanout: boolean
     teamPermissionFanout: boolean
   }
-  send(msg: OutboundMessage, opts?: { idempotency_key?: string }): Promise<Envelope>
+  send(msg: OutboundMessage, opts?: { idempotency_key?: string }): Promise<SendResult>
   listPeers(): Promise<PeerSummary[]>
   setPresence(body: PresenceReport): Promise<void>
   start(): Promise<void>
@@ -106,7 +118,7 @@ export class RelayClient implements PeerTransport, ClaimClient, InboxClient {
     })
   }
 
-  async send(msg: OutboundMessage, opts: { idempotency_key?: string } = {}): Promise<Envelope> {
+  async send(msg: OutboundMessage, opts: { idempotency_key?: string } = {}): Promise<SendResult> {
     const idempotencyKey = (opts.idempotency_key ?? ulid()).toLowerCase()
     const res = await this.request(new URL('/v1/messages', this.opts.relayUrl), {
       method: 'POST',
@@ -123,7 +135,7 @@ export class RelayClient implements PeerTransport, ClaimClient, InboxClient {
     })
     const text = await res.text()
     if (res.status !== 201) throw new Error(`send failed: ${res.status} ${text}`)
-    return JSON.parse(text) as Envelope
+    return JSON.parse(text) as SendResult
   }
 
   async listPeers(): Promise<PeerSummary[]> {

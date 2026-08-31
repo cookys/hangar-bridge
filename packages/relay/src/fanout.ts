@@ -6,10 +6,13 @@ export interface Subscriber {
   team_id: string
   /**
    * Relay-authoritative per-process instance for this SSE connection (from the
-   * x-hangar-instance header). Used ONLY to exclude the sender from its own
-   * direct message — it grants nobody the ability to ADDRESS an instance.
-   * Positive `to_instance` routing stays with the NATS session-addressing
-   * design (plan P4'b boundary marker). Absent on legacy clients.
+   * x-hangar-instance header). Used to exclude the sender from its own direct
+   * message, and — via the stream route's `accept` gate — to honour a
+   * `to_filter.instance` narrowing WITHIN an already-authorized audience. It is
+   * still never an authorization principal: narrowing only shrinks the set a
+   * handle's bearer already reaches (sibling processes under one bearer are
+   * mutually trusted), so instance-addressing crosses no trust boundary. Absent
+   * on legacy clients (which therefore fail an instance filter fail-closed).
    */
   instance?: string | undefined
   // Per-subscriber gate (ownership + interest), set by the stream route from the
@@ -17,6 +20,11 @@ export interface Subscriber {
   // envelope is NOT delivered to this subscriber. Absent ⇒ accept all (back-compat).
   accept?: (e: Envelope) => boolean
   deliver: (e: Envelope) => void
+}
+
+export interface MatchedSub {
+  handle: string
+  instance?: string | undefined
 }
 
 export class Fanout {
@@ -52,20 +60,6 @@ export class Fanout {
    * publish route to decide delivered-tracking for null-subject messages.
    */
   deliver(e: Envelope): boolean {
-    const byHandle = this.subs.get(e.team)
-    if (!byHandle) return false
-    let delivered = false
-    if (e.to === TEAM_BROADCAST_HANDLE) {
-      for (const [handle, set] of byHandle) {
-        if (handle === e.from) continue
-        for (const sub of set) {
-          if (sub.accept && !sub.accept(e)) continue
-          sub.deliver(e)
-          delivered = true
-        }
-      }
-      return delivered
-    }
     return this.deliverDetailed(e).delivered
   }
 
@@ -84,26 +78,39 @@ export class Fanout {
    * must count as delivered, or a later cold start on this handle drains the
    * sender its own old message back.
    */
-  deliverDetailed(e: Envelope): { delivered: boolean; selfExcluded: boolean } {
+  deliverDetailed(e: Envelope): { delivered: boolean; selfExcluded: boolean; matched: MatchedSub[] } {
     const byHandle = this.subs.get(e.team)
-    if (!byHandle) return { delivered: false, selfExcluded: false }
-    if (e.to === TEAM_BROADCAST_HANDLE) return { delivered: this.deliver(e), selfExcluded: false }
-    const set = byHandle.get(e.to)
-    if (!set) return { delivered: false, selfExcluded: false }
+    const matched: MatchedSub[] = []
+    if (!byHandle) return { delivered: false, selfExcluded: false, matched }
     const senderInstance = e.meta['sender_instance']
-    let delivered = false
     let selfExcluded = false
-    for (const sub of set) {
-      // Legacy (either side lacks an instance) keeps exactly the old behaviour.
-      if (e.from === e.to && senderInstance !== undefined && sub.instance === senderInstance) {
-        selfExcluded = true
-        continue
+    // ONE collection path for @team and direct (unified so @team can also report a
+    // matched count for to_filter{repo}). Per-subscriber `accept` carries BOTH the
+    // subject-ownership gate AND the to_filter presence match (set by the stream
+    // route, which has the presence registry); fanout stays presence-agnostic.
+    const deliverToSet = (handle: string, set: Set<Subscriber>): void => {
+      for (const sub of set) {
+        // Per-instance self-exclusion (direct only; @team already skips e.from's
+        // whole handle). Legacy (either side lacks an instance) keeps old behaviour.
+        if (e.from === e.to && senderInstance !== undefined && sub.instance === senderInstance) {
+          selfExcluded = true
+          continue
+        }
+        if (sub.accept && !sub.accept(e)) continue
+        sub.deliver(e)
+        matched.push({ handle, instance: sub.instance })
       }
-      if (sub.accept && !sub.accept(e)) continue
-      sub.deliver(e)
-      delivered = true
     }
-    return { delivered, selfExcluded }
+    if (e.to === TEAM_BROADCAST_HANDLE) {
+      for (const [handle, set] of byHandle) {
+        if (handle === e.from) continue
+        deliverToSet(handle, set)
+      }
+    } else {
+      const set = byHandle.get(e.to)
+      if (set) deliverToSet(e.to, set)
+    }
+    return { delivered: matched.length > 0, selfExcluded, matched }
   }
 
   onlineHandles(team_id: string): string[] {

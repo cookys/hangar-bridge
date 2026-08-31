@@ -104,6 +104,12 @@ export function messagesRoute(deps: Deps) {
     delete meta['session_id']
     delete meta['sender_instance']
     delete meta['attribution_status']
+    // `ephemeral` is a relay-only signal (directed-chat: "not persisted, reply via
+    // correlation_id"). Strip any sender-supplied one so it cannot be forged; the
+    // relay re-stamps it below for directed chat. Handled like instance (delete +
+    // relay-set), NOT reserved — reserved keys are dropped from notifications, but
+    // this one must reach the receiver.
+    delete meta['ephemeral']
     if (stampedInstance.instance !== undefined) {
       meta['instance'] = stampedInstance.instance
       // fanout reads this to exclude the sending process (never to address one).
@@ -130,7 +136,7 @@ export function messagesRoute(deps: Deps) {
       }
       const ownedPub = loadOwnedSet(deps.db, HANGAR_TEAM_ID, peer.handle)
       if (!ownsNamespace(data.subject, ownedPub)) {
-        auditSubjectDenied(deps, peer.id, 'subject.publish_denied', { subject: data.subject, handle: peer.handle })
+        auditEvent(deps, peer.id, 'subject.publish_denied', { subject: data.subject, handle: peer.handle })
         return c.json({ error: 'forbidden_subject' }, 403)
       }
       // Recipient-ownership applies only to a DIRECT subjected message (one concrete
@@ -142,10 +148,65 @@ export function messagesRoute(deps: Deps) {
       if (data.to !== TEAM_BROADCAST_HANDLE) {
         const ownedRcpt = loadOwnedSet(deps.db, HANGAR_TEAM_ID, data.to as string)
         if (!ownsNamespace(data.subject, ownedRcpt)) {
-          auditSubjectDenied(deps, peer.id, 'subject.recipient_denied', { subject: data.subject, to: data.to as string })
+          auditEvent(deps, peer.id, 'subject.recipient_denied', { subject: data.subject, to: data.to as string })
           return c.json({ error: 'recipient_not_owner' }, 409)
         }
       }
+    }
+
+    // ── to_filter routing (presence-narrowed, online-only) ──────────────────
+    // Filtered delivery is relay-side: the stream `deliverable` gate lets ONLY
+    // matching sessions receive it (non-matching connections get no event). By
+    // kind: directed CHAT is never persisted (isolation — a stored row is
+    // poll_inbox-visible to same-handle siblings; also matches online-only); a
+    // directed task_dispatch{instance} persists ONLY when delivered (reply/
+    // task_result chain), and matched=0 leaves NO row (no zombie redelivery /
+    // double-exec). Response carries matched count + hit list.
+    if (data.to_filter != null) {
+      if (data.kind === 'chat') {
+        // Tell the receiver this message has no durable row → reply via
+        // meta.correlation_id, not in_reply_to (which would 400 on unknown parent).
+        ;(data.meta ??= {} as Record<string, string>)['ephemeral'] = '1'
+      }
+      // Self-target: narrowing to one's own instance can only self-exclude → 0.
+      // Report it explicitly instead of a silent matched:0 (§2.7c).
+      const selfTargeted = data.to_filter.instance !== undefined
+        && data.to === peer.handle
+        && data.to_filter.instance === stampedInstance.instance
+      let built: Envelope
+      try {
+        built = deps.store.buildEnvelope(HANGAR_TEAM_ID, peer.handle, data)
+      } catch (err) {
+        return c.json({ error: 'invalid_message', message: err instanceof Error ? err.message : '' }, 400)
+      }
+      const { matched } = deps.fanout.deliverDetailed(built)
+      let deliveredAt: string | null = null
+      if (matched.length > 0) {
+        deliveredAt = deps.now().toISOString()
+        // Only task_dispatch is persisted (with delivered_at stamped so it never
+        // becomes a pending row); chat is delivered live and never stored.
+        if (built.kind === 'task_dispatch') deps.store.persist(built, deliveredAt)
+      }
+      auditEvent(deps, peer.id, 'message.to_filter_routed', {
+        kind: built.kind,
+        to: built.to,
+        matched: String(matched.length),
+        persisted: String(built.kind === 'task_dispatch' && matched.length > 0),
+      })
+      const responseJson = JSON.stringify({
+        ...built,
+        delivered_at: deliveredAt,
+        matched: matched.length,
+        matched_sessions: matched,
+        ...(selfTargeted ? { note: 'self_target: to_filter.instance is your own session' } : {}),
+      })
+      if (idemKey) {
+        deps.db.prepare(`
+          INSERT OR IGNORE INTO idempotency_key(key_hash, token_id, response_json, created_at)
+          VALUES (?, ?, ?, ?)
+        `).run(hashToken(`${tokenId}:${idemKey}`), tokenId, responseJson, deps.now().toISOString())
+      }
+      return c.body(responseJson, 201, { 'content-type': 'application/json' })
     }
 
     // Layer 2 (sender-stamp anti-spoof): `from` is the bearer-authenticated
@@ -194,7 +255,7 @@ export function messagesRoute(deps: Deps) {
 }
 
 /** Record a subject-ACL denial (not silent — the authoritative denial trail). */
-function auditSubjectDenied(
+function auditEvent(
   deps: Deps, actorHumanId: string, event: string, detail: Record<string, string>
 ): void {
   deps.db.prepare(

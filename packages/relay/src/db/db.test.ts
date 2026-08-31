@@ -10,7 +10,7 @@ describe('openDatabase', () => {
   beforeEach(() => { db = openDatabase(':memory:') })
 
   it('applies schema and reports latest version', () => {
-    expect(getSchemaVersion(db)).toBe(7)
+    expect(getSchemaVersion(db)).toBe(8)
   })
 
   it('human table has last_active_at column (v2)', () => {
@@ -110,7 +110,7 @@ describe('migrateV3ToV4 (rebuild path)', () => {
 
   it('rebuilds message table to accept new kinds and preserves existing rows', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(7)
+    expect(getSchemaVersion(upgraded)).toBe(8)
     const legacy = upgraded.prepare("SELECT content FROM message WHERE id='msg_legacy_chat'").get() as { content: string } | undefined
     expect(legacy?.content).toBe('pre-migration')
     expect(() =>
@@ -124,9 +124,9 @@ describe('migrateV3ToV4 (rebuild path)', () => {
   it('is idempotent: second open does not rebuild again', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(7)
+    expect(getSchemaVersion(second)).toBe(8)
     const versions = second.prepare("SELECT version FROM schema_version ORDER BY version").all() as Array<{ version: number }>
-    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7])
+    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
     second.close()
   })
 })
@@ -159,7 +159,7 @@ describe('migrateV5ToV6 (claim table)', () => {
 
   it('adds the claim table to an existing v5 DB and records version 6', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(7)
+    expect(getSchemaVersion(upgraded)).toBe(8)
     const has = upgraded.prepare(
       "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='claim'"
     ).get()
@@ -176,7 +176,7 @@ describe('migrateV5ToV6 (claim table)', () => {
   it('is idempotent: re-open keeps version 6 and one claim table', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(7)
+    expect(getSchemaVersion(second)).toBe(8)
     second.close()
   })
 })
@@ -218,7 +218,7 @@ describe('migrateV6ToV7 (legacy attribution scrub)', () => {
 
   it('removes newly reserved routing meta before recording v7', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(7)
+    expect(getSchemaVersion(upgraded)).toBe(8)
     const row = upgraded.prepare(
       "SELECT meta_json FROM message WHERE id='msg_legacy_attribution'"
     ).get() as { meta_json: string }
