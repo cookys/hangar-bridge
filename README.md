@@ -253,6 +253,20 @@ claude --dangerously-load-development-channels server:hangar-bridge-peers
 >
 > If inbound is silent while outbound works, grep for that line first.
 
+**A silently deaf session has more than one cause, and they look identical from
+outside** — inbound entirely gone, everything else healthy, nothing logged as an error.
+Check all three before concluding the relay is at fault:
+
+| # | Cause | Check |
+|---|---|---|
+| 1 | `server:` name ≠ the `mcpServers` key (this repo has three install paths writing three different keys — see the table above) | compare the launch argv against `~/.claude.json` |
+| 2 | Several channels passed as `server:a,server:b` or `"server:a server:b"` — Claude does **not** split a flag value, so the whole string is read as one channel name. **Repeat the flag instead**, once per channel | count the `--dangerously-load-development-channels` occurrences in the argv |
+| 3 | The server never declared the `claude/channel` capability | `list_peers` → this session's `delivery_state` |
+
+`delivery_state` on the presence row is the fleet-visible answer for all three: `verified`
+means the startup self-check passed, `deaf` means it did not. Never infer a healthy link
+from the absence of errors — *this failure mode is defined by having no error to see.*
+
 If you started a session with the wrong key (or no flag at all), you do not lose the conversation:
 re-launch with the correct flag plus `--resume <name>` to continue the same session with channel
 notifications enabled.
