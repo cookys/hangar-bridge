@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { deriveRepoName } from '@hangar-bridge/shared'
 
 export interface WorkingContext {
   cwd?: string
@@ -25,8 +26,19 @@ export function detectWorkingContext(cwd: string = process.cwd()): WorkingContex
         if (statSync(join(cwd, '.git')).isFile()) ctx.worktree = basename(cwd)
       } catch { /* best-effort */ }
       ctx.branch = execSync('git -C . rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf8' }).trim()
-      const remote = execSync('git -C . config --get remote.origin.url', { cwd, encoding: 'utf8' }).trim()
-      ctx.repo = remote.replace(/\.git$/, '').split(/[:/]/).slice(-1)[0] || basename(cwd)
+      // The remote alone is not enough: a local bare remote (`<project>/origin.git`)
+      // makes every such host report the same name, so unrelated projects collapse
+      // into one routing group. deriveRepoName is shared so a sender and the
+      // presence record it is matched against compute the identical string.
+      let remote = ''
+      try {
+        remote = execSync('git -C . config --get remote.origin.url', { cwd, encoding: 'utf8' }).trim()
+      } catch { /* no remote configured — toplevel still names the project */ }
+      let toplevel = ''
+      try {
+        toplevel = execSync('git -C . rev-parse --show-toplevel', { cwd, encoding: 'utf8' }).trim()
+      } catch { /* best-effort */ }
+      ctx.repo = deriveRepoName({ remoteUrl: remote, toplevel, cwd })
     } else {
       ctx.repo = basename(cwd)
     }
