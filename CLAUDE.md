@@ -124,6 +124,21 @@ git ls-remote origin master | cut -c1-7       # where it actually is, writes not
 The second and third disagreeing is the whole finding. A verification method with side
 effects is a different tool from a read-only one whenever a checkout is shared.
 
+**Integrating on a shared checkout.** Several sessions on this box work out of one
+worktree, and git's non-fast-forward rule protects pushes, not working trees — a sibling's
+ordinary `pull` silently invalidated another session's freshly-stated understanding of the
+repo today. Before merging, prove the incoming commits do not touch anyone's in-flight
+files:
+
+```bash
+comm -12 <(git diff --name-only) <(git diff --name-only HEAD origin/master)   # must be empty
+```
+
+Then `merge`, never `rebase` — rebase moves someone else's uncommitted work out from under
+them. Note also that a statement about your own repo state expires the moment you act:
+a peer announced it would not pull, then merged three minutes later for an unrelated
+reason and picked up the change as a side effect.
+
 Prefer an INVARIANT over a sample when one exists. Example: to decide whether a process
 is publishing presence, do not count rows in a time window — `POST /v1/presence`
 unconditionally calls `presence.set()`, and the registry TTL (90s) exceeds the heartbeat
