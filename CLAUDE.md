@@ -84,6 +84,31 @@ This repo is set up for cookys's **autopilot + codeforge + mnemos** ecosystem (n
 
 Developed on Linux (zsh; `grep` is aliased to `ugrep` — never `grep -r … /`). `better-sqlite3` pulls a native binding; a failed install usually means a missing toolchain. Node / pnpm: run what's installed even if newer than `package.json`'s declared minimums — don't downgrade.
 
+## Diagnosing the live fleet
+
+**Before comparing two numbers from different systems, ask whether they measure the same
+INSTANT.** This is the single most repeated diagnostic error in this project — three
+distinct occurrences in one day, each with different surface symptoms:
+
+- two presence snapshots taken 69 minutes apart, read as a same-moment field diff
+- a 20-minute window of DB rows, compared against a live registry snapshot
+- an hour-old `ps` listing, used as the current process set
+
+Both numbers are true, both readable, units identical. The only thing that differs is
+*when* each measured, and that dimension is invisible in the number itself. The fleet
+also changes faster than the observation cycle — a peer-agent died between two `ps`
+runs an hour apart.
+
+**Make it structural, not a habit: write both timestamps on the same line.**
+`ps @ 05:12 → 4 procs` next to `DB window @ 04:50–05:10` makes the mismatch visible on
+sight, instead of waiting for someone to re-derive it later.
+
+Prefer an INVARIANT over a sample when one exists. Example: to decide whether a process
+is publishing presence, do not count rows in a time window — `POST /v1/presence`
+unconditionally calls `presence.set()`, and the registry TTL (90s) exceeds the heartbeat
+interval (30s), so anything still publishing *cannot* be absent from `/v1/peers`. Absence
+proves it is not publishing, with no sampling window to get wrong.
+
 ## Gotchas (real bugs already caught by tests)
 
 1. **`ulid()` is not monotonic.** The default `ulid` export doesn't guarantee strict ordering within a single millisecond. Use `monotonicFactory()` (`packages/shared/src/ulid.ts`). The SSE resume cursor depends on this.
