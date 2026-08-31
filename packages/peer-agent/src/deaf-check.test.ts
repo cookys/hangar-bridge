@@ -107,6 +107,36 @@ describe('checkChannelsFlag', () => {
     ])
     expect(checkChannelsFlag({ procRoot: proc, selfPid: 200, mcpKey: KEY }).state).toBe('skip')
   })
+
+  it('verified when two channels are loaded with repeated flags', () => {
+    const proc = fakeProc([
+      [100, 1, ['claude',
+        '--dangerously-load-development-channels', 'server:agent-call-local',
+        '--dangerously-load-development-channels', `server:${KEY}`]],
+      [200, 100, ['node', 'index.js']],
+    ])
+    expect(checkChannelsFlag({ procRoot: proc, selfPid: 200, mcpKey: KEY }).state).toBe('verified')
+  })
+
+  it('deaf when two channels are space-joined into one value (claude admits neither)', () => {
+    // Claude Code 2.1.251 treats the whole value as one channel name, so this
+    // session is actually deaf. The check must not split it into two keys and
+    // report a false verified.
+    const proc = fakeProc([
+      [100, 1, ['claude', '--dangerously-load-development-channels', `server:agent-call-local server:${KEY}`]],
+      [200, 100, ['node', 'index.js']],
+    ])
+    const r = checkChannelsFlag({ procRoot: proc, selfPid: 200, mcpKey: KEY })
+    expect(r.state).toBe('deaf')
+  })
+
+  it('deaf when two channels are comma-joined into one value', () => {
+    const proc = fakeProc([
+      [100, 1, ['claude', `--dangerously-load-development-channels=server:agent-call-local,server:${KEY}`]],
+      [200, 100, ['node', 'index.js']],
+    ])
+    expect(checkChannelsFlag({ procRoot: proc, selfPid: 200, mcpKey: KEY }).state).toBe('deaf')
+  })
 })
 
 /**

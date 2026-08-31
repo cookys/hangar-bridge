@@ -50,3 +50,7 @@ coverage/
 
 # git worktrees created by autopilot hetero/verify dispatch
 .claude/worktrees/
+
+# project-scoped MCP config written by `hangar-bridge init-project`;
+# a per-host local artifact, never committed (fleet probe requires a clean tree)
+.mcp.json

@@ -31,7 +31,11 @@ export interface DeafCheckOpts {
 }
 
 // Both the research-preview flag and the expected post-preview form. Each
-// takes `server:<key>` (possibly several, space-separated) as its value.
+// takes exactly one `server:<key>` as its value; Claude Code 2.1.251 treats the
+// whole value as a single channel name, so several channels require REPEATING
+// the flag. A comma- or space-joined value admits nothing and the session is
+// deaf, so this parser must not split a single value or it reports a false
+// `verified` for a deaf session.
 const CHANNEL_FLAGS = ['--dangerously-load-development-channels', '--channels']
 const MAX_ANCESTORS = 32
 
@@ -76,9 +80,8 @@ function channelServerKeys(argv: string[]): string[] | null {
       else if (arg.startsWith(flag + '=')) { value = arg.slice(flag.length + 1); sawFlag = true }
     }
     if (value === undefined) continue
-    for (const part of value.split(/\s+/)) {
-      if (part.startsWith('server:')) keys.push(part.slice('server:'.length))
-    }
+    // One channel per flag occurrence — do NOT split the value; Claude does not.
+    if (value.startsWith('server:')) keys.push(value.slice('server:'.length))
   }
   return sawFlag ? keys : null
 }

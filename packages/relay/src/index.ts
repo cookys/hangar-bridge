@@ -42,7 +42,7 @@ async function main() {
     db.close()
   }
 
-  startServer({ db_path: dbPath, port, host, inactive_days: inactiveDays })
+  startServer({ db_path: dbPath, port, host, inactive_days: inactiveDays, peers_file: peersFile })
 }
 
 const invokedAsScript = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]!).href
