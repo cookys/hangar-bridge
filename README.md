@@ -263,6 +263,23 @@ Check all three before concluding the relay is at fault:
 | 2 | Several channels passed as `server:a,server:b` or `"server:a server:b"` — Claude does **not** split a flag value, so the whole string is read as one channel name. **Repeat the flag instead**, once per channel | count the `--dangerously-load-development-channels` occurrences in the argv |
 | 3 | The server never declared the `claude/channel` capability | `list_peers` → this session's `delivery_state` |
 
+**Replying to an ephemeral message.** A directed `to_filter` chat is delivered live and
+never stored — a durable row would be `poll_inbox`-visible to every sibling session on
+the recipient handle, which is the opposite of what directed delivery is for. With no
+row, `in_reply_to` has no parent to resolve and the relay answers `400 unknown
+in_reply_to`. Reply with `meta.correlation_id` instead; the relay mints one alongside the
+`ephemeral="1"` flag, and being relay-generated it is authoritative (a sender-supplied
+one is stripped as anti-forgery).
+
+This applies **only** to messages carrying `ephemeral="1"`. Everything else keeps a
+durable row and `in_reply_to` works normally — do not generalise the workaround, or
+ordinary chat loses its thread linkage to fix a narrow case.
+
+> Sessions from before 2026-08-31 hit a stricter version of this: the flag was set but no
+> `correlation_id` was minted, so both reply paths were closed and the receiver could only
+> open a new, thread-less message. A failure recorded in an older transcript is that bug,
+> not a regression of this one.
+
 `delivery_state` on the presence row is the fleet-visible answer for all three: `verified`
 means the startup self-check passed, `deaf` means it did not. Never infer a healthy link
 from the absence of errors — *this failure mode is defined by having no error to see.*
