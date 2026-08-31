@@ -101,3 +101,55 @@ describe('Fanout', () => {
     expect(bob.received).toHaveLength(1)
   })
 })
+
+describe('Fanout — narrowed broadcast reaches siblings on the sender host', () => {
+  // One handle per host means "everyone working on project X" would otherwise
+  // skip every session on the sender's own machine — and a sibling in the same
+  // project is the most likely collaborator of all.
+  const filtered = (from: string, senderInstance?: string): Envelope => ({
+    id: 'msg_01HRK7Y0000000000000000001', v: 2, team: 't1', from, to: '@team',
+    in_reply_to: null, thread_root: null, kind: 'chat', content: 'x',
+    meta: senderInstance ? { sender_instance: senderInstance } : {},
+    to_filter: { repo: 'hangar' },
+    sent_at: new Date().toISOString(), delivered_at: null,
+  })
+
+  const subWithInstance = (handle: string, instance?: string) => {
+    const received: Envelope[] = []
+    return { handle, team_id: 't1', instance, deliver: (e: Envelope) => { received.push(e) }, received }
+  }
+
+  it('delivers to a sibling under the sender handle, but not back to the sender', () => {
+    const f = new Fanout()
+    const me = subWithInstance('alice', 'inst-me')
+    const sibling = subWithInstance('alice', 'inst-sibling')
+    const other = subWithInstance('bob', 'inst-bob')
+    f.subscribe(me); f.subscribe(sibling); f.subscribe(other)
+    f.deliver(filtered('alice', 'inst-me'))
+    expect(me.received).toHaveLength(0)        // never hear yourself
+    expect(sibling.received).toHaveLength(1)   // the point of the change
+    expect(other.received).toHaveLength(1)
+  })
+
+  it('still skips the whole sending handle for an UNqualified broadcast', () => {
+    const f = new Fanout()
+    const me = subWithInstance('alice', 'inst-me')
+    const sibling = subWithInstance('alice', 'inst-sibling')
+    f.subscribe(me); f.subscribe(sibling)
+    f.deliver(env('A', '@team', 'alice'))
+    expect(me.received).toHaveLength(0)
+    expect(sibling.received).toHaveLength(0)
+  })
+
+  it('keeps the old behaviour when the sender publishes no instance (legacy peer)', () => {
+    // Without an instance there is no way to tell the sender apart from its
+    // siblings, so excluding the handle is the only safe option.
+    const f = new Fanout()
+    const me = subWithInstance('alice')
+    const sibling = subWithInstance('alice', 'inst-sibling')
+    f.subscribe(me); f.subscribe(sibling)
+    f.deliver(filtered('alice'))
+    expect(me.received).toHaveLength(0)
+    expect(sibling.received).toHaveLength(0)
+  })
+})

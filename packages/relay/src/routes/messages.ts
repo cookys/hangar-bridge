@@ -164,7 +164,21 @@ export function messagesRoute(deps: Deps) {
     // task_result chain), and matched=0 leaves NO row (no zombie redelivery /
     // double-exec). Response carries matched count + hit list.
     if (data.to_filter != null) {
-      if (data.kind === 'chat') {
+      // A project-scoped broadcast is not a private message: @team + {repo} is a
+      // half-public call to whoever is working on that project, so the isolation
+      // argument that keeps directed chat ephemeral (a stored row is poll_inbox-
+      // visible to same-handle siblings) does not apply — its poll exposure is
+      // exactly today's @team, no worse. It must be durable for the opposite
+      // reason: this is about to become the DEFAULT way to reach people, and a
+      // default that silently drops anything not connected at that instant trades
+      // a noise problem for a lost-mail problem. Durable also restores in_reply_to
+      // for project threads and lets an offline member catch up on reconnect
+      // (the SSE cold-start drain re-applies the same presence filter).
+      const isProjectChat = data.to === TEAM_BROADCAST_HANDLE
+        && data.kind === 'chat'
+        && data.to_filter.repo !== undefined
+        && data.to_filter.instance === undefined
+      if (data.kind === 'chat' && !isProjectChat) {
         // Tell the receiver this message has no durable row → reply via
         // meta.correlation_id, not in_reply_to (which would 400 on unknown parent).
         // An ephemeral message has no durable row, so in_reply_to would 400 on an
@@ -193,9 +207,15 @@ export function messagesRoute(deps: Deps) {
       if (matched.length > 0) {
         deliveredAt = deps.now().toISOString()
         // Only task_dispatch is persisted (with delivered_at stamped so it never
-        // becomes a pending row); chat is delivered live and never stored.
+        // becomes a pending row); directed chat is delivered live and never stored.
         if (built.kind === 'task_dispatch') deps.store.persist(built, deliveredAt)
       }
+      // Project chat persists whether or not anyone was connected — matched:0 is
+      // precisely the case durability exists for, and it leaves a pending row the
+      // drain delivers when a project member reconnects. Unlike task_dispatch a
+      // stored chat cannot cause a double execution, so there is no zombie-replay
+      // reason to withhold it.
+      if (isProjectChat) deps.store.persist(built, deliveredAt)
       auditEvent(deps, peer.id, 'message.to_filter_routed', {
         kind: built.kind,
         to: built.to,

@@ -27,6 +27,15 @@ export interface MatchedSub {
   instance?: string | undefined
 }
 
+/** The same subscriber set minus one instance — used to self-exclude the
+ *  sending session from its own narrowed broadcast without excluding the
+ *  siblings that share its handle. */
+function filterOutInstance(set: Set<Subscriber>, instance: string): Set<Subscriber> {
+  const out = new Set<Subscriber>()
+  for (const sub of set) if (sub.instance !== instance) out.add(sub)
+  return out
+}
+
 export class Fanout {
   // team_id -> handle -> Set<Subscriber>
   private subs = new Map<string, Map<string, Set<Subscriber>>>()
@@ -103,7 +112,23 @@ export class Fanout {
     }
     if (e.to === TEAM_BROADCAST_HANDLE) {
       for (const [handle, set] of byHandle) {
-        if (handle === e.from) continue
+        // Skipping the sender's whole handle is right for an unqualified
+        // broadcast: you do not need your own announcement echoed back, and the
+        // sessions beside you are not its audience.
+        //
+        // It is wrong for a NARROWED one. This fleet runs one handle per host,
+        // so "everyone working on project X" would silently exclude every
+        // sibling session on the sender's own machine — and a sibling in the
+        // same project is the single most likely collaborator. Narrow to
+        // per-instance there, exactly as the direct branch already does, so the
+        // sender still does not hear itself.
+        if (handle === e.from) {
+          if (e.to_filter == null) continue
+          if (senderInstance === undefined) continue   // legacy peer: keep old behaviour
+          deliverToSet(handle, filterOutInstance(set, senderInstance))
+          selfExcluded = true
+          continue
+        }
         deliverToSet(handle, set)
       }
     } else {

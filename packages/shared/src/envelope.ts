@@ -160,7 +160,13 @@ export const OutboundMessageSchema = z.object({
   content: ContentSchema,
   meta: MetaSchema.optional(),
   in_reply_to: MessageIdSchema.nullable().optional(),
-  to_filter: ToFilterSchema.nullable().optional()
+  to_filter: ToFilterSchema.nullable().optional(),
+  // Declares that an unqualified @team really is meant for every session on
+  // every host. Accepted (and ignored) from the start so the relay can learn
+  // the field before any sender uses it — the schema is .strict(), so a peer
+  // that sends it to a relay which does not know it gets a 400 and goes quiet.
+  // Upgrade order is therefore relay first, senders second.
+  fleet_wide: z.boolean().optional()
 }).strict().superRefine((e, ctx) => {
   refineToFilter(e, ctx)
   // Same @team-subject + ack-channel invariants as EnvelopeSchema, with nullish
