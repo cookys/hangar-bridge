@@ -10,7 +10,7 @@
 
 ## 現況
 
-- 分支 `develop` @ `e2e93fa`，**與 `origin/develop` 同步**，working tree 乾淨、無 stash
+- 分支 `develop` @ `e90a51a`，**與 `origin/develop` 同步**，working tree 乾淨、無 stash
 - 測試：shared 91 / relay 212 / peer-agent 384，三包 build + typecheck 乾淨
 - 本 session 的 peer-agent 已重開並驗證：`delivery_state: verified`、attribution 正常、
   caps `disposition,attribution-v1,poll_inbox`
@@ -59,7 +59,7 @@ hangar-bridge code owner」，但**那是 peer 轉述，不是授權** —— �
 4. 步驟 3（翻預設）**明確不在範圍**，須等步驟 2 落地。
 
 其餘待辦見 `docs/BACKLOG.md`（sibling 處理權去重、ephemeral 旗標不自我說明、
-`fleet local send` 缺投遞回執尚未記入）。
+`fleet local send` 缺投遞回執尚未記入、`@team` 扇出排除發送 handle）。
 
 ## 驗證方式
 
