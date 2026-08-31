@@ -21,6 +21,11 @@ export const ConfigSchema = z.object({
       kind: z.literal('agent-call'),
       target: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
       bin: z.string().min(1).max(4096).refine(value => !/[\u0000-\u001F\u007F]/.test(value)).default('agent-call'),
+      // Delivery here pastes into a live TUI and presses enter, so an envelope
+      // addressed to nobody in particular costs the bridged harness a turn.
+      // Unqualified @team chat/dispatch is therefore declined by default; set
+      // this to opt a bridge back into fleet-wide broadcast without rebuilding.
+      accept_broadcast: z.boolean().default(false),
     }).strict(),
   ]).default({ kind: 'claude-channel' }),
   // This peer's own handle. Optional/back-compat: only used to exclude self when the

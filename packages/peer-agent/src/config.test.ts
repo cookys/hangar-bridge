@@ -24,6 +24,7 @@ describe('loadConfig', () => {
     }))
     expect(loadConfig(p).final_mile).toEqual({
       kind: 'agent-call', target: 'local-codex', bin: '/opt/bin/agent-call',
+      accept_broadcast: false,
     })
   })
 
@@ -36,6 +37,24 @@ describe('loadConfig', () => {
     }))
     expect(loadConfig(p).final_mile).toEqual({
       kind: 'agent-call', target: 'local-codex', bin: 'agent-call',
+      accept_broadcast: false,
+    })
+  })
+
+  it('defaults accept_broadcast off, and reads an explicit opt-in', () => {
+    // Default false is the behaviour change: an existing config on disk, which
+    // cannot know this key, starts declining broadcasts after the upgrade. The
+    // opt-in exists so a bridge can be put back without rebuilding the artifact.
+    const p = join(workdir, 'final-mile-accept-broadcast.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      final_mile: { kind: 'agent-call', target: 'local-codex', accept_broadcast: true },
+    }))
+    const cfg = loadConfig(p)
+    expect(cfg.final_mile).toEqual({
+      kind: 'agent-call', target: 'local-codex', bin: 'agent-call',
+      accept_broadcast: true,
     })
   })
 
@@ -44,7 +63,7 @@ describe('loadConfig', () => {
     writeFileSync(p, JSON.stringify({
       relay_url: 'https://mesh.example.com',
       token_path: join(workdir, 'tok'),
-      final_mile: { kind: 'agent-call', target: 'local-codex', bin: 'agent-call' },
+      final_mile: { kind: 'agent-call', target: 'local-codex', bin: 'agent-call', accept_broadcast: false },
       permission_relay: { enabled: true, routing: 'never_relay' },
     }))
     expect(() => loadConfig(p)).toThrow(/peer authority cannot approve permissions/)

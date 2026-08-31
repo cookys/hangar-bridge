@@ -205,6 +205,8 @@ async function main(): Promise<void> {
     permissionOutboundTracker,
     replyLimiter,
     presenceTracker,
+    finalMileKind: cfg.final_mile.kind,
+    acceptBroadcast: cfg.final_mile.kind === 'agent-call' ? cfg.final_mile.accept_broadcast : false,
   })
 
   let client: PeerTransport

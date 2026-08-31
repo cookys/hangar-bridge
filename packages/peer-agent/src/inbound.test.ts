@@ -350,3 +350,108 @@ describe('InboundDispatcher', () => {
     expect(sent).toHaveLength(0)
   })
 })
+
+describe('InboundDispatcher — agent-call broadcast gate', () => {
+  // An agent-call final mile delivers by pasting into a live TUI, so an
+  // unqualified @team costs the bridged harness a turn. These cases pin which
+  // envelopes are declined and, just as importantly, which are not.
+  const bridged = (
+    sent: { method: string; params: Record<string, unknown> }[],
+    cursors: string[],
+    acceptBroadcast = false,
+  ) => new InboundDispatcher({
+    gate: new SenderGate(['alice']),
+    emit: n => { sent.push(n) },
+    setCursor: id => { cursors.push(id) },
+    finalMileKind: 'agent-call',
+    acceptBroadcast,
+  })
+
+  const team = (overrides: Partial<Envelope> = {}): Envelope =>
+    envelope({ to: '@team', ...overrides })
+
+  it('declines an unqualified @team chat, advancing the cursor', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    const e = team()
+    // 'delivered', not 'rejected': it arrived and was declined by policy, the
+    // same shape as the presence swallow.
+    await expect(bridged(sent, cursors).handle(e)).resolves.toBe('delivered')
+    expect(sent).toHaveLength(0)
+    expect(cursors).toEqual([e.id])
+  })
+
+  it('delivers a @team task_dispatch — silence would fake a lost session', async () => {
+    // A dispatch carries a correlation_id and the fleet reads "no disposition"
+    // as a lost session. Declining silently would manufacture that signal.
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(bridged(sent, cursors).handle(team({ kind: 'task_dispatch' })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('delivers a @team permission_request — ask_team must keep working', async () => {
+    // approval-routing returns ['@team'] for ask_team, and a bridged harness can
+    // answer via the respond CLI. Declining this would break a live mechanism.
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(bridged(sent, cursors).handle(team({ kind: 'permission_request' })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('delivers a @team narrowed by to_filter — an address, not a fan-out', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(bridged(sent, cursors).handle(team({ to_filter: { repo: 'hangar' } })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('delivers a subjected @team — ownership and interest already matched', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(bridged(sent, cursors).handle(team({ subject: 'fleet.coord' })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('delivers a directed message — bridge traffic is untouched', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(bridged(sent, cursors).handle(envelope({ to: 'bob' })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('delivers an unqualified @team when accept_broadcast opts back in', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(bridged(sent, cursors, true).handle(team())).resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('leaves a claude-channel peer receiving broadcasts as before', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const d = new InboundDispatcher({
+      gate: new SenderGate(['alice']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+      finalMileKind: 'claude-channel',
+    })
+    await expect(d.handle(team())).resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('leaves a dispatcher with no finalMileKind unchanged (gate off)', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const d = new InboundDispatcher({
+      gate: new SenderGate(['alice']),
+      emit: n => { sent.push(n) },
+      setCursor: () => { /* no-op */ },
+    })
+    await expect(d.handle(team())).resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+})

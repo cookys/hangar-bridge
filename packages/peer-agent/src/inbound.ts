@@ -34,6 +34,11 @@ export interface InboundDispatcherOpts {
   presenceTracker?: PresenceTracker | undefined
   // Injectable clock for the presence heartbeat timestamp (tests). Defaults to Date.now.
   now?: (() => number) | undefined
+  // Final-mile shape, used only by the broadcast gate in handle(). Optional so
+  // every other construction site (and every existing test) keeps today's
+  // behaviour: undefined ⇒ gate off.
+  finalMileKind?: 'claude-channel' | 'agent-call' | undefined
+  acceptBroadcast?: boolean | undefined
 }
 
 /**
@@ -82,6 +87,48 @@ export class InboundDispatcher {
     // the cursor so the heartbeat is not re-processed on replay.
     if (e.kind === 'presence_update') {
       this.opts.presenceTracker?.onHeartbeat(e.from, (this.opts.now ?? Date.now)())
+      this.opts.setCursor(e.id)
+      return 'delivered'
+    }
+    // An agent-call final mile delivers by pasting into a running TUI and pressing
+    // enter, so every inbound envelope costs the bridged harness a turn — unlike a
+    // Claude channel, where it is one more item in context. An unqualified @team is
+    // addressed to nobody in particular, and on this fleet it dominates: 91 of the
+    // 116 messages that reached the bridged codex in one 12-hour window were
+    // broadcasts. Decline those; the message WAS delivered and declined by policy,
+    // so return 'delivered' (same as the presence swallow above), not 'rejected'.
+    //
+    // Four conditions, each load-bearing:
+    //   - kind: chat ONLY. permission_request is not declined — approval-routing
+    //     returns ['@team'] for ask_team, the harness can answer through the respond
+    //     CLI, and it is rare and time-critical. task_dispatch is not declined
+    //     either, for a subtler reason: a dispatch carries a correlation_id, and
+    //     the fleet reads "no disposition at all" as a lost session. Swallowing one
+    //     silently would manufacture a false lost-session signal indistinguishable
+    //     from a real one — poisoning a detector whose whole input is silence. The
+    //     measured flood was chat regardless, so excluding dispatch costs nothing.
+    //   - subject === null: a subjected @team arrived only because ownership AND
+    //     interest matched, which is as deliberate as an explicit to_filter.
+    //   - to_filter absent: a narrowed @team is an address, not a fan-out.
+    //   - acceptBroadcast: operator opt-in, no rebuild needed.
+    //
+    // What is removed is the interruption, NOT the information: a declined envelope
+    // stays in the relay's durable buffer and `poll_inbox` still returns it, so the
+    // bridged harness can read everything it missed whenever it chooses to look.
+    // That pull path is what makes turning off push safe — without it this would be
+    // a drop, not a decline. Deliberately not mirrored in GET /v1/messages for the
+    // same reason: a pull interrupts nobody.
+    if (
+      this.opts.finalMileKind === 'agent-call'
+      && e.to === TEAM_BROADCAST_HANDLE
+      && e.kind === 'chat'
+      && !e.subject          // null or absent — both mean "no subject" 
+      && !e.to_filter
+      && !this.opts.acceptBroadcast
+    ) {
+      logJson('info', 'peer.inbound.broadcast_declined', {
+        from: e.from, kind: e.kind, msg_id: e.id,
+      })
       this.opts.setCursor(e.id)
       return 'delivered'
     }
