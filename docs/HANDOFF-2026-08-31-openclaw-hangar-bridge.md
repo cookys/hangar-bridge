@@ -48,22 +48,31 @@ Claude **不會 split 旗標值**，所以**一個旗標帶一個 channel**。`p
 - `~/.claude.json` 的 `hangar-bridge-peer-agent` entry **已含 `HANGAR_MCP_KEY`** → P0 失聰自檢會實際執行，不是 fail-open skip
 - `.mcp.json` 已建立（`agent-call-local`）；被 `.gitignore:56` 排除，不進 git
 - 三個 package 的 `dist/` 均為最新 build（2026-08-31 12:32，對應 HEAD `2432836`）
-- `agent-call doctor` → `{"ok":true,"agents":[]}`（尚未註冊，重開後由 channel 模式自動註冊）
+- `agent-call` 的相依**曾經沒裝**（2026-08-31 重開時 `agent-call-local` 回 `CONNECTION_CLOSED`，實際錯誤是 `requires @modelcontextprotocol/sdk`）。已 `npm ci --omit=dev` 修復。若日後又見 `CONNECTION_CLOSED`，先手動跑一次看真正的錯誤：
+  ```bash
+  AGENT_CALL_PERSISTENT=1 AGENT_CALL_NAME=openclaw-hangar-bridge \
+    node ~/projects/agent-call/bin/agent-call.js channel --name-env AGENT_CALL_NAME
+  ```
+  正常會印 `Claude Channel registered as <name> (<socket>)` 然後停住等 stdio
 - 本 session 的 tmux pane：`%6`（`0:2.0`）
 
 ## 2. 重開後第一件該驗證的事
 
-**這是這批 code 唯一還沒被實地驗過的部分。** 重開後檢查：
+**用 `list_peers` 看自己的 `delivery_state`，不要去 grep MCP log。**
 
-```bash
-grep "peer.startup.channels_check\|deaf_suspected" \
-  ~/.cache/claude-cli-nodejs/-home-cookys-projects-hangar-bridge/mcp-logs-hangar-bridge-peer-agent/*.jsonl | tail -3
+```
+list_peers → 找 handle=openclaw → sessions[] 裡 cwd=/home/cookys/projects/hangar-bridge 那筆
 ```
 
-- 期望 `state: verified`
-- 若出現 `deaf_suspected` 但旗標明明帶對了 → **P0 誤報**，優先修（`packages/peer-agent/src/deaf-check.ts`），因為 capability check 排在最前面且**不 fail-open**
+| 值 | 意思 |
+|---|---|
+| `verified` | ✅ P0 自檢通過，channels 旗標正確 |
+| `deaf` | ❌ 自檢判定失聰 —— 若旗標明明帶對了則為誤報，優先修 `packages/peer-agent/src/deaf-check.ts`（capability check 排最前面且**不 fail-open**） |
+| `unverified` | 舊 code / 無證據可判 |
 
-接著確認自己有 attribution：發一則訊息給任一 peer，看回顯的 `<channel>` tag 是否含 `instance=` 與 `attribution_status="stamped"`。**舊 session 沒有**（見 §5）。
+同時確認該筆有 `instance` 與 `caps: disposition,attribution-v1,poll_inbox`。
+
+> ⚠️ **本文件初版寫的是去 grep MCP log 找 `peer.startup.channels_check`，那是錯的** —— 該目錄最新檔案停在 2026-06-26，本次啟動根本不寫新 log。我寫那步時沒實際跑過。正確的可觀測面就是 presence 的 `delivery_state`（這也是 P0 當初的設計意圖：**讓失聰在 fleet 層面可見**，而不是躲在本機 log 裡）。
 
 ## 3. 這條 session 完成了什麼（都在 `origin/develop`）
 
