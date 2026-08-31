@@ -101,6 +101,24 @@ Call does not provide the reverse network path; a separately
 configured hangar-bridge outbound surface remains responsible for replies. Without one, this path
 is intentionally one-way and must not substitute a local session or spawn a worker.
 
+### 4.0 Courier deployments (several peer-agents, one Unix user)
+
+`final_mile.kind = agent-call` binds one peer-agent to one local harness, and a
+Claude session's peer-agent is a stdio child of that session — so on a host whose
+Claude sessions are out of quota or simply not running, nothing under that handle
+is subscribed and every message to it matches zero sessions.
+
+A **courier** is a peer-agent run as a daemon purely to carry messages into a
+local harness. It burns no model quota and survives its host's Claude sessions.
+Config is resolved through `XDG_CONFIG_HOME` (`packages/peer-agent/src/paths.ts`),
+so one Unix account can run several couriers with distinct handles, secrets and
+targets — no additional account is required. Each still needs its own roster
+entry; adding one is a `peers.json` edit plus a relay **SIGHUP**, which re-seeds
+without dropping any peer's SSE.
+
+Operational procedure, including the acceptance test, lives in the hangar runbook
+`runbooks/hangar-bridge-fleet-deployment.md`.
+
 ### 4.1 SSE/default path
 
 The peer-agent uses a 43-character secret as a bearer token for `POST /v1/messages`,
