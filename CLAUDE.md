@@ -107,9 +107,22 @@ A reference point can be stale even when a tool calls it current. `git status` r
 *up to date* means your HEAD matches the remote-tracking ref from your **last fetch**, not
 the remote. Three fleet peers audited a repo the same afternoon and all three reasoned
 from a stale ref; one happened to be correct only because it had pushed an hour earlier.
-`git fetch` is a precondition of the audit, not an optimisation. This case is nastier than
-the others here because the tool *asserts* the healthy state rather than merely returning
-nothing — it hands you a green light on a question it did not actually answer.
+This case is nastier than the others here because the tool *asserts* the healthy state
+rather than merely returning nothing — it hands you a green light on a question it did
+not actually answer.
+
+Read the remote without writing to the repo, since `git fetch` updates refs and these
+boxes run several sessions against one checkout — an audit should not mutate what it is
+auditing:
+
+```bash
+git rev-parse --short HEAD                    # where I am
+git rev-parse --short origin/master           # where I THINK the remote is (stale)
+git ls-remote origin master | cut -c1-7       # where it actually is, writes nothing
+```
+
+The second and third disagreeing is the whole finding. A verification method with side
+effects is a different tool from a read-only one whenever a checkout is shared.
 
 Prefer an INVARIANT over a sample when one exists. Example: to decide whether a process
 is publishing presence, do not count rows in a time window — `POST /v1/presence`
