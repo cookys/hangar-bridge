@@ -103,6 +103,14 @@ runs an hour apart.
 `ps @ 05:12 → 4 procs` next to `DB window @ 04:50–05:10` makes the mismatch visible on
 sight, instead of waiting for someone to re-derive it later.
 
+A reference point can be stale even when a tool calls it current. `git status` reporting
+*up to date* means your HEAD matches the remote-tracking ref from your **last fetch**, not
+the remote. Three fleet peers audited a repo the same afternoon and all three reasoned
+from a stale ref; one happened to be correct only because it had pushed an hour earlier.
+`git fetch` is a precondition of the audit, not an optimisation. This case is nastier than
+the others here because the tool *asserts* the healthy state rather than merely returning
+nothing — it hands you a green light on a question it did not actually answer.
+
 Prefer an INVARIANT over a sample when one exists. Example: to decide whether a process
 is publishing presence, do not count rows in a time window — `POST /v1/presence`
 unconditionally calls `presence.set()`, and the registry TTL (90s) exceeds the heartbeat
@@ -113,6 +121,11 @@ proves it is not publishing, with no sampling window to get wrong.
 
 1. **`ulid()` is not monotonic.** The default `ulid` export doesn't guarantee strict ordering within a single millisecond. Use `monotonicFactory()` (`packages/shared/src/ulid.ts`). The SSE resume cursor depends on this.
 2. **TS 5.7+ requires explicit flags for `.ts`-suffixed imports.** `import './foo.ts'` fails typecheck under defaults. `tsconfig.base.json` sets `allowImportingTsExtensions: true` + `rewriteRelativeImportExtensions: true` so the build still emits `.js`.
+
+**An assertion that nothing changed must bind a known concrete value.** `expect(after).toBe(before)`
+passes when both sides are correct AND when both were wiped, so it certifies the exact
+regression it was written to catch. Assert the value itself — `expect(v).toBe(104300)` —
+whenever the point of the test is that something survived an operation.
 
 If a change breaks the existing test suite, **fix the root cause** — don't weaken the failing test.
 
