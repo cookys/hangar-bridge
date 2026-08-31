@@ -2,28 +2,46 @@
 
 接手者請先讀這份，再讀 `CLAUDE.md`。分支 **`develop`**（已與 `origin/develop` 同步）。
 
-## 0. 重開這條 session 的指令
+## 0. 重開這條 session
 
 ```bash
-cd /home/cookys/projects/hangar-bridge
+/home/cookys/projects/hangar-bridge/bin/openclaw-session.sh
+```
 
+（`--fresh` 可開新對話而非 resume；其餘參數原樣傳給 `claude`）
+
+Script 會先驗兩個「錯了會靜默失效」的前置條件（`HANGAR_MCP_KEY` 與 mcpServers key 是否一致、`.mcp.json` 是否存在），再組出：
+
+```bash
 AGENT_CALL_PERSISTENT=1 AGENT_CALL_NAME=openclaw-hangar-bridge \
 claude --dangerously-skip-permissions \
-       --dangerously-load-development-channels \
-         server:hangar-bridge-peer-agent server:agent-call-local \
+       --dangerously-load-development-channels server:hangar-bridge-peer-agent \
+       --dangerously-load-development-channels server:agent-call-local \
        --resume hanger-bridge@openclaw
 ```
 
-四個部分缺一不可：
+### 🔴 多 channel 的分隔符：**重複旗標，不是逗號也不是空白**
 
-| 部分 | 為什麼 |
+本機 2026-08-31 三種全實測過：
+
+| 寫法 | 結果 |
 |---|---|
-| `AGENT_CALL_PERSISTENT=1` + `AGENT_CALL_NAME=` | agent-call 的 MCP entry 是 name-neutral 的；**只有同時帶這兩個環境變數的啟動才會註冊 inbound channel**，否則只拿到 outbound 工具（`src/setup.js:70-73` 的設計註解） |
-| `server:hangar-bridge-peer-agent` | fleet 訊息。**這個 key 必須與 `~/.claude.json` 的 `mcpServers` key 完全一致**，不符會**靜默丟棄每一則 inbound**（本 repo 曾因此聾兩個月） |
-| `server:agent-call-local` | agent-call 的 inbound channel（`.mcp.json`，已由 `agent-call setup claude` 產生） |
-| `--resume hanger-bridge@openclaw` | 保留對話 |
+| `server:a,server:b` | 整串被當成**單一 channel 名** → `no MCP server configured with that name` → **靜默 DEAF** |
+| `"server:a server:b"` | 同上 → **靜默 DEAF** |
+| **旗標重複兩次** | ✅ 通；確認畫面會列出兩個 |
 
-`--dangerously-load-development-channels` 接受空白分隔的多個 server。
+Claude **不會 split 旗標值**，所以**一個旗標帶一個 channel**。`packages/peer-agent/src/deaf-check.ts` 的 `channelServerKeys` 已編碼同一規則（commit `17dcfcd`，註解：`One channel per flag occurrence — do NOT split the value; Claude does not.`），所以寫錯分隔符會被 P0 判為 deaf，而不是默默容忍。
+
+⚠️ 官方 `cli-reference` 對 `--channels` 寫的是 space-separated，**但那是另一個旗標**；dev flag 的表格行並未說明多值語法。用文件推論會得到錯誤答案 —— 這裡以實測為準。
+
+### 四個部分缺一不可
+
+| 部分 | 缺了會怎樣 |
+|---|---|
+| `AGENT_CALL_PERSISTENT=1` + `AGENT_CALL_NAME=` | **只拿到 outbound 工具，收不到 agent-call 訊息**（MCP entry 刻意 name-neutral，只有同時帶兩者的啟動才註冊 inbound channel） |
+| `server:hangar-bridge-peer-agent` | fleet 訊息全部靜默丟棄 |
+| `server:agent-call-local` | agent-call 的 inbound |
+| `--resume hanger-bridge@openclaw` | 對話不見 |
 
 ## 1. 環境現況（已驗證）
 
