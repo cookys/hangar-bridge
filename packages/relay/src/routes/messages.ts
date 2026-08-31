@@ -155,6 +155,51 @@ export function messagesRoute(deps: Deps) {
       }
     }
 
+    // ── unqualified fleet-wide broadcast gate ───────────────────────────────
+    // The relay is the only chokepoint every sender must pass: a source-side
+    // guard has to be installed per host, per user, per harness, and the
+    // harnesses that cannot load one (codex, grok) are exactly the ones nobody
+    // can gate. Measured on 2026-08-31: of 91 broadcasts in 12 hours, a
+    // client-side gate on one host stopped 26.
+    //
+    // `fleet_wide: true` is the act of will that says this really is for every
+    // session on every host. It is advisory by construction — any client that
+    // can set it can always set it — so enforcement is really the audit trail
+    // plus the recipient count returned to the sender. That is the honest
+    // ceiling for a fleet where every client holds an operator-issued token,
+    // and building anything stronger would mean building an auth system.
+    //
+    // Restricted to chat: ask_team routes permission_request to @team
+    // (approval-routing.ts), and blocking that would silently kill the
+    // permission flow rather than reduce noise.
+    //
+    // Modes: 'warn' records and delivers (default, for a migration window where
+    // senders still speak the old vocabulary); 'enforce' refuses with a message
+    // that teaches the alternative — the clients here are models, so a 400
+    // carrying the fix IS the migration mechanism.
+    if (
+      data.to === TEAM_BROADCAST_HANDLE
+      && data.kind === 'chat'
+      && data.subject == null
+      && data.to_filter == null
+      && data.fleet_wide !== true
+    ) {
+      auditEvent(deps, peer.id, 'message.unqualified_broadcast', {
+        handle: peer.handle,
+        mode: deps.broadcastGate ?? 'warn',
+      })
+      if ((deps.broadcastGate ?? 'warn') === 'enforce') {
+        return c.json({
+          error: 'unqualified_broadcast',
+          message:
+            'This would reach every session on every host, and most would read and answer it. '
+            + 'Omit `to` to reach the sessions working on your project, name a handle for one host, '
+            + 'or pass to_filter.instance for exactly one session. '
+            + 'If it truly concerns the whole fleet, resend with fleet_wide: true.',
+        }, 400)
+      }
+    }
+
     // ── to_filter routing (presence-narrowed, online-only) ──────────────────
     // Filtered delivery is relay-side: the stream `deliverable` gate lets ONLY
     // matching sessions receive it (non-matching connections get no event). By

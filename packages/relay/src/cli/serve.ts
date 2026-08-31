@@ -53,7 +53,11 @@ export function startServer(opts: ServeOpts) {
   const fanout = new Fanout()
   const presence = new PresenceRegistry()
   const claims = new ClaimStore(db)
-  const app = buildApp({ db, store, fanout, presence, claims, now: () => new Date() })
+  // Defaults to 'warn' so an upgrade never changes delivery behaviour on its
+  // own: enforcement waits until the senders have a way to comply (a peer that
+  // knows fleet_wide). Flipping it is a config change, not a redeploy.
+  const broadcastGate = process.env.HANGAR_BROADCAST_GATE === 'enforce' ? 'enforce' as const : 'warn' as const
+  const app = buildApp({ db, store, fanout, presence, claims, now: () => new Date(), broadcastGate })
   const server = serve({ fetch: app.fetch, port: opts.port, hostname: opts.host })
 
   const days = opts.inactive_days ?? 30

@@ -49,7 +49,7 @@ export interface Harness {
  */
 export async function startHarness(
   handles: string[],
-  opts: { permissionRelay?: boolean } = {}
+  opts: { permissionRelay?: boolean; broadcastGate?: 'warn' | 'enforce' } = {}
 ): Promise<Harness> {
   if (handles.length === 0) throw new Error('startHarness requires at least one handle')
 
@@ -69,6 +69,7 @@ export async function startHarness(
     presence: new PresenceRegistry(),
     claims: new ClaimStore(db),
     now: () => new Date(),
+    ...(opts.broadcastGate ? { broadcastGate: opts.broadcastGate } : {}),
   })
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(resolve => {
     const s = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, info => {
