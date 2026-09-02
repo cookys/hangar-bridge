@@ -32,6 +32,10 @@ the fleet deployment described below uses the systemd user unit.
 
 ## 1. Admit the candidate
 
+> Hosted CI (GitHub Actions) is **disabled on purpose** — when the Actions quota runs out it
+> floods the operator's inbox. This local gate sequence is therefore the only admission there
+> is: run every step and record PASS/FAIL per gate; do not skip one because "CI would have".
+
 Run this independently in a clean checkout before touching a fleet host. Set `candidate` to the
 owner-approved commit; do not derive it from a mutable branch after admission.
 
