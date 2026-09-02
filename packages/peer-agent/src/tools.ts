@@ -235,6 +235,8 @@ export interface PresenceBody {
   cwd?: string
   branch?: string
   repo?: string
+  /** Switchboard courier: every project it can deliver into. */
+  repos?: string[]
   worktree?: string
   /** Per-process instance id — makes the relay's presence row unique per process. */
   instance?: string
@@ -264,13 +266,15 @@ export interface PresenceIdentity {
 export function buildPresenceBody(
   presence: PresenceOpts,
   summary: string,
-  ctx: { cwd?: string; branch?: string; repo?: string; worktree?: string },
+  ctx: { cwd?: string; branch?: string; repo?: string; worktree?: string; repos?: string[] },
   identity?: PresenceIdentity,
 ): PresenceBody {
   const body: PresenceBody = { summary }
   if (presence.auto_publish_cwd && ctx.cwd) body.cwd = ctx.cwd
   if (presence.auto_publish_branch && ctx.branch) body.branch = ctx.branch
   if (presence.auto_publish_repo && ctx.repo) body.repo = ctx.repo
+  // A switchboard's projects ride the same privacy flag as `repo`.
+  if (presence.auto_publish_repo && ctx.repos && ctx.repos.length > 0) body.repos = ctx.repos
   // The worktree name is a path fragment, so it rides the same privacy flag
   // that governs publishing cwd rather than getting a flag of its own.
   if (presence.auto_publish_cwd && ctx.worktree) body.worktree = ctx.worktree

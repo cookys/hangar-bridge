@@ -27,6 +27,7 @@ import {
 } from './health-state.ts'
 import { createPresenceTracker } from './presence-tracker.ts'
 import { StreamClient } from './stream.ts'
+import { Switchboard } from './switchboard.ts'
 import { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
@@ -72,6 +73,12 @@ async function main(): Promise<void> {
 
   const selfHandle = cfg.self ?? ''
 
+  // Switchboard courier: one process per Unix user delivering into every local
+  // agent-call registration, publishing their projects as presence `repos`.
+  const switchboard = cfg.final_mile.kind === 'agent-call' && cfg.final_mile.switchboard
+    ? new Switchboard({ bin: cfg.final_mile.bin, defaultTarget: cfg.final_mile.target })
+    : undefined
+
   // ONE instance id for the whole process (P2 §2.1). Generated here — not per
   // connection — so the relay's per-(label, instance) connection refcount can
   // aggregate every SSE reconnect this process makes. It is presence/observability
@@ -90,7 +97,7 @@ async function main(): Promise<void> {
   const presenceIdentity = () => ({
     instance: instanceId,
     delivery_state: health.deliveryState(),
-    caps: peerCaps(inboxAvailable),
+    caps: peerCaps(inboxAvailable) + (switchboard ? ',switchboard' : ''),
   })
 
   // P0 deaf-immunity: walk /proc ancestry for the claude process and verify its
@@ -188,13 +195,15 @@ async function main(): Promise<void> {
         await server.notification(notification as never)
         return
       }
-      const receipt = await deliverViaAgentCall(envelope, {
-        target: cfg.final_mile.target,
-        bin: cfg.final_mile.bin,
-      })
+      if (switchboard) {
+        await switchboard.deliver(envelope)   // logs per-extension receipts itself
+        return
+      }
+      const target = cfg.final_mile.target!   // config refine guarantees it without switchboard
+      const receipt = await deliverViaAgentCall(envelope, { target, bin: cfg.final_mile.bin })
       logJson('info', 'peer.inbound.agent_call_accepted', {
         msg_id: envelope.id,
-        target: cfg.final_mile.target,
+        target,
         receipt_status: receipt.status,
       })
     },
@@ -267,14 +276,15 @@ async function main(): Promise<void> {
         summary: health.decorateSummary(body.summary ?? lastSummary),
         instance: instanceId,
         delivery_state: health.deliveryState(),
-        caps: peerCaps(inboxAvailable),
+        caps: peerCaps(inboxAvailable) + (switchboard ? ',switchboard' : ''),
       }
       return originalSetPresence(decorated)
     }
     const reportPresence = async () => {
       try {
+        const ctx = { ...detectWorkingContext(), ...(switchboard ? { repos: switchboard.repos() } : {}) }
         await relayClient.setPresence(buildPresenceBody(
-          cfg.presence, lastSummary, detectWorkingContext(), presenceIdentity(),
+          cfg.presence, lastSummary, ctx, presenceIdentity(),
         ))
       } catch (err) {
         logJson('warn', 'peer.presence.auto_report_error', describeError(err))
@@ -355,6 +365,16 @@ async function main(): Promise<void> {
   }
 
   logJson('info', 'peer.startup', { relay_url: cfg.relay_url })
+
+  if (switchboard && cfg.final_mile.kind === 'agent-call') {
+    // Read the local registry before the first presence report so the very
+    // first heartbeat already advertises the projects; then keep it fresh.
+    // unref: this timer must never be what keeps the process alive.
+    await switchboard.refresh()
+    logJson('info', 'peer.switchboard.ready', { extensions: switchboard.registrations().map(r => r.name), repos: switchboard.repos() })
+    const sbTimer = setInterval(() => { void switchboard.refresh() }, cfg.final_mile.list_refresh_ms)
+    sbTimer.unref?.()
+  }
 
   // Seed the roster. Failing here used to crash the peer-agent hard, breaking
   // every Claude Code session if transport is down. Now: start

@@ -17,6 +17,8 @@ export interface PresenceSession {
   cwd?: string
   branch?: string
   repo?: string
+  /** Every project a switchboard courier can deliver into (union of its local registrations). */
+  repos?: string[]
   /** Worktree name when the session runs in a git worktree (instance metadata, never a handle). */
   worktree?: string
   delivery_state: DeliveryState
@@ -38,6 +40,7 @@ interface SessionState {
   cwd?: string
   branch?: string
   repo?: string
+  repos?: string[]
   worktree?: string
   delivery_state: DeliveryState
   caps?: string
@@ -50,6 +53,7 @@ export interface PresenceInput {
   cwd?: string | undefined
   branch?: string | undefined
   repo?: string | undefined
+  repos?: string[] | undefined
   worktree?: string | undefined
   delivery_state?: DeliveryState | undefined
   caps?: string | undefined
@@ -63,6 +67,7 @@ function copyOptional(src: PresenceInput): OptionalState {
   if (src.cwd !== undefined) out.cwd = src.cwd
   if (src.branch !== undefined) out.branch = src.branch
   if (src.repo !== undefined) out.repo = src.repo
+  if (src.repos !== undefined) out.repos = [...src.repos]
   if (src.worktree !== undefined) out.worktree = src.worktree
   if (src.caps !== undefined) out.caps = src.caps
   return out
@@ -74,6 +79,7 @@ function toSession(s: SessionState): PresenceSession {
   if (s.cwd !== undefined) out.cwd = s.cwd
   if (s.branch !== undefined) out.branch = s.branch
   if (s.repo !== undefined) out.repo = s.repo
+  if (s.repos !== undefined) out.repos = [...s.repos]
   if (s.worktree !== undefined) out.worktree = s.worktree
   if (s.caps !== undefined) out.caps = s.caps
   return out
@@ -140,6 +146,18 @@ export class PresenceRegistry {
    */
   repoOf(team: string, handle: string, label: string): string | undefined {
     return this.state.get(team)?.get(handle)?.get(label)?.repo
+  }
+
+  /**
+   * Does a `to_filter.repo` reach this session? Its own `repo`, or — for a
+   * switchboard courier — any of the projects it published in `repos`.
+   * Fail-closed exactly like repoOf: unknown session ⇒ false.
+   */
+  matchesRepo(team: string, handle: string, label: string, repo: string): boolean {
+    const s = this.state.get(team)?.get(handle)?.get(label)
+    if (!s) return false
+    if (s.repo === repo) return true
+    return s.repos?.includes(repo) ?? false
   }
 
   get(team: string, handle: string): PresenceSnapshot | undefined {

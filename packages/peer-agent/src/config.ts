@@ -19,7 +19,15 @@ export const ConfigSchema = z.object({
     z.object({ kind: z.literal('claude-channel') }).strict(),
     z.object({
       kind: z.literal('agent-call'),
-      target: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+      // One registered harness this courier delivers into. Optional once
+      // `switchboard` is on, where it becomes the default extension for a
+      // send that names no project and no local_target.
+      target: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/).optional(),
+      // Switchboard: deliver into EVERY local agent-call registration, routed
+      // by meta.local_target / to_filter.repo, and publish the projects those
+      // registrations sit in as presence `repos`. See switchboard.ts.
+      switchboard: z.boolean().default(false),
+      list_refresh_ms: z.number().int().min(5_000).max(600_000).default(30_000),
       bin: z.string().min(1).max(4096).refine(value => !/[\u0000-\u001F\u007F]/.test(value)).default('agent-call'),
       // Delivery here pastes into a live TUI and presses enter, so an envelope
       // addressed to nobody in particular costs the bridged harness a turn.
@@ -64,6 +72,13 @@ export const ConfigSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['permission_relay', 'routing'],
       message: "ask_team is unavailable on NATS; choose a direct peer routing policy",
+    })
+  }
+  if (value.final_mile.kind === 'agent-call' && !value.final_mile.switchboard && !value.final_mile.target) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['final_mile', 'target'],
+      message: 'agent-call final-mile needs a target unless switchboard is true',
     })
   }
   if (value.final_mile.kind === 'agent-call' && value.permission_relay.enabled) {

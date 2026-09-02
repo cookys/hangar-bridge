@@ -79,7 +79,7 @@ export function streamRoute(deps: Deps) {
         if (e.to_filter != null) {
           if (e.to_filter.instance !== undefined && e.to_filter.instance !== instance) return false
           if (e.to_filter.repo !== undefined
-            && deps.presence.repoOf(team_id, handle, presenceLabel) !== e.to_filter.repo) return false
+            && !deps.presence.matchesRepo(team_id, handle, presenceLabel, e.to_filter.repo)) return false
         }
         if (e.subject === null) return true
         if (!ownsNamespace(e.subject, owned)) return false

@@ -15,6 +15,10 @@ const PresenceBody = z.object({
   cwd: z.string().max(1024).optional(),
   branch: z.string().max(256).optional(),
   repo: z.string().max(256).optional(),
+  // A switchboard courier serves every project it holds a local registration
+  // for; a project-scoped send matches it on any of these (see registry
+  // matchesRepo). Bounded: one box does not have 65 projects open.
+  repos: z.array(z.string().min(1).max(256)).max(64).optional(),
   worktree: z.string().max(256).optional(),
   delivery_state: z.enum(['unverified', 'verified', 'deaf']).optional(),
   caps: z.string().max(200).optional(),
@@ -44,6 +48,7 @@ export function presenceRoute(deps: Deps) {
     if (parsed.data.cwd !== undefined) meta.cwd = parsed.data.cwd
     if (parsed.data.branch !== undefined) meta.branch = parsed.data.branch
     if (parsed.data.repo !== undefined) meta.repo = parsed.data.repo
+    if (parsed.data.repos !== undefined) meta.repos = parsed.data.repos.join(',')
     if (parsed.data.worktree !== undefined) meta.worktree = parsed.data.worktree
     if (parsed.data.delivery_state !== undefined) meta.delivery_state = parsed.data.delivery_state
     if (parsed.data.caps !== undefined) meta.caps = parsed.data.caps

@@ -39,6 +39,8 @@ export interface PresenceReport {
   cwd?: string
   branch?: string
   repo?: string
+  /** Switchboard courier: every project it can deliver into. */
+  repos?: string[]
   worktree?: string
   instance?: string
   delivery_state?: 'unverified' | 'verified' | 'deaf'

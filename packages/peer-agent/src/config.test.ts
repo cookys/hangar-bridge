@@ -24,7 +24,7 @@ describe('loadConfig', () => {
     }))
     expect(loadConfig(p).final_mile).toEqual({
       kind: 'agent-call', target: 'local-codex', bin: '/opt/bin/agent-call',
-      accept_broadcast: false,
+      accept_broadcast: false, switchboard: false, list_refresh_ms: 30_000,
     })
   })
 
@@ -37,7 +37,7 @@ describe('loadConfig', () => {
     }))
     expect(loadConfig(p).final_mile).toEqual({
       kind: 'agent-call', target: 'local-codex', bin: 'agent-call',
-      accept_broadcast: false,
+      accept_broadcast: false, switchboard: false, list_refresh_ms: 30_000,
     })
   })
 
@@ -54,7 +54,7 @@ describe('loadConfig', () => {
     const cfg = loadConfig(p)
     expect(cfg.final_mile).toEqual({
       kind: 'agent-call', target: 'local-codex', bin: 'agent-call',
-      accept_broadcast: true,
+      accept_broadcast: true, switchboard: false, list_refresh_ms: 30_000,
     })
   })
 
@@ -209,3 +209,24 @@ describe('isInsideGitRepoWithRemote', () => {
     expect(isInsideGitRepoWithRemote(tree)).toBe(true)
   })
 })
+
+  it('switchboard: accepts agent-call without a target, rejects a plain courier without one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hangar-cfg-'))
+    const sb = join(dir, 'sb.json')
+    writeFileSync(sb, JSON.stringify({
+      relay_url: 'http://127.0.0.1:1', token_path: '/dev/null',
+      final_mile: { kind: 'agent-call', switchboard: true },
+    }))
+    const cfg = loadConfig(sb)
+    expect(cfg.final_mile.kind).toBe('agent-call')
+    if (cfg.final_mile.kind === 'agent-call') {
+      expect(cfg.final_mile.switchboard).toBe(true)
+      expect(cfg.final_mile.target).toBeUndefined()
+    }
+    const plain = join(dir, 'plain.json')
+    writeFileSync(plain, JSON.stringify({
+      relay_url: 'http://127.0.0.1:1', token_path: '/dev/null',
+      final_mile: { kind: 'agent-call' },
+    }))
+    expect(() => loadConfig(plain)).toThrow(/needs a target/)
+  })

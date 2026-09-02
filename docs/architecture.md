@@ -116,6 +116,22 @@ targets — no additional account is required. Each still needs its own roster
 entry; adding one is a `peers.json` edit plus a relay **SIGHUP**, which re-seeds
 without dropping any peer's SSE.
 
+One courier per harness did not follow the fleet's real shape — several harnesses
+in one project, several projects on one box — and a courier that advertised no
+project was never matched by the default project-scoped send. A **switchboard**
+courier (`final_mile: {kind: "agent-call", switchboard: true}`,
+`packages/peer-agent/src/switchboard.ts`) is one daemon per Unix user: it reads
+`agent-call list` (the registry `crew` writes into), derives each tmux
+registration's project the same way a Claude peer derives its own presence
+`repo`, publishes the union as presence `repos` (the relay's `to_filter.repo`
+matches any of them — `PresenceRegistry.matchesRepo`), and routes each inbound
+envelope: `meta.local_target` → that registration only; `to_filter.repo` → every
+registration in that project; otherwise the configured `target` if any, else
+all. One refused extension does not fail the delivery; all refused does, and the
+stream's retry/give-up path applies. The address of a session remains its
+per-process instance id; registration names are labels (`<dir>--<harness>`,
+`-2` on a live duplicate).
+
 Operational procedure, including the acceptance test, lives in the hangar runbook
 `runbooks/hangar-bridge-fleet-deployment.md`.
 
