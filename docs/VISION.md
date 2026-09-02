@@ -2,8 +2,9 @@
 
 > The fleet vision that used to live here was **promoted to `cookys/fuchikoma`** on 2026-06-27
 > (`docs/VISION.md`, `docs/RISKS.md`, `docs/ROADMAP.md` there are the source of truth). This copy
-> had drifted for two months (still described a "budget-bounded local-LLM self-loop" the K5 probe
-> falsified on 2026-07-02). It is now a role pointer only, so it cannot drift again.
+> was the R0 pre-promotion text: it still said the doc "may be promoted to `homeLab` or `hangar`
+> later" and carried none of the post-06-27 revisions (K5 verdict, ladder, agent OS). It is now a
+> role pointer only, so it cannot drift again.
 
 ## What hangar-bridge is, in that vision
 
