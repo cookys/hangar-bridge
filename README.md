@@ -284,6 +284,21 @@ ordinary chat loses its thread linkage to fix a narrow case.
 means the startup self-check passed, `deaf` means it did not. Never infer a healthy link
 from the absence of errors — *this failure mode is defined by having no error to see.*
 
+Two more fleet-visible bits live on the same row, because presence (a heartbeat POST)
+and a live SSE stream are different facts and every layer above used to conflate them:
+
+- `sessions[].subscriptions` — live SSE streams the relay holds for that instance.
+  `1` is healthy; `0` is a session that heartbeats but nothing can reach; `>1` was
+  the amplification loop (one message fanned out once per leaked generation) and is
+  now impossible, since a newer connection from the same instance supersedes the
+  older one (`relay.stream.superseded` in the relay log). `subscribed` is the
+  handle's total.
+- a `FINAL-MILE-FAILED(n): ` summary prefix — the peer-agent stopped retrying `n`
+  envelopes its final mile refused three times each (`peer.stream.delivery_gave_up`,
+  typically an `agent-call` registration whose pane pid has exited). The envelopes
+  stay in the relay's durable buffer for `poll_inbox`; what ends is the replay
+  that was blocking every message behind them.
+
 If you started a session with the wrong key (or no flag at all), you do not lose the conversation:
 re-launch with the correct flag plus `--resume <name>` to continue the same session with channel
 notifications enabled.

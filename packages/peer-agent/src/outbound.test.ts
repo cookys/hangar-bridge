@@ -122,3 +122,27 @@ describe('RelayClient', () => {
     expect(r2).toEqual({ ok: false, owner: 'bob' })
   })
 })
+
+/**
+ * undici returns a socket to its pool only once the response body has been
+ * consumed. setPresence ignored its body, so every 30 s heartbeat parked one
+ * socket until garbage collection — a courier daemon that barely allocates was
+ * found holding 110 connections to the relay (crosshair8-hero, 2026-09-02).
+ */
+describe('RelayClient — response bodies are always consumed', () => {
+  it('setPresence drains the body of a 200', async () => {
+    let res: Response | undefined
+    const fakeFetch = vi.fn(async () => { res = new Response('{"ok":true}', { status: 200 }); return res })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    await c.setPresence({ summary: 'hi' })
+    expect(res!.bodyUsed).toBe(true)
+  })
+
+  it('setPresence drains the body of an error too, then throws', async () => {
+    let res: Response | undefined
+    const fakeFetch = vi.fn(async () => { res = new Response('nope', { status: 503 }); return res })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    await expect(c.setPresence({ summary: 'hi' })).rejects.toThrow(/presence failed: 503/)
+    expect(res!.bodyUsed).toBe(true)
+  })
+})

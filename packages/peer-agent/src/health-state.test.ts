@@ -70,3 +70,32 @@ describe('HealthState', () => {
     expect(shouldClearPersistedDeafState(deaf)).toBe(false)
   })
 })
+
+/**
+ * A final mile that refuses a message three times is stamped onto the presence
+ * summary, the same way DEAF is: from every other host such a peer otherwise
+ * reads "(connected)" while nothing arrives.
+ */
+describe('HealthState — final-mile give-ups', () => {
+  const ok: DeafCheckResult = { state: 'verified', reason: 'flag ok' }
+  const deaf: DeafCheckResult = { state: 'deaf', reason: 'no channels flag' }
+
+  it('prefixes the count once it is non-zero, and re-stamps rather than stacking', () => {
+    const h = new HealthState(ok)
+    expect(h.decorateSummary('(connected)')).toBe('(connected)')
+    h.noteFinalMileGaveUp()
+    const once = h.decorateSummary('(connected)')
+    expect(once).toBe('FINAL-MILE-FAILED(1): (connected)')
+    h.noteFinalMileGaveUp()
+    expect(h.decorateSummary(once)).toBe('FINAL-MILE-FAILED(2): (connected)')
+    expect(h.finalMileGaveUp()).toBe(2)
+  })
+
+  it('composes with DEAF without double-prefixing either', () => {
+    const h = new HealthState(deaf)
+    h.noteFinalMileGaveUp()
+    const s = h.decorateSummary('(connected)')
+    expect(s).toBe('DEAF(inbound-dropped): FINAL-MILE-FAILED(1): (connected)')
+    expect(h.decorateSummary(s)).toBe(s)
+  })
+})

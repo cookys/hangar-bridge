@@ -20,6 +20,12 @@ export interface Subscriber {
   // envelope is NOT delivered to this subscriber. Absent ⇒ accept all (back-compat).
   accept?: (e: Envelope) => boolean
   deliver: (e: Envelope) => void
+  /**
+   * Asked to end this connection because the same instance opened a newer one.
+   * Set by the stream route; a subscriber without it is simply dropped from
+   * the set (its socket, if any, keeps running until its own cleanup).
+   */
+  close?: () => void
 }
 
 export interface MatchedSub {
@@ -136,6 +142,44 @@ export class Fanout {
       if (set) deliverToSet(e.to, set)
     }
     return { delivered: matched.length > 0, selfExcluded, matched }
+  }
+
+  /**
+   * One process, one stream. When an instance opens a new SSE connection, any
+   * earlier subscriber it still holds is superseded: evict it from the set and
+   * ask it to close. Without this a client that reconnected without closing
+   * (a delivery error threw out of the read loop with the body still open)
+   * accumulated one subscriber per reconnect, and every message then fanned
+   * out to all of them — 6 → 7 → 8 → 10 copies watched on one instance,
+   * 2026-09-02. Called by the stream route AFTER it has acquired its own
+   * presence refcount, so evicting the old connection cannot drop the row.
+   * Legacy subscribers (no instance) cannot be told apart and are left alone.
+   * Returns the number evicted.
+   */
+  evictSuperseded(sub: Subscriber): number {
+    if (sub.instance === undefined) return 0
+    const set = this.subs.get(sub.team_id)?.get(sub.handle)
+    if (!set) return 0
+    let evicted = 0
+    for (const other of Array.from(set)) {
+      if (other === sub || other.instance !== sub.instance) continue
+      set.delete(other)
+      evicted++
+      try { other.close?.() } catch { /* a closing stream must not break the new one */ }
+    }
+    return evicted
+  }
+
+  /** Live subscriber count per instance for one handle (legacy subs are keyed ''). */
+  instanceCounts(team_id: string, handle: string): Map<string, number> {
+    const out = new Map<string, number>()
+    const set = this.subs.get(team_id)?.get(handle)
+    if (!set) return out
+    for (const sub of set) {
+      const k = sub.instance ?? ''
+      out.set(k, (out.get(k) ?? 0) + 1)
+    }
+    return out
   }
 
   onlineHandles(team_id: string): string[] {

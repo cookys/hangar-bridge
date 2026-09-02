@@ -152,6 +152,16 @@ export class RelayClient implements PeerTransport, ClaimClient, InboxClient {
       headers: { authorization: `Bearer ${this.opts.token}`, 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
+    // Drain the body even though nothing reads it. undici keeps the socket
+    // checked out of its pool until the response body is consumed, so a
+    // response that is never read is a socket that is never returned — it
+    // lingers until the Response object is garbage-collected. A busy Claude
+    // session collects often enough to hide that; a courier daemon that
+    // allocates almost nothing does not, and was found holding 110 open
+    // connections to the relay after 22 hours of 30-second heartbeats
+    // (crosshair8-hero, 2026-09-02). This is the only relay call that ignored
+    // its body; every other method reads text() or json().
+    await res.text()
     if (res.status !== 200) throw new Error(`presence failed: ${res.status}`)
   }
 

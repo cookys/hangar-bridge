@@ -10,6 +10,7 @@ import type { DeafCheckResult } from './deaf-check.ts'
  * by a later heartbeat the way a one-shot set_summary would be.
  */
 const DEAF_PREFIX = 'DEAF(inbound-dropped): '
+const GAVE_UP_RE = /^FINAL-MILE-FAILED\(\d+\): /
 
 /**
  * The three-valued presence bit (P2 §2.6). `unverified` is the honest
@@ -58,8 +59,24 @@ export class HealthState {
     private readonly deafSinceMs?: number,
   ) {}
 
+  private gaveUp = 0
+
   isDeaf(): boolean {
     return this.check.state === 'deaf'
+  }
+
+  /**
+   * The stream stopped retrying an envelope because the final mile refused it
+   * repeatedly. Counted here so the presence summary carries it: a peer whose
+   * agent-call registration points at a dead pid otherwise looks identical to
+   * a healthy one from every other host.
+   */
+  noteFinalMileGaveUp(): void {
+    this.gaveUp += 1
+  }
+
+  finalMileGaveUp(): number {
+    return this.gaveUp
   }
 
   /**
@@ -79,9 +96,14 @@ export class HealthState {
   }
 
   decorateSummary(summary: string): string {
-    if (!this.isDeaf()) return summary
-    if (summary.startsWith(DEAF_PREFIX)) return summary
-    return DEAF_PREFIX + summary
+    // Strip whatever this builder stamped last time, then re-stamp: the input
+    // is often our own previous output (the heartbeat re-sends lastSummary).
+    let out = summary
+    if (out.startsWith(DEAF_PREFIX)) out = out.slice(DEAF_PREFIX.length)
+    out = out.replace(GAVE_UP_RE, '')
+    if (this.gaveUp > 0) out = `FINAL-MILE-FAILED(${this.gaveUp}): ${out}`
+    if (this.isDeaf()) out = DEAF_PREFIX + out
+    return out
   }
 
   /**

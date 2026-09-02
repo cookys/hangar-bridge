@@ -27,13 +27,25 @@ export function peersRoute(deps: Deps) {
 
     const list = humans.map(h => {
       const snap = deps.presence.get(HANGAR_TEAM_ID, h.handle)
+      // Presence (a heartbeat POST) and a live SSE subscription are two
+      // different facts, and a session can hold the first without the second —
+      // it then reads as online while nothing can reach it. Report the
+      // subscriber count per instance so the difference is visible from any
+      // host: 1 is healthy, 0 is a session nothing can reach, >1 is a leak.
+      const subs = deps.fanout.instanceCounts(HANGAR_TEAM_ID, h.handle)
+      let subscribed = 0
+      for (const n of subs.values()) subscribed += n
+      const sessions = (snap?.sessions ?? []).map(s => (
+        s.instance === undefined ? s : { ...s, subscriptions: subs.get(s.instance) ?? 0 }
+      ))
       return {
         handle: h.handle,
         display_name: h.display_name,
         online: Boolean(snap),
         summary: snap?.summary ?? '',
         last_seen: snap?.last_seen ?? null,
-        sessions: snap?.sessions ?? [],
+        subscribed,
+        sessions,
       }
     })
     const body = JSON.stringify(list)

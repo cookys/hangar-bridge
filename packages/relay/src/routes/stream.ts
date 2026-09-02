@@ -5,6 +5,7 @@ import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { loadOwnedSet, ownsNamespace, matchesInterest } from '../acl.ts'
 import type { Deps } from '../deps.ts'
 import type { Subscriber } from '../fanout.ts'
+import { logJson } from '../logger.ts'
 import { effectiveLabel, parseInstanceHeader } from '../presence/label.ts'
 import { ConnectionRegistry } from '../presence/connections.ts'
 
@@ -98,12 +99,17 @@ export function streamRoute(deps: Deps) {
       }
       const queue: Envelope[] = []
       let notify: (() => void) | null = null
+      // Set when a newer connection from the same instance supersedes this one
+      // (Fanout.evictSuperseded). The read loop exits, cleanup runs, and the
+      // response ends — the client that still had this socket open sees EOF.
+      let superseded = false
       const sub: Subscriber = {
         handle,
         team_id,
         instance,
         accept: deliverable,
-        deliver: (e: Envelope) => { queue.push(e); notify?.() }
+        deliver: (e: Envelope) => { queue.push(e); notify?.() },
+        close: () => { superseded = true; notify?.() },
       }
       // Subscribe BEFORE backlog drain so a message landing in the connect window
       // is buffered (not lost); dedupe-by-id prevents a backlog+live double-send.
@@ -143,6 +149,13 @@ export function streamRoute(deps: Deps) {
       // resolver POST /v1/presence uses to WRITE the row, so acquire and release can
       // never disagree.
       connections.acquire(team_id, handle, presenceLabel)
+      // Only now — with this connection's refcount held — end any earlier
+      // stream this instance left open, so the presence row never drops to
+      // zero in between. One process, one stream (see Fanout.evictSuperseded).
+      const evicted = deps.fanout.evictSuperseded(sub)
+      if (evicted > 0) {
+        logJson('warn', 'relay.stream.superseded', { handle, instance: instance ?? '', evicted })
+      }
 
       // This connection has TWO cleanup paths — the abort listener below and the
       // `finally` of the read loop — and both can fire for one connection. Without
@@ -169,7 +182,7 @@ export function streamRoute(deps: Deps) {
       c.req.raw.signal?.addEventListener('abort', cleanup)
 
       try {
-        while (!c.req.raw.signal?.aborted) {
+        while (!c.req.raw.signal?.aborted && !superseded) {
           if (queue.length === 0) {
             await new Promise<void>(resolve => {
               notify = () => { notify = null; resolve() }
@@ -181,6 +194,12 @@ export function streamRoute(deps: Deps) {
           await stream.writeSSE({ event: 'message', data: JSON.stringify(e) })
           deps.store.markDelivered(e.id)
           markSeen(e.id)
+        }
+        // A superseded stream must not silently swallow what was queued for it:
+        // it was evicted from the fanout set already, so anything still here
+        // arrived before the eviction. Hand it to the newer stream.
+        if (superseded && queue.length > 0) {
+          for (const e of queue.splice(0)) deps.fanout.deliver(e)
         }
       } finally {
         cleanup()

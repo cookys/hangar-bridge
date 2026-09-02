@@ -291,6 +291,15 @@ async function main(): Promise<void> {
       onConnect: reportPresence,
       heartbeatMs: PRESENCE_HEARTBEAT_MS,
       instanceId,
+      // A message the final mile refused three times is skipped, not replayed
+      // forever: advance the cursor past it (it stays readable via poll_inbox)
+      // and stamp the presence summary so the fleet can see this peer is
+      // refusing, instead of reading "(connected)" while nothing arrives.
+      onGiveUp: e => {
+        cursorSink(cfg.transport, cursorStore)(e.id)
+        health.noteFinalMileGaveUp()
+        void reportPresence()
+      },
     })
   }
 

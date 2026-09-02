@@ -49,6 +49,19 @@ export interface StreamClientOpts {
   reconnectBaseMs?: number
   reconnectMaxMs?: number
   stableConnectionMs?: number
+  /**
+   * How many times ONE envelope may fail delivery (each failure tears the
+   * stream down and the reconnect replays it) before the client gives up on
+   * it: `onGiveUp` fires, the envelope is skipped, and the stream continues
+   * with the next one. Without a cap, a final mile that refuses every message
+   * — an agent-call registration pointing at a pid that exited — replays the
+   * same envelope forever, at the reconnect backoff, and every layer above
+   * keeps reporting the peer as online. Default 3. 0 ⇒ unbounded (old
+   * behaviour).
+   */
+  maxDeliveryAttempts?: number
+  /** The envelope this client stopped retrying, with the last error. */
+  onGiveUp?: (e: Envelope, err: unknown) => void
   now?: () => number
   // Deterministic test seam. Production uses the interruptible timer below.
   wait?: (ms: number) => Promise<void>
@@ -61,6 +74,8 @@ export class StreamClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private finishReconnectWait: (() => void) | null = null
+  /** msg_id → consecutive delivery failures; cleared on success or give-up. */
+  private deliveryFailures = new Map<string, number>()
 
   constructor(private opts: StreamClientOpts) {}
 
@@ -118,6 +133,13 @@ export class StreamClient {
           this.attempt = 0
         }
         this.stopHeartbeat()
+        // Close THIS connection before opening the next one. A delivery error
+        // throws out of readStream with the response body still open; without
+        // this abort the socket stayed established, the relay kept its
+        // subscriber, and the next message fanned out to every generation of
+        // this process's stream at once — watched climbing 6 → 10 copies of one
+        // message on twgs-revival, 2026-09-02. One process, one stream.
+        this.aborter?.abort()
       }
       if (this.stopped) break
       const delay = Math.min(
@@ -185,11 +207,26 @@ export class StreamClient {
         // the SSE socket does not: a poison/offline-target envelope may be
         // replayed immediately, and resetting there creates a 500 ms hot loop.
         this.attempt = 0
+        this.deliveryFailures.delete(envelope.id)
       } catch (err) {
+        const failures = (this.deliveryFailures.get(envelope.id) ?? 0) + 1
+        const cap = this.opts.maxDeliveryAttempts ?? 3
         logJson('warn', 'peer.stream.delivery_error', {
           msg_id: envelope.id,
+          attempt: failures,
           err: String(err instanceof Error ? err.message : err),
         })
+        if (cap > 0 && failures >= cap) {
+          // Stop replaying this one. It stays in the relay's durable buffer and
+          // poll_inbox / GET /v1/messages still return it; what ends here is the
+          // reconnect-and-replay of a message the final mile has now refused
+          // `cap` times, which was blocking every message behind it.
+          this.deliveryFailures.delete(envelope.id)
+          logJson('error', 'peer.stream.delivery_gave_up', { msg_id: envelope.id, attempts: failures })
+          try { this.opts.onGiveUp?.(envelope, err) } catch { /* observer must not break the stream */ }
+          continue
+        }
+        this.deliveryFailures.set(envelope.id, failures)
         // Abort this stream read. Since InboundDispatcher did not advance its cursor,
         // the reconnect requests this envelope again instead of losing it.
         throw err

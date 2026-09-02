@@ -153,3 +153,71 @@ describe('Fanout — narrowed broadcast reaches siblings on the sender host', ()
     expect(sibling.received).toHaveLength(0)
   })
 })
+
+/**
+ * One process, one stream. A client that reconnects without closing its
+ * previous connection (a delivery error threw out of the read loop with the
+ * body still open) used to leave one subscriber per generation in the set, and
+ * a single message then fanned out to all of them — 6 → 10 copies watched on
+ * one instance, 2026-09-02.
+ */
+describe('Fanout — superseded instances', () => {
+  let f: Fanout
+  beforeEach(() => { f = new Fanout() })
+
+  function instanceSub(handle: string, instance: string) {
+    const s = collectingSub(handle) as Subscriber & { received: Envelope[]; closed: number }
+    s.instance = instance
+    s.closed = 0
+    s.close = () => { s.closed++ }
+    return s
+  }
+
+  it('evicts and closes earlier subscribers of the same instance, keeps siblings', () => {
+    const gen1 = instanceSub('bob', 'I1')
+    const gen2 = instanceSub('bob', 'I1')
+    const sibling = instanceSub('bob', 'I2')
+    f.subscribe(gen1); f.subscribe(sibling); f.subscribe(gen2)
+    expect(f.evictSuperseded(gen2)).toBe(1)
+    expect(gen1.closed).toBe(1)
+    expect(sibling.closed).toBe(0)
+    f.deliver(env('A', 'bob'))
+    expect(gen1.received).toHaveLength(0)
+    expect(gen2.received).toHaveLength(1)
+    expect(sibling.received).toHaveLength(1)
+  })
+
+  it('leaves legacy subscribers (no instance) alone', () => {
+    const legacy = collectingSub('bob')
+    const gen = instanceSub('bob', 'I1')
+    f.subscribe(legacy); f.subscribe(gen)
+    expect(f.evictSuperseded(gen)).toBe(0)
+    expect(f.evictSuperseded(legacy)).toBe(0)
+    f.deliver(env('A', 'bob'))
+    expect(legacy.received).toHaveLength(1)
+    expect(gen.received).toHaveLength(1)
+  })
+
+  it('survives a close() that throws and still evicts', () => {
+    const gen1 = instanceSub('bob', 'I1')
+    gen1.close = () => { throw new Error('socket already gone') }
+    const gen2 = instanceSub('bob', 'I1')
+    f.subscribe(gen1); f.subscribe(gen2)
+    expect(f.evictSuperseded(gen2)).toBe(1)
+    f.deliver(env('A', 'bob'))
+    expect(gen1.received).toHaveLength(0)
+    expect(gen2.received).toHaveLength(1)
+  })
+
+  it('reports live subscriber counts per instance (0 is unreachable, >1 is a leak)', () => {
+    f.subscribe(instanceSub('bob', 'I1'))
+    f.subscribe(instanceSub('bob', 'I1'))
+    f.subscribe(instanceSub('bob', 'I2'))
+    f.subscribe(collectingSub('bob'))
+    const counts = f.instanceCounts('t1', 'bob')
+    expect(counts.get('I1')).toBe(2)
+    expect(counts.get('I2')).toBe(1)
+    expect(counts.get('')).toBe(1)
+    expect(f.instanceCounts('t1', 'nobody').size).toBe(0)
+  })
+})
