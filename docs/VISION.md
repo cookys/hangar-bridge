@@ -15,8 +15,8 @@
   primitives remain undecided (fuchikoma `docs/RISKS.md` ②).
 - **Trust rules it enforces:** every envelope is `authority: peer`; peer text never authorizes;
   receipts are never upgraded past "transport accepted". These are load-bearing for fuchikoma's
-  acceptance-delegation ladder (verifier isolation) and are documented here, in `SECURITY.md` and
-  `docs/architecture.md`.
+  acceptance-delegation ladder (verifier isolation) and are documented in `README.md` (trust
+  boundaries) and `docs/architecture.md` §6 "Trust model & known residuals".
 
 ## Where to read more
 
