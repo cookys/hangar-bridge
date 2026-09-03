@@ -1,5 +1,9 @@
 <!--
-STATUS: v3 — PROPOSED, not implemented. v3 folds spec panel round 1 (3× FIX):
+STATUS: v4 — PROPOSED, not implemented. v4 folds spec panel round 2 (2× FIX, 1 parse
+failure): harness allowlist + pid ancestry before attach, `~none` unreplyable
+selector, per-pane grants via selector, idempotency reserved before effects,
+presentation invariant restated, /v1/inbox API, cascade + alias index,
+NULL-instance backfill policy, gate collector. v3 folded round 1 (3× FIX):
 registration generation in the return selector, atomic pane lookup, mailbox
 branch of the reply verb, /v1/replies write order, backfill mapping, error
 contract columns, use_reply_verb behind the flag. v2 added the address model (§8.0):
@@ -16,7 +20,7 @@ in hangar log/2026-09.md § 2026-09-04.
 Source re-verified against tree as of 2c4ede3 (2026-09-03).
 -->
 
-# Reply Routing — Implementation Spec (v3)
+# Reply Routing — Implementation Spec (v4)
 
 Status: **proposed**. Target: `hangar-bridge` (relay + peer-agent + shared),
 `dotfiles/bin/fleet` (CLI), `@cookys/agent-call` (local lane). Companion to
@@ -85,12 +89,18 @@ reply_route(
   expires_at       TEXT                -- NULL = follows the message row; set for ephemeral + legacy
 )
 reply_grant(
-  msg_id TEXT NOT NULL REFERENCES reply_route(msg_id),
+  msg_id TEXT NOT NULL REFERENCES reply_route(msg_id) ON DELETE CASCADE,
   handle TEXT NOT NULL,
   instance TEXT NOT NULL,              -- '~cli' for the operator mailbox
-  PRIMARY KEY (msg_id, handle, instance)
+  selector TEXT NOT NULL DEFAULT '',   -- '<name>@<generation>' when the courier pasted into a pane; '' otherwise (§5.2)
+  PRIMARY KEY (msg_id, handle, instance, selector)
 )
+CREATE UNIQUE INDEX reply_route_correlation ON reply_route(correlation_id) WHERE correlation_id IS NOT NULL;
 ```
+
+Terminal deletion of a route (`parent_unaddressable`) cascades to its grants;
+there is no other delete path. The alias index makes `correlation_id`
+resolution deterministic.
 
 A route exists for every accepted user-authored message, persisted or not,
 **except** a directed `task_dispatch` that matched nobody (today: no row;
@@ -121,7 +131,16 @@ ULID otherwise; the transaction commits before any stream event, so a
 copies it, it does not move it.
 
 A grant is **delivery eligibility**, not proof of receipt. SSE cannot prove
-consumption and nothing here pretends it can.
+consumption and nothing here pretends it can. The invariant, stated once for
+every presentation path (live, drain, poll, inbox): **grant commits before
+the message is written; a grant-insert failure aborts before presentation;
+a transport failure after commit leaves the grant standing** — the session
+was eligible, the row stays pending for the drain paths exactly as today
+(`delivered_at` unchanged), and the audience report lists it in `live` as
+`(write failed)`. Nothing is rolled back after commit.
+
+A reply (§5.1) goes through the same order for its own route; that route's
+`thread_root` is the parent route's `thread_root`, copied, never recomputed.
 
 ### 3.3 Effective `thread_root`
 
@@ -168,7 +187,13 @@ see mailbox rows (`to_handle = '@mailbox:…'` is outside their predicate);
 `GET /v1/inbox` (§8.2) owns those exclusively, so a mailbox row is granted
 once, at persistence, and nowhere else. Replay grants are idempotent
 re-assertions of the same `reply_grant` row; the table is the single source
-of truth the reply verb reads.
+of truth the reply verb reads. A grant is pinned to the instance it was
+presented to: a restarted process is a new session and inherits nothing —
+it is granted again only if a row is re-presented to it (`poll_inbox`, or a
+still-pending row on cold start). A session that restarts mid-thread
+therefore cannot answer what its predecessor received unless it reads it
+again; that is the same rule as "a restarted sender is a visible miss",
+seen from the receiving side.
 
 ## 5. The reply verb
 
@@ -187,8 +212,10 @@ it does on `/v1/messages`.
 
 `POST /v1/replies` runs, in this order:
 
-1. Idempotency: same key as `/v1/messages`; a hit returns the stored result
-   and neither mints a route nor counts against §9.
+1. Idempotency: same key as `/v1/messages`. **Reserve** the key first
+   (insert a pending row; a concurrent or later duplicate waits for or
+   returns the stored result). Nothing below runs twice for one key, and a
+   duplicate neither mints a route nor counts against §9.
 2. `route = reply_route[in_reply_to]` (or by `correlation_id` alias); missing
    or expired ⇒ `unknown_parent`.
 3. Audience check (§5.2) against `reply_grant`; legacy width (§5.3) if set.
@@ -201,9 +228,14 @@ it does on `/v1/messages`.
      route.msg_id`, `thread_root = route.thread_root`, `kind = chat`,
      `subject = null`, `meta.local_target = route.return_selector` when set.
      Then the §3.2 write order applies to the reply itself: snapshot → one
-     transaction (new route with the reply's own id, its grants; no `message`
-     row — a reply is directed chat and stays ephemeral) → fanout. Zero
-     matches ⇒ `matched: 0` result, route still written.
+     transaction (new route with the reply's own id and the parent's
+     `thread_root`, its grants, the limiter increment, **and the
+     idempotency result**) → fanout. A crash after commit and before fanout
+     leaves a route whose message was never written; the drain paths do not
+     replay it (no `message` row) and the retry returns the stored result
+     instead of sending again — an accepted lost reply, reported to the
+     caller as such on retry (`result.fanout: unknown`). Zero matches ⇒
+     `matched: 0` result, route still written.
    - **mailbox branch**: when `route.sender_instance` is the reserved `~cli`,
      the envelope is `to = '@mailbox:<route.from_handle>'`, no `to_filter`,
      never fanned out; one transaction persists the `message` row (so
@@ -211,7 +243,7 @@ it does on `/v1/messages`.
      `(id, from_handle, '~cli')`. Result: `live: []`, `durable:
      <handle>~cli`. The reserved-address refine (§6.5) applies to
      client-supplied addresses only; relay-internal resolution is exempt.
-7. Store the idempotency result; respond.
+7. Respond with the stored result.
 
 `send_to_peer` / `POST /v1/messages` refuse `in_reply_to` on user-authored
 kinds with `use_reply_verb` **when the rollout flag is on** (§16); flag off,
@@ -221,7 +253,11 @@ different argument.
 ### 5.2 Audience check
 
 Accepted only if `(replier handle, replier declared instance)` is in
-`reply_grant` for the route; otherwise `not_a_recipient`. A `@team` or repo
+`reply_grant` for the route; otherwise `not_a_recipient`. When the grant
+carries a `selector` (the courier pasted the parent into one pane), the
+reply must present the same `x-hangar-return-selector`; a pane on the same
+host that was not pasted into is `not_a_recipient`. This narrows the shared
+courier instance back to the pane that actually holds the parent (§8.1). A `@team` or repo
 parent grants every session that actually received it and nobody else.
 Message ids are therefore not capabilities: learning one from a log grants
 nothing. Same-bearer siblings can pass the instance half only under §10.
@@ -248,7 +284,7 @@ Backfill mapping, per retained `message` row:
 |---|---|
 | `msg_id` | `message.id` |
 | `from_handle`, `to_handle`, `to_filter_json` | same columns |
-| `sender_instance` | `json_extract(meta_json,'$.sender_instance')` — NULL for rows sent by the CLI or pre-attribution peers; such a route is `parent_unaddressable` even in legacy mode, because no session exists to deliver to |
+| `sender_instance` | `json_extract(meta_json,'$.sender_instance')` — NULL for rows sent by the CLI or pre-attribution peers. **Policy, stated:** such a route is `parent_unaddressable` even in legacy mode, because no session exists to deliver to; legacy width answers *who may reply*, not *where a reply can go*. This includes the incident row itself (`msg_01M1MCFRQPT1RCK5KK04DYERVJ`, CLI-sent). Accepted: those parents were unanswerable before this spec too, and the migration report prints the count. |
 | `thread_root` | `COALESCE(thread_root, id)` |
 | `legacy_width` | by row shape, table above |
 | `correlation_id` | `json_extract(meta_json,'$.correlation_id')` |
@@ -368,7 +404,15 @@ agent-call attach --if-absent --tmux-pane $TMUX_PANE \
 which returns the pane's existing registration if one exists **for this
 pane id** with a live pid and a `harness` equal to the pane's current
 command (the `ac_taken` check, made at lookup time, not only at cleanup),
-else creates one and returns it. Lookup is by pane, never by name, so a
+else creates one and returns it — **only if two preconditions hold**, checked
+by `agent-call` itself, not by the caller: (a) the caller's pid ancestry
+(`/proc`) reaches the pane's pid, so a process cannot register a pane it is
+not running in, and (b) the pane's current command is in the harness
+allowlist (`claude`, `codex`, `opencode`, `agy`, `kimi`, `qoder`,
+`cursor-agent`, `grok`, extended in one place, `agent-call`'s
+`SUPPORTED_HARNESSES`). A pane whose foreground is a shell (`zsh`, `bash`)
+or anything else is **never** registered: pasting peer content into a shell
+executes it. Either precondition failing takes the one-way path below. Lookup is by pane, never by name, so a
 lazily attached pane finds itself again on the next send without exporting
 anything, and a name held by a live registration elsewhere yields `-2`,
 `-3` … exactly as `crew` does. Name precedence for a new registration:
@@ -387,11 +431,15 @@ change, lazy re-attach after cleanup) has a new generation, so an old reply
 is `return_target_gone` — the pane-lane equivalent of "a restarted sender is
 a visible miss" (§5.4), not a paste into whoever lives there now.
 
-If the call fails inside a pane (no `agent-call` on the host, registry
-unwritable), the send still goes out **one-way**: no return selector, the
-frame's reply line reads "reply route unavailable", and the sender is told
-`fleet: could not register this pane (<reason>); the receiver cannot reply`.
-It does **not** fall through to the mailbox: a harness never pulls (§8.0).
+If the call fails inside a pane (precondition, no `agent-call` on the host,
+registry unwritable), the send still goes out **one-way** with the courier
+instance and the explicit selector `~none`: the route records
+`return_selector = '~none'`, the reply verb treats it as
+`parent_unaddressable` (a manual reply cannot black-hole into the courier),
+the frame's reply line reads "reply route unavailable", and the sender is
+told `fleet: could not register this pane (<reason>); the receiver cannot
+reply`. It does **not** fall through to the mailbox: a harness never pulls
+(§8.0).
 
 With a registration in hand, the identity is the host's switchboard courier
 instance. The courier is the host's peer-agent running with
@@ -403,8 +451,9 @@ fanout, and it recognises a paste job by the relay-stamped
 (`newInstanceId()` at peer-agent start); the courier **persists** it
 (`~/.config/hangar-bridge/config.json` → `instance`, honoured at start) so a
 restart keeps every route valid. Two couriers alive during a restart are
-handled by the relay's existing stream supersession (newer stream from the
-same instance wins). The send carries
+handled by the relay's existing stream supersession — a newer stream from
+the same instance supersedes the older one (`routes/stream.ts`,
+`relay.stream.superseded`; `stream-superseded.test.ts`). The send carries
 `x-hangar-return-selector: <name>@<generation>`.
 
 Relay chokepoint: parse and syntax-check the header (`<name>@<ULID>`); store
@@ -415,13 +464,16 @@ address (`--local`), no more privileged than `to_filter.instance` — and it
 never enters a route.
 
 Courier delivery of a reply: resolve `meta.local_target` (`name@generation`)
-against the live registry as above; mismatch or dead ⇒ `return_target_gone`,
-surfaced as a final-mile failure (`FINAL-MILE-FAILED(n)` in the presence
+against the live registry as above; mismatch or dead ⇒ `return_target_gone`
+with `reason: not_registered | generation_stale | harness_changed |
+pid_dead | none_selector`, surfaced as a final-mile failure (`FINAL-MILE-FAILED(n)` in the presence
 summary, as today). **Never** fall back to "all panes in the project". A
 courier whose registry was wiped answers `return_target_gone` for every old
 selector; the sender then issues a new message, which lazily re-registers.
 Courier delivery is **unconfirmed** by construction: the reply result lists
-it as `courier#instance (unconfirmed)`.
+it as `courier#instance (unconfirmed)`. When the courier pastes a message
+into a pane it writes the grant for that message with `selector =
+<name>@<generation>` of the pane (§5.2), so only that pane can answer it.
 
 Ordering guarantee: the registration exists before the send leaves the
 host, and the route exists before any recipient sees the message, so no
@@ -432,7 +484,18 @@ no attach-vs-delivery race to serialise beyond "attach first".
 Applies only outside a tmux pane (`$TMUX_PANE` unset): a plain shell, a
 cron job, a script. The identity header value is the literal `~cli`; the
 handle comes from the bearer, and `<handle>~cli` is display syntax only
-(`fleet peers`, audience reports). It is provisioned lazily on first use. This is deliberately **not** offered to a
+(`fleet peers`, audience reports). It is provisioned lazily on first use.
+
+`GET /v1/inbox?since=<msg_id|''>&limit=<1..500>` (bearer of the handle):
+returns `{ messages: Envelope[], next_cursor: msg_id | null }`, rows with
+`to_handle = '@mailbox:<handle>' AND id > since`, ascending by id, at most
+`limit` (default 100); `next_cursor` is the last id returned or `null` when
+fewer than `limit` came back. It never stamps `delivered_at` and never
+deletes: the client cursor is the only progress. `fleet inbox` keeps its
+cursor in `~/.config/hangar-bridge/inbox-cursor.json`, advances it only
+after printing a page, starts from `''` (everything) when the file is
+absent, and `fleet inbox --peek` reads without advancing. Retention is the
+durable-row retention (§3.4 follow-up). This is deliberately **not** offered to a
 harness: nothing would ever read it. The sender is told at send time:
 `fleet: no pane to deliver replies into; they will queue in this host's
 mailbox (fleet inbox)`. A reply to it is stored durably with recipient `@mailbox:<handle>`,
@@ -546,9 +609,9 @@ the machine-readable extra named in the last column.
 | `use_relay_lane` | `fleet local send` preflight | — | no | §14: a Claude sender addressing a Claude registration; "use `fleet send --instance <id>`" |
 | `return_target_gone` | courier final mile | — | no | §8.1; surfaces as `FINAL-MILE-FAILED(n)` |
 
-Grant-before-response failures on any presentation path (stream write, poll,
-inbox) roll back the grant and do not present the message; the next drain
-retries.
+Presentation-path semantics are the §3.2 invariant: a grant-insert failure
+aborts before the message is presented; a transport failure after commit
+leaves the grant standing and the row pending.
 ## 14. `agent-call` and `fleet` local-lane changes
 
 - One-way sends from an unregistered sender stay (`fleet local send` from a
@@ -590,6 +653,8 @@ retries.
 | `packages/peer-agent/src/cli/send.ts` | instance + return-selector headers |
 | `dotfiles/bin/fleet` | `fleet reply`, `--all-sessions`, instance header (courier / `~cli`), `fleet inbox` on `/v1/inbox`; **lazy attach before send inside a pane** (§8.1) with the one-line notice; mailbox notice outside a pane (§8.2) |
 | `dotfiles/zsh/crew.zsh` | Claude: `agent-call attach --tmux-pane` when no `agent-call-local` channel; detach on exit (§8.4) |
+| `@cookys/agent-call` `src/registry.js`, `src/cli.js` | `attach --if-absent`, generation ULID, `SUPPORTED_HARNESSES`, pid-ancestry + pane-command preconditions (§8.1), `send --from` |
+| hangar `bin/fleet-pulse.sh` (`--health`) | three new per-principal columns read over the existing ssh probe: `fleet_cli` (dotfiles `git rev-parse` of `bin/fleet`), `agent_call` (`agent-call --version`), `courier` (build artifact, already collected); pass predicate in §16 |
 | `@cookys/agent-call` `src/cli.js`, `src/message.js` | §14 |
 | `~/.claude/CLAUDE.md` § Fleet messaging | two rows: reply verb; `--instance` for same host, `--to <own handle>` needs `--all-sessions` |
 
@@ -614,7 +679,12 @@ every operator and courier reply. So:
    host, courier artifacts at the candidate, `agent-call` at the shipped
    version on **every enrolled host that can send from a pane** (not only
    those with a registry today — lazy attach is for hosts that have none) —
-   each read by `bin/fleet-pulse.sh --health` as a column, plus a recorded
+   each read by `bin/fleet-pulse.sh --health` as a column over the existing
+   ssh probe (enrolled hosts = the principal roster in hangar
+   `fleet/_inventory/`, `can-dispatch: true`); the pass predicate is
+   **every** roster row at or past the pinned values for all three columns
+   and `peer_procs_stale = 0`, printed as one line `ADDRESS_RULES_GATE:
+   PASS|FAIL <failing rows>`; plus a recorded
    end-to-end run of the four reply shapes — CLI reply to directed chat;
    courier-pane reply to a relayed parent; first-send lazy attach followed
    by a reply landing in that pane; mailbox reply — each recorded in hangar
@@ -642,6 +712,15 @@ Until step 3 the fleet remains exposed to the 2026-09-03 failure.
   return selector's generation bounds *where* a reply lands, not *who* may
   send one. Tightening needs per-pane credentials — deferred with the
   per-instance-credentials ADR.
+- Until step 3, `send_to_peer({in_reply_to})` still works (the ADR's R2
+  refusal is permanent in intent but flag-gated in rollout, like the other
+  refusals); the old shape is exactly what un-upgraded peers follow, and
+  refusing it earlier would break them before they can learn the verb.
+- Legacy rows without a stamped `sender_instance` (CLI-sent, pre-attribution)
+  are `parent_unaddressable` forever, incident row included (§5.3).
+- A restarted session does not inherit its predecessor's grants (§4).
+- A lost reply after commit-before-fanout is reported on retry, not
+  resent (§5.1).
 - A one-way send from a pane leaves a registration behind. Accepted: while
   the process lives the sender *should* be reachable, and cleanup collects it
   on death. The alternative — a mailbox nobody reads — was rejected as a
