@@ -1,5 +1,8 @@
 <!--
-STATUS: v1 — PROPOSED, not implemented. Mechanism half of hangar
+STATUS: v2 — PROPOSED, not implemented. v2 adds the address model (§8.0):
+registration is the only return path a harness has, because a harness never
+pulls; a pane sender without a registration gets one lazily at first send;
+the operator mailbox is scoped to senders outside any pane. Mechanism half of hangar
 ADR-_global/0015 ("a fleet reply addresses a session, never a host"); the
 ADR carries the decision and rationale, this file carries everything an
 implementer needs. Where the two disagree, fix both; neither overrides.
@@ -10,7 +13,7 @@ in hangar log/2026-09.md § 2026-09-04.
 Source re-verified against tree as of 2c4ede3 (2026-09-03).
 -->
 
-# Reply Routing — Implementation Spec (v1)
+# Reply Routing — Implementation Spec (v2)
 
 Status: **proposed**. Target: `hangar-bridge` (relay + peer-agent + shared),
 `dotfiles/bin/fleet` (CLI), `@cookys/agent-call` (local lane). Companion to
@@ -30,8 +33,12 @@ verb with no address, resolved on the relay.**
    and cannot reach anyone but the session that sent it.
 2. Every send that would reach more than one session says so up front
    (explicit flag) and reports afterwards exactly who it reached.
-3. CLI and courier-lane senders (operator shells, codex/kimi/agy panes)
-   become answerable; today they have no session identity at all.
+3. CLI and courier-lane senders (operator shells, codex/kimi/agy/opencode
+   panes) become answerable; today they have no session identity at all.
+   For a harness in a pane the **only** return path is the courier pasting
+   into that pane, and the courier's only map is the `agent-call` registry —
+   so "answerable" means "registered", and registration must not depend on
+   the operator remembering to launch through `crew`.
 
 ### 1.2 Non-goals
 
@@ -51,6 +58,7 @@ verb with no address, resolved on the relay.**
 | session | `handle#instance` — the unit of address |
 | route | relay-side record keyed by message id that says who sent a message and to whom it may be answered |
 | grant | `(route, handle, instance)` — a session that was eligible to receive the route's message |
+| registration | an `agent-call` registry entry: name → pane (tmux ingress) or channel socket, pid, cwd; the courier's delivery map |
 | user-authored kinds | `chat`, `task_dispatch` |
 | protocol kinds | `task_result`, `permission_request`, `permission_verdict`, `presence_update` |
 
@@ -264,18 +272,53 @@ canonicalises to that route's effective root. The message then goes through
 thread; it cannot name an arbitrary root and it is deliberately not called a
 reply.
 
-## 8. CLI identity (R1-CLI)
+## 8. CLI identity and the address model (R1-CLI)
 
 `fleet send` and `fleet reply` always send `x-hangar-instance`. Today the CLI
 sends none, which is why every operator and courier send is
 `attribution_status: unverifiable` and unanswerable — and why the incident's
 sender received its own message (no self-exclusion without an instance).
 
-### 8.1 Inside a registered pane → courier identity + return selector
+### 8.0 Address model
 
-When `AGENT_CALL_NAME` is set and names a live registration, the identity is
-the host's switchboard courier instance, which the courier **persists**
-across restarts (config file) so routes do not orphan. The send also carries
+A harness never pulls. Whatever reaches a harness in a pane is **pasted** by
+the switchboard courier (one daemon per Unix user) or by `agent-call send`,
+and both look the target up in the `agent-call` registry. A registration is
+therefore the one and only return address a pane has; a mailbox a harness
+would have to poll is not a return path, it is a black hole with a name.
+
+| Sender | Address | Lifetime | Who delivers a reply |
+|---|---|---|---|
+| any harness in a tmux pane, however launched | registration `<dir>--<harness>` — created by `crew` at launch, or **lazily at first send** (§8.1) | the pane process's lifetime; cleanup detaches on pid death or harness mismatch | courier pastes into the pane; `agent-call send <name>` likewise |
+| a Claude session with the bridge MCP | relay instance id (and, when in a pane, a registration too) | the process's lifetime | relay delivers to the instance; `fleet reply` resolves to it |
+| a shell or script outside any pane | operator mailbox `<handle>~cli` (§8.2) | durable | nobody — pull with `fleet inbox` |
+
+Three consequences. Registration is a **precondition of being answered, not
+of sending**: one-way sends from anything stay legal. A sender that has no
+registration and cannot get one (not in a pane) is told so on the way out
+and its frame says "reply route unavailable" (§14). And `crew` stops being
+the only door: it is the tidy way to get an address at launch, and the lazy
+path is the safety net for whatever was launched by hand.
+
+### 8.1 Inside a pane → registration, courier identity, return selector
+
+`fleet send` / `fleet local send` / `fleet reply` run inside a tmux pane
+(`$TMUX_PANE` set) first ensure the pane is registered:
+
+1. If `AGENT_CALL_NAME` names a live registration whose pid is this pane's
+   pid (or an ancestor of the caller), use it.
+2. Otherwise **attach now**: name `<basename of cwd>--<pane current command>`
+   (`revival.3d--opencode`), `--tmux-pane $TMUX_PANE`, the same call `crew`
+   makes at launch; on a live-name collision take `-2`, `-3` … exactly as
+   `crew` does. Print one line to the sender: `fleet: registered this pane
+   as <name>; replies will land here`. Export nothing — the name is in the
+   registry, which is the source of truth.
+3. If attach fails (no `agent-call`, not a tmux pane) fall through to §8.2
+   with a warning that names the reason.
+
+With a registration in hand, the identity is the host's switchboard courier
+instance, which the courier **persists** across restarts (config file) so
+routes do not orphan. The send also carries
 `x-hangar-return-selector: <name>`.
 
 Relay chokepoint: parse and syntax-check the header exactly like the instance
@@ -293,10 +336,14 @@ courier whose registry was wiped answers `return_target_gone`; the sender then
 issues a new message, not a reply. Courier delivery is **unconfirmed** by
 construction: the reply result lists it as `courier#instance (unconfirmed)`.
 
-### 8.2 Outside any pane → operator mailbox
+### 8.2 Outside any pane → operator mailbox (pull-only, humans and scripts)
 
-Identity is the reserved instance `<handle>~cli`, provisioned lazily on first
-use. A reply to it is stored durably with recipient `@mailbox:<handle>`,
+Applies only when §8.1 could not produce a registration: a shell outside
+tmux, a cron job, a script. Identity is the reserved instance `<handle>~cli`,
+provisioned lazily on first use. This is deliberately **not** offered to a
+harness: nothing would ever read it. The sender is told at send time:
+`fleet: no pane to deliver replies into; they will queue in this host's
+mailbox (fleet inbox)`. A reply to it is stored durably with recipient `@mailbox:<handle>`,
 outside the `to_handle` predicate, and drained only by the authenticated
 `GET /v1/inbox?since=<cursor>` of that handle (`fleet inbox`). It is **never
 pushed** to any session and lives as long as any durable row. Its single grant
@@ -308,6 +355,25 @@ mailbox is not a widening: it interrupts nobody.
 Relay channel frames and courier pane deliveries print
 `Reply: fleet reply <msg_id> "…"`. The line names a message id, never a handle
 or a harness name.
+
+### 8.4 Registration lifecycle (crew + cleanup)
+
+- `crew` attaches every harness it launches, **Claude included**: today
+  Claude gets only `AGENT_CALL_NAME` and relies on an `agent-call-local`
+  channel that exists only in projects with a `.mcp.json`, so most `crew`
+  Claude sessions have a name and no registration (cuda 2026-09-03: three
+  of four). When that channel is absent, `crew` runs the same
+  `agent-call attach --tmux-pane` it runs for codex. Tmux ingress into a
+  Claude pane is already how `revival.3d--claude` is reached.
+- `crew` detaches on normal exit (trap on the harness process ending) so a
+  clean shutdown does not wait for cleanup.
+- Cleanup (`fleet-pulse --health` and the operator's detach pass) keeps its
+  objective rules — pid dead, or pane current command ≠ registered harness
+  (`ac_taken`) — and gains nothing to guess: a lazily attached registration
+  is indistinguishable from a `crew` one.
+- Restarting a harness in the same pane re-registers on its next send if
+  `crew` did not; a stale entry for the previous occupant is what
+  `ac_taken` catches.
 
 ## 9. Relay-side reply limiter
 
@@ -375,10 +441,11 @@ drain the row later.
 | `reserved_address` / `reserved_instance` | `/v1/messages`, `/v1/stream` | §6.5 |
 | `return_target_gone` | courier final mile | §8.1 |
 
-## 14. `agent-call` changes (local lane)
+## 14. `agent-call` and `fleet` local-lane changes
 
 - One-way sends from an unregistered sender stay (`fleet local send` from a
-  shell is `from=local-cli`).
+  shell outside tmux is `from=local-cli`); inside a pane the sender is
+  registered first (§8.1), so `from=` is a real address.
 - A frame prints a copyable reply line **only when the sender owns the
   registration it names**: `agent-call send` checks, sender-side, that
   `AGENT_CALL_NAME` is a live registration and that its own pid ancestry
@@ -404,7 +471,8 @@ drain the row later.
 | `packages/peer-agent/src/instructions.ts` | replace "passing to = the sender's handle and optionally in_reply_to" with the reply verb |
 | `packages/peer-agent/src/switchboard.ts` | persisted courier instance; `return_target_gone`; no fallback to all panes |
 | `packages/peer-agent/src/cli/send.ts` | instance + return-selector headers |
-| `dotfiles/bin/fleet` | `fleet reply`, `--all-sessions`, instance header (courier / `~cli`), `fleet inbox` on `/v1/inbox` |
+| `dotfiles/bin/fleet` | `fleet reply`, `--all-sessions`, instance header (courier / `~cli`), `fleet inbox` on `/v1/inbox`; **lazy attach before send inside a pane** (§8.1) with the one-line notice; mailbox notice outside a pane (§8.2) |
+| `dotfiles/zsh/crew.zsh` | Claude: `agent-call attach --tmux-pane` when no `agent-call-local` channel; detach on exit (§8.4) |
 | `@cookys/agent-call` `src/cli.js`, `src/message.js` | §14 |
 | `~/.claude/CLAUDE.md` § Fleet messaging | two rows: reply verb; `--instance` for same host, `--to <own handle>` needs `--all-sessions` |
 
@@ -443,6 +511,10 @@ Until step 3 the fleet remains exposed to the 2026-09-03 failure.
 - Ephemeral routes expire after 7 d.
 - Legacy routes are weaker for 7 d after migration (§5.3).
 - Courier delivery is unconfirmed (§8.1).
+- A one-way send from a pane leaves a registration behind. Accepted: while
+  the process lives the sender *should* be reachable, and cleanup collects it
+  on death. The alternative — a mailbox nobody reads — was rejected as a
+  black hole with a name (§8.0).
 - Protocol kinds still fan out per handle today (§6.4); routing them through
   the route table is a follow-up.
 - `reply_all` deferred with a stated re-open criterion.
