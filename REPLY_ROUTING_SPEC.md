@@ -1,5 +1,10 @@
 <!--
-STATUS: v6 — PROPOSED, not implemented. v6 folds spec panel round 4 (codex FIX, 1
+STATUS: v7 — PROPOSED, not implemented. LOOP CLOSED at the five-round cap: round 5
+was 3× FIX-THEN-SHIP (codex 2 Critical, both folded: unaddressable routes are
+tombstoned not deleted; takeover CASes lease AND reserved_at). Findings were
+still arriving at implementation granularity each round; the operator's call
+is to proceed to implementation with per-PR panel review rather than a sixth
+spec round. Residuals are listed in §17. v6 folded round 4 (codex FIX, 1
 Critical: idempotency lease fencing; MiniMax FIX; glm parse failure): lease token,
 failure transitions, key scope + request digest, finalise state machine,
 no-selector predicate, fanout uses the frozen snapshot, sender_state on
@@ -28,7 +33,7 @@ in hangar log/2026-09.md § 2026-09-04.
 Source re-verified against tree as of 2c4ede3 (2026-09-03).
 -->
 
-# Reply Routing — Implementation Spec (v6)
+# Reply Routing — Implementation Spec (v7)
 
 Status: **proposed**. Target: `hangar-bridge` (relay + peer-agent + shared),
 `dotfiles/bin/fleet` (CLI), `@cookys/agent-call` (local lane). Companion to
@@ -94,7 +99,8 @@ reply_route(
   legacy_width     TEXT,               -- NULL | 'handle' | 'team-not-sender' | 'unreplyable' (§5.3)
   correlation_id   TEXT,               -- alias key for ephemeral chat (existing meta.correlation_id)
   created_at       TEXT NOT NULL,
-  expires_at       TEXT                -- NULL = follows the message row; set for ephemeral + legacy
+  expires_at       TEXT,               -- NULL = follows the message row; set for ephemeral + legacy
+  unaddressable_at TEXT                -- tombstone (§5.4): set, never deleted, so later grants still insert
 )
 reply_grant(
   msg_id TEXT NOT NULL REFERENCES reply_route(msg_id) ON DELETE CASCADE,
@@ -106,8 +112,11 @@ reply_grant(
 CREATE UNIQUE INDEX reply_route_correlation ON reply_route(correlation_id) WHERE correlation_id IS NOT NULL;
 ```
 
-Terminal deletion of a route (`parent_unaddressable`) cascades to its grants;
-there is no other delete path. The alias index makes `correlation_id`
+A route is **never deleted** while its message row can still be presented:
+`parent_unaddressable` sets `unaddressable_at` (a tombstone the reply verb
+refuses on) so a later drain or poll can still insert its grant. Routes go
+away only with their message row (durable) or at `expires_at` (ephemeral,
+legacy); the cascade covers those. The alias index makes `correlation_id`
 resolution deterministic.
 
 Two more small tables so §5.1 can commit everything in one transaction:
@@ -120,14 +129,19 @@ reply_limiter(
   PRIMARY KEY (thread_root, handle, window_start)
 )                                       -- rows older than 2 windows are swept by the purge loop
 reply_idem(
-  key_hash BLOB PRIMARY KEY,            -- sha256(team_id ‖ handle ‖ Idempotency-Key)
-  request_digest BLOB NOT NULL,         -- sha256 of the canonical request body
+  key_hash BLOB PRIMARY KEY,            -- sha256 of length-prefixed (team_id, handle, key): len‖bytes for each
+  request_digest BLOB NOT NULL,         -- sha256 of RFC 8785 (JCS) canonical JSON of {in_reply_to, content, meta}
   state TEXT NOT NULL CHECK(state IN ('pending','committed','final','error')),
   lease TEXT NOT NULL,                  -- ULID; changes on every takeover (fencing token)
-  reserved_at TEXT NOT NULL,
-  result_json TEXT                      -- at 'committed' (before fanout), 'final', or 'error'
+  reserved_at TEXT NOT NULL,            -- refreshed on every takeover
+  result_status INTEGER,                -- HTTP status to replay
+  result_json TEXT,                     -- body to replay: at 'committed' (before fanout), 'final', or 'error'
+  error_until TEXT                      -- for 'error' rows that may be re-executed (reply_storm): retry_after
 )
 ```
+
+`Idempotency-Key` grammar: 1–64 chars of `[A-Za-z0-9_-]`, else 400
+`idempotency_key_invalid`.
 
 `Idempotency-Key` is **required** on `/v1/replies` (400 `idempotency_key_required`
 otherwise); the CLI and MCP mint a ULID per call and reuse it on retry. The
@@ -174,9 +188,11 @@ consumption and nothing here pretends it can. The invariant, stated once for
 every presentation path (live, drain, poll, inbox): **grant commits before
 the message is written; a grant-insert failure aborts before presentation;
 a transport failure after commit leaves the grant standing** — the session
-was eligible, the row stays pending for the drain paths exactly as today
-(`delivered_at` unchanged), and the audience report lists it in `live` as
-`(write failed)`. Nothing is rolled back after commit.
+was eligible, and what the row does next is exactly today's behaviour
+(below): a null-subject durable row that was stamped `delivered_at` at send
+time is **not** replayed after a failed write (accepted, unchanged); a
+subjected row stays pending and drains later. The audience report lists the
+session in `live` as `(write failed)`. Nothing is rolled back after commit.
 
 `delivered_at` keeps **today's** rules, restated so nothing is invented: for
 a null-subject durable row it is stamped at send time when any recipient
@@ -236,8 +252,11 @@ see mailbox rows (`to_handle = '@mailbox:…'` is outside their predicate);
 `GET /v1/inbox` (§8.2) owns those exclusively, so a mailbox row is granted
 once, at persistence, and nowhere else. Replay grants are idempotent
 re-assertions of the same `reply_grant` row; the table is the single source
-of truth the reply verb reads. A grant is pinned to the instance it was
-presented to: a restarted process is a new session and inherits nothing —
+of truth the reply verb reads. A courier that subscribed after the snapshot is granted on drain like any
+other late subscriber (durable rows only; an ephemeral directed message
+aimed at a courier instance that held no subscription at snapshot time is
+`matched: 0` for the sender and is lost, as today). A grant is pinned to the
+instance it was presented to: a restarted process is a new session and inherits nothing —
 it is granted again only if a row is re-presented to it (`poll_inbox`, or a
 still-pending row on cold start). A session that restarts mid-thread
 therefore cannot answer what its predecessor received unless it reads it
@@ -267,25 +286,37 @@ it does on `/v1/messages`.
    to change, then returns 409 `reply_in_progress` (retryable);
    `committed`, `final` or `error` returns `result_json` as-is (200 for the
    first two, the stored status for `error`). A `pending` row older than
-   60 s is a crashed reservation: the next holder **takes it over by
-   replacing `lease`** with a new ULID and runs the algorithm once. Every
+   60 s is a crashed reservation: the next holder **takes it over by one
+   CAS that sets `lease` to a new ULID AND `reserved_at = now`** (both, or
+   every concurrent retry could keep re-taking it) and re-runs **every** step
+   below as if fresh — the limiter counts the takeover attempt, not the
+   original's. Every
    write below that changes state runs `… WHERE key_hash = ? AND lease = <my
    lease>` and aborts with 409 `reply_in_progress` if zero rows changed —
    so a worker that was taken over cannot commit, increment the limiter,
    mint a route, or fan out; the token is the fence. Steps 2–5 refusing
    (`unknown_parent`, `not_a_recipient`, `legacy_unreplyable`,
    `parent_unaddressable`, `reply_storm`) move the row to `error` with the
-   refusal as `result_json` in the same statement that fences it, so a
-   retry gets the same answer without re-running the checks. Nothing below
+   refusal as `result_status`/`result_json` in the same fenced statement
+   (the step-4 tombstone write is in that statement too, so a fenced-out
+   worker cannot tombstone), so a retry gets the same answer without
+   re-running the checks — except `reply_storm`, whose row carries
+   `error_until = retry_after` and is re-executed by a retry after that
+   time. Every `error` body carries `retry_with_new_key: true` so a caller
+   that meant a *new* reply knows to mint a new key. Nothing below
    runs twice for one key, and a duplicate neither mints a route nor counts
    against §9.
 2. `route = reply_route[in_reply_to]` (or by `correlation_id` alias); missing
    or expired ⇒ `unknown_parent`.
 3. Audience check (§5.2) against `reply_grant`; legacy width (§5.3) if set.
-4. `route.sender_instance` NULL, `route.return_selector = '~none'`, or
-   `from_handle` disabled/removed ⇒ `parent_unaddressable`; the route row is
-   deleted.
-5. Limiter (§9) on `(route.thread_root, replier handle)` ⇒ `reply_storm`.
+4. `route.sender_instance` NULL (legacy rows included), `route.return_selector
+   = '~none'`, `from_handle` disabled/removed, or `unaddressable_at` already
+   set ⇒ `parent_unaddressable`; the route is tombstoned
+   (`unaddressable_at = now`), never deleted.
+5. Limiter (§9): the check **and** the increment are one conditional
+   statement inside the fenced step-6 transaction (`… WHERE count < 10`,
+   zero rows ⇒ `reply_storm`), so two concurrent replies cannot both see
+   `count < 10`.
 6. Build the envelope:
    - **session branch** (the normal case): `to = route.from_handle`,
      `to_filter.instance = route.sender_instance`, `in_reply_to =
@@ -310,8 +341,11 @@ it does on `/v1/messages`.
    - **mailbox branch**: when `route.sender_instance` is the reserved `~cli`,
      the envelope is `to = '@mailbox:<route.from_handle>'`, no `to_filter`,
      never fanned out; one transaction persists the `message` row (so
-     `GET /v1/inbox` can drain it), the reply's route, and its single grant
-     `(id, from_handle, '~cli')`. Result: `live: []`, `durable:
+     `GET /v1/inbox` can drain it), the reply's route, and the reply's own
+     single grant `(reply id, from_handle, '~cli', '')`. The *parent* that a
+     mailbox user answers is a mailbox row too, and already carries its
+     grant `(parent id, handle, '~cli', '')` from §4, which is what §5.2
+     matches for a `~cli` replier. Result: `live: []`, `durable:
      <handle>~cli`. The reserved-address refine (§6.5) applies to
      client-supplied addresses only; relay-internal resolution is exempt.
 7. Respond with the stored result.
@@ -349,7 +383,8 @@ flag changes nothing about it:
 |---|---|---|
 | direct handle, no `to_filter` | `handle` | any instance of that handle |
 | `@team`, no `to_filter` | `team-not-sender` | any handle except `from_handle` (the drain predicate excluded those siblings) |
-| anything with a `to_filter` | `unreplyable` | nobody (`legacy_unreplyable`) |
+| `@team` + `{repo}` (project chat) | `repo:<name>` | any session whose current presence publishes that repo (the audience it had when live) |
+| anything else with a `to_filter` (instance-narrowed) | `unreplyable` | nobody (`legacy_unreplyable`) |
 
 A reply to a legacy route is reported with `legacy_parent: true`.
 
@@ -374,6 +409,8 @@ Backfill mapping, per retained `message` row **of kind `chat` or
 | `route.sender_instance` NULL, or `from_handle` disabled/removed | `parent_unaddressable` (terminal; route dropped). Never widens to the handle. |
 | sender session offline | `matched: 0` + the existing "NO live session matched" report. **Not retried automatically**; the caller re-runs `list_peers` and sends a fresh message if it still matters. |
 | sender restarted | new instance id ⇒ `matched: 0` for its own earlier outbound. A visible miss, never re-aimed. |
+| legacy route with NULL `sender_instance` (CLI-sent, pre-attribution) | `parent_unaddressable` (§5.3 policy, enforced here) |
+| target pane re-attached (restart, harness change, lazy re-attach) | new generation ⇒ the route's `return_selector` is stale ⇒ `return_target_gone` with `reason: generation_stale` at the courier; the sender is told to send a fresh message |
 
 From rollout step 3 the relay requires `x-hangar-instance` on every
 user-authored send (`sender_instance_required`), so the only unaddressable
@@ -438,11 +475,12 @@ canonicalises to that route's effective root. The predicate is **sent OR granted
 `route.from_handle = caller handle AND route.sender_instance = caller
 instance AND (route.return_selector IS NULL OR route.return_selector IN
 ('', '~none') OR route.return_selector = caller selector)` — NULL, empty and
-`~none` all mean "no selector", which is every ordinary bridge session;
-"granted" is the §5.2 match including the selector rule. A recipient that
-was not the sender may therefore continue the thread for a different
-audience, which is the ADR's stated intent. A legacy route counts as sent only on the handle (its
-instance may be NULL), and a `~cli` caller matches only routes it sent. The message then goes through
+`~none` all mean "no selector", which is every ordinary bridge session and
+every `~cli` caller; "granted" is the §5.2 match including the selector
+rule, and a mailbox row's `(id, handle, '~cli', '')` grant qualifies like
+any other. A recipient that was not the sender may therefore continue the
+thread for a different audience, which is the ADR's stated intent. A
+legacy route counts as sent only on the handle (its instance may be NULL). The message then goes through
 §6 in full. This is the only sanctioned path to a wider audience inside a
 thread; it cannot name an arbitrary root and it is deliberately not called a
 reply.
@@ -539,8 +577,12 @@ fanout, and it recognises a paste job by the relay-stamped
 `meta.local_target`. Today that instance is minted per process
 (`newInstanceId()` at peer-agent start); the courier **persists** it
 (`~/.config/hangar-bridge/config.json` → `instance`, honoured at start) so a
-restart keeps every route valid. Two couriers alive during a restart are
-handled by the relay's existing stream supersession — a newer stream from
+restart keeps every route valid. Because the instance persists, no grant migration is needed on restart; if
+the persisted id is lost (config wiped) the new courier is a new instance,
+every blank grant keyed to the old one is orphaned, finalisation returns
+`grant_not_found` and each such delivery is a final-mile failure —
+accepted, and the same shape as a wiped registry. Two couriers alive during
+a restart are handled by the relay's existing stream supersession — a newer stream from
 the same instance supersedes the older one (`routes/stream.ts`,
 `relay.stream.superseded`; `stream-superseded.test.ts`). The send carries
 `x-hangar-return-selector: <name>@<generation>`.
@@ -562,6 +604,14 @@ courier whose registry was wiped answers `return_target_gone` for every old
 selector; the sender then issues a new message, which lazily re-registers.
 Courier delivery is **unconfirmed** by construction: the reply result lists
 it as `courier#instance (unconfirmed)`.
+
+**A bridge Claude session in a pane.** Its own messages arrive on its
+relay instance (no selector), but a parent that the courier pasted into
+its pane carries a selector grant. `reply_to_peer` therefore presents the
+pane's selector automatically: when `$TMUX_PANE` is set, the peer-agent
+reads the pane's current registration (`name@generation`) from the local
+registry at call time and sends it as `x-hangar-return-selector`, exactly
+as the CLI does. Nothing about that is a caller decision.
 
 **Grant finalisation (courier → relay).** The send transaction gave the
 courier a blank grant `(msg_id, handle, courier instance, '')`. Before
@@ -618,9 +668,13 @@ mailbox is not a widening: it interrupts nobody.
 
 ### 8.3 Frames
 
-Relay channel frames and courier pane deliveries print
-`Reply: fleet reply <msg_id> "…"`. The line names a message id, never a handle
-or a harness name.
+The reply line names a message id, never a handle or a harness name, and
+names the verb that will actually pass §5.2 for that receiver: a relay
+channel frame into a bridge Claude session says `Reply: reply_to_peer
+in_reply_to=<msg_id>` (the MCP tool, which stamps the pane selector itself
+when there is one); a courier paste into a pane and a mailbox row say
+`Reply: fleet reply <msg_id> "…"`; a `~none` route prints "reply route
+unavailable" and no command.
 
 ### 8.4 Registration lifecycle (crew + cleanup)
 
@@ -651,7 +705,13 @@ or a harness name.
   same retry loop and `-2`/`-3` collision rule as its non-Claude path, and
   the name it attaches is the one it started the process with.
 - Every attach mints a generation (§8.1); re-attaching a pane invalidates
-  every return selector issued under the previous generation.
+  every return selector issued under the previous generation. **Detach and
+  cleanup are generation-fenced**: `agent-call detach <name>@<generation>`
+  removes only that generation, so a stale exit trap or cleanup pass cannot
+  remove a newer registration that reused the name.
+- Only **generated** names take `-2`/`-3` on a live collision; an explicit
+  name held by a live registration fails closed (launch refusal, attach
+  refusal), in `crew` and in the lazy path alike.
 - Cleanup (`fleet-pulse --health` and the operator's detach pass) keeps its
   objective rules — pid dead, or pane current command ≠ registered harness
   (`ac_taken`) — and gains nothing to guess: a lazily attached registration
@@ -699,11 +759,13 @@ check keeps it out of threads it did not receive.
 
 ```
 { live:    ["cuda#01M1…", "cuda-kimi#… (unconfirmed)"],   // from the snapshot
-  durable: "none" | "<handle>" | "repo:<name>" | "team" | "<handle>~cli",
-  matched: N, legacy_parent?: true }
+  durable: [] | ["<handle>"] | ["repo:<name>"] | ["team"] | ["<handle>~cli"],  // the ADR's second list
+  matched: N, sender_state?: "live"|"offline", legacy_parent?: true }
 ```
 
-`durable: "team"` is an unfiltered `@team` chat (every handle may drain it).
+`durable: ["team"]` is an unfiltered `@team` chat (every handle may drain
+it); `durable` is a list so the ADR's "two separate lists" holds even when
+it has one entry.
 `live` is the live subscription set (a session mid-reconnect is missing, one
 connected but not yet publishing presence is present) and is never presented
 as the complete audience; `durable` says which handle, repo, or mailbox may
@@ -744,7 +806,9 @@ the machine-readable extra named in the last column.
 | `idempotency_key_required` / `idempotency_mismatch` | `/v1/replies` | 400 / 422 | no | §3.1: header missing / same key, different request |
 | (not an error) retry of a `committed` reply | `/v1/replies` | 200 | — | stored result with `fanout: unknown`; do not resend |
 | (not an error) `matched: 0` on a reply | `/v1/replies` | 200 | no | `sender_state: offline`; do not retry automatically (§5.4) |
-| `grant_not_found` | `/v1/grants/finalize` | 404 | no | §8.1: no blank courier grant for this message |
+| `grant_not_found` | `/v1/grants/finalize` | 404 | no | §8.1: neither a blank nor any non-blank grant exists for `(msg_id, handle, courier instance)` |
+| `idempotency_key_invalid` | `/v1/replies` | 400 | no | §3.1 grammar |
+| `instance_required` | `poll_inbox` (flag on) | 400 | no | §4: a poll without `x-hangar-instance` cannot be granted; flag off, the message is presented ungranted with `attribution_status: unverifiable` and cannot be answered |
 
 Presentation-path semantics are the §3.2 invariant: a grant-insert failure
 aborts before the message is presented; a transport failure after commit
@@ -756,6 +820,10 @@ leaves the grant standing and the row pending.
   registered first (§8.1), so `from=` is a real address and the CLI passes
   it explicitly (`agent-call send --from <name>`), never relying on
   `AGENT_CALL_NAME` alone.
+- The local frame's return address is `<name>@<generation>` and
+  `agent-call send` compares the generation with the registry before
+  pasting (`return_target_gone` otherwise), so a delayed local reply cannot
+  land in a session that reused the name.
 - **One lane per pair (ADR R4).** `fleet local send` refuses, at preflight,
   a send from a Claude pane (registered harness `claude`) to a registration
   whose harness is `claude` (`use_relay_lane`): Claude ↔ Claude goes over the
@@ -839,6 +907,12 @@ every operator and courier reply. So:
    operator who approves the flip when the evidence entries are complete —
    and the pulse fails closed on any roster row below a pin or any missing
    entry, so the flip is a check against named evidence, not judgement.
+   Comparators: `relay` = `/health.build_revision` equals the pin;
+   `peer_agent` = artifact SHA-256 on every principal equals the pin;
+   `courier_artifact` = same, for the courier hosts; `fleet_cli_commit` =
+   the pinned commit is an ancestor of the host's dotfiles HEAD
+   (`git merge-base --is-ancestor`); `agent_call_version` = semver ≥ pin.
+   "At or past" means those five comparisons, nothing looser.
    Residual risk in this window, accepted: bare-handle `task_dispatch` still
    fans out until the flag flips.
 3. **Relay** — `HANGAR_RELAY_ADDRESS_RULES=on`. Every refusal carries the
@@ -870,7 +944,16 @@ Until step 3 the fleet remains exposed to the 2026-09-03 failure.
 - A restarted session does not inherit its predecessor's grants (§4).
 - A lost reply after commit-before-fanout is reported on retry, not
   resent (§5.1).
-- A one-way send from a pane leaves a registration behind. Accepted: while
+- A one-way send from a pane leaves a registration behind.
+- **Loop closed at the cap (round 5, 3× FIX-THEN-SHIP).** Every Critical was
+  folded; the remaining Majors were folded as text where verified. Not
+  adopted, with reason: refusing `to = <own handle>` even with
+  `all_sessions` (MiniMax) — the explicit acknowledgement *is* the control
+  and the ADR keeps the operator-notice use; per-instance limiter keys
+  (MiniMax, twice) — instance is self-declared. Implementation-granularity
+  findings will keep appearing; the intended next step is implementation
+  under TDD per §15 with **per-PR** panel review, where smaller diffs
+  converge. Accepted: while
   the process lives the sender *should* be reachable, and cleanup collects it
   on death. The alternative — a mailbox nobody reads — was rejected as a
   black hole with a name (§8.0).
