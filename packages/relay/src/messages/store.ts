@@ -135,15 +135,28 @@ export class MessageStore {
     return envelope
   }
 
-  fetchSince(team_id: string, to_handle: string, since_id: string): Envelope[] {
+  /**
+   * §4 drain self-exclusion: when `pollerInstance` is given, a direct row
+   * additionally requires the sending instance to be absent or different —
+   * a durable bare-handle self-send no longer replays into the sending
+   * session's own next cold start. Omitted, behaviour is byte-identical to
+   * today (existing callers unaffected).
+   */
+  fetchSince(team_id: string, to_handle: string, since_id: string, pollerInstance?: string): Envelope[] {
+    const directClause = pollerInstance === undefined
+      ? 'to_handle=?'
+      : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
+    const params = pollerInstance === undefined
+      ? [team_id, since_id, to_handle, to_handle]
+      : [team_id, since_id, to_handle, pollerInstance, to_handle]
     const rows = this.db.prepare(`
       SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ?
-        AND (to_handle=? OR (to_handle='@team' AND from_handle != ?))
+        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
       ORDER BY id ASC LIMIT 1000
-    `).all(team_id, since_id, to_handle, to_handle) as EnvelopeRow[]
+    `).all(...params) as EnvelopeRow[]
     return rows.map(envelopeFromRow)
   }
 
@@ -152,15 +165,22 @@ export class MessageStore {
   // non-deliverable (interest-narrowed, delivered_at=NULL) rows at the front of the
   // window — the single-shot variant could permanently starve deliverable rows past
   // position 1000 (B3 black hole).
-  fetchPendingSince(team_id: string, to_handle: string, since_id: string): Envelope[] {
+  // Same §4 self-exclusion as fetchSince (pollerInstance optional, back-compat when omitted).
+  fetchPendingSince(team_id: string, to_handle: string, since_id: string, pollerInstance?: string): Envelope[] {
+    const directClause = pollerInstance === undefined
+      ? 'to_handle=?'
+      : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
+    const params = pollerInstance === undefined
+      ? [team_id, since_id, to_handle, to_handle]
+      : [team_id, since_id, to_handle, pollerInstance, to_handle]
     const rows = this.db.prepare(`
       SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ? AND delivered_at IS NULL
-        AND (to_handle=? OR (to_handle='@team' AND from_handle != ?))
+        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
       ORDER BY id ASC LIMIT 1000
-    `).all(team_id, since_id, to_handle, to_handle) as EnvelopeRow[]
+    `).all(...params) as EnvelopeRow[]
     return rows.map(envelopeFromRow)
   }
 
@@ -172,15 +192,22 @@ export class MessageStore {
    * relies on, and it must be idempotent so a harness can poll on a timer.
    * Same recipient predicate as fetchSince (direct rows plus @team from others).
    */
-  fetchInboxSince(team_id: string, to_handle: string, since_id: string, limit: number): Envelope[] {
+  // Same §4 self-exclusion as fetchSince (pollerInstance optional, back-compat when omitted).
+  fetchInboxSince(team_id: string, to_handle: string, since_id: string, limit: number, pollerInstance?: string): Envelope[] {
+    const directClause = pollerInstance === undefined
+      ? 'to_handle=?'
+      : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
+    const params = pollerInstance === undefined
+      ? [team_id, since_id, to_handle, to_handle, limit]
+      : [team_id, since_id, to_handle, pollerInstance, to_handle, limit]
     const rows = this.db.prepare(`
       SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ?
-        AND (to_handle=? OR (to_handle='@team' AND from_handle != ?))
+        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
       ORDER BY id ASC LIMIT ?
-    `).all(team_id, since_id, to_handle, to_handle, limit) as EnvelopeRow[]
+    `).all(...params) as EnvelopeRow[]
     return rows.map(envelopeFromRow)
   }
 

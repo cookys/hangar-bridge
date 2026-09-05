@@ -231,3 +231,64 @@ describe('MessageStore reply routing (REPLY_ROUTING_SPEC.md §3.1, §8.1, §8.2)
     expect(store.fetchMailboxSince('bob', '', 1).map(e => e.id)).toEqual(['msg_mb1'])
   })
 })
+
+describe('drain self-exclusion (REPLY_ROUTING_SPEC.md §4)', () => {
+  let db: Db
+  let store: MessageStore
+  beforeEach(() => { db = openDatabase(':memory:'); seed(db); store = new MessageStore(db) })
+
+  it('fetchSince excludes a durable bare-handle self-send for the SENDING instance, includes it for another', () => {
+    store.insert('t1', 'alice', {
+      to: 'alice', kind: 'chat', content: 'note to self', meta: { sender_instance: 'inst-A' },
+    })
+    expect(store.fetchSince('t1', 'alice', '', 'inst-A')).toHaveLength(0)
+    expect(store.fetchSince('t1', 'alice', '', 'inst-B')).toHaveLength(1)
+  })
+
+  it('fetchSince is byte-identical to today when no pollerInstance is given', () => {
+    store.insert('t1', 'alice', {
+      to: 'alice', kind: 'chat', content: 'note to self', meta: { sender_instance: 'inst-A' },
+    })
+    expect(store.fetchSince('t1', 'alice', '')).toHaveLength(1)
+  })
+
+  it('fetchPendingSince applies the same self-exclusion when given a poller instance', () => {
+    store.insert('t1', 'alice', {
+      to: 'alice', kind: 'chat', content: 'note', meta: { sender_instance: 'inst-A' },
+    })
+    expect(store.fetchPendingSince('t1', 'alice', '', 'inst-A')).toHaveLength(0)
+    expect(store.fetchPendingSince('t1', 'alice', '', 'inst-B')).toHaveLength(1)
+    expect(store.fetchPendingSince('t1', 'alice', '')).toHaveLength(1)
+  })
+
+  it('fetchInboxSince applies the same self-exclusion when given a poller instance', () => {
+    store.insert('t1', 'alice', {
+      to: 'alice', kind: 'chat', content: 'note', meta: { sender_instance: 'inst-A' },
+    })
+    expect(store.fetchInboxSince('t1', 'alice', '', 100, 'inst-A')).toHaveLength(0)
+    expect(store.fetchInboxSince('t1', 'alice', '', 100, 'inst-B')).toHaveLength(1)
+    expect(store.fetchInboxSince('t1', 'alice', '', 100)).toHaveLength(1)
+  })
+
+  it('a legacy self-send with no sender_instance in meta is still delivered (no way to tell apart)', () => {
+    store.insert('t1', 'alice', { to: 'alice', kind: 'chat', content: 'legacy note to self' })
+    expect(store.fetchSince('t1', 'alice', '', 'inst-A')).toHaveLength(1)
+  })
+
+  it('@team rows are unaffected by pollerInstance (that exclusion is already by whole handle)', () => {
+    store.insert('t1', 'alice', { to: '@team', kind: 'chat', content: 'hi all', meta: { sender_instance: 'inst-A' } })
+    expect(store.fetchSince('t1', 'alice', '', 'inst-A')).toHaveLength(0)
+    expect(store.fetchSince('t1', 'bob', '', 'inst-B')).toHaveLength(1)
+  })
+
+  it('never returns a @mailbox: row from any of the three drain/poll methods (§8.2 owns those exclusively)', () => {
+    const now = new Date().toISOString()
+    db.prepare(`
+      INSERT INTO message(id,v,team_id,from_handle,to_handle,kind,content,meta_json,sent_at)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run('msg_mb_x', 2, 't1', 'alice', '@mailbox:bob', 'chat', 'for bob', '{}', now)
+    expect(store.fetchSince('t1', 'bob', '')).toHaveLength(0)
+    expect(store.fetchPendingSince('t1', 'bob', '')).toHaveLength(0)
+    expect(store.fetchInboxSince('t1', 'bob', '', 100)).toHaveLength(0)
+  })
+})
