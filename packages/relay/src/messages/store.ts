@@ -285,27 +285,39 @@ export class MessageStore {
   /**
    * §8.1 grant finalisation state machine. Runs in its own transaction so the
    * blank-grant replace (delete + insert) is atomic against a concurrent
-   * finalise call: blank exists → replace with the selector ('replaced');
-   * exact selector already granted → no-op ('exists'); a different non-blank
-   * grant for this (msg_id,handle,instance) already exists → widen alongside
-   * it ('inserted'); otherwise → null (caller maps to `grant_not_found`).
+   * finalise call: exact selector already granted → no-op ('exists'), and if
+   * a stray blank grant also happens to be present beside it (e.g. a racing
+   * finalise that never got cleaned up), the blank is deleted here too — it
+   * must never survive once the target selector is confirmed granted, and
+   * checking this FIRST (before the blank-replace branch below) avoids a
+   * duplicate INSERT on reply_grant's PRIMARY KEY when both rows already
+   * exist. Otherwise: blank exists → replace with the selector ('replaced');
+   * a different non-blank grant for this (msg_id,handle,instance) already
+   * exists → widen alongside it ('inserted'); otherwise → null (caller maps
+   * to `grant_not_found`).
    */
   finalizeGrant(msg_id: string, handle: string, instance: string, selector: string): FinalizeGrantResult {
     return this.db.transaction((): FinalizeGrantResult => {
       const hasExact = (sel: string): boolean => this.db.prepare(
         'SELECT 1 AS x FROM reply_grant WHERE msg_id=? AND handle=? AND instance=? AND selector=?'
       ).get(msg_id, handle, instance, sel) != null
-
-      if (hasExact('')) {
+      const deleteBlank = (): void => {
         this.db.prepare(
           'DELETE FROM reply_grant WHERE msg_id=? AND handle=? AND instance=? AND selector=?'
         ).run(msg_id, handle, instance, '')
+      }
+
+      if (hasExact(selector)) {
+        if (selector !== '' && hasExact('')) deleteBlank()
+        return 'exists'
+      }
+      if (hasExact('')) {
+        deleteBlank()
         this.db.prepare(
           'INSERT INTO reply_grant(msg_id,handle,instance,selector) VALUES (?,?,?,?)'
         ).run(msg_id, handle, instance, selector)
         return 'replaced'
       }
-      if (hasExact(selector)) return 'exists'
       const otherNonBlank = this.db.prepare(
         "SELECT 1 AS x FROM reply_grant WHERE msg_id=? AND handle=? AND instance=? AND selector != ''"
       ).get(msg_id, handle, instance)

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDatabase, type Db } from '../db/db.ts'
-import { MessageStore } from './store.ts'
+import { MessageStore, type FinalizeGrantResult } from './store.ts'
 import type { OutboundMessage } from '@hangar-bridge/shared'
 
 function seed(db: Db) {
@@ -196,6 +196,25 @@ describe('MessageStore reply routing (REPLY_ROUTING_SPEC.md §3.1, §8.1, §8.2)
       store.insertRoute(route())
       expect(store.finalizeGrant('msg_r1', 'bob', 'inst-1', 'pane@gen1')).toBeNull()
       expect(store.hasGrant('msg_r1', 'bob', 'inst-1', 'pane@gen1')).toBe(false)
+    })
+
+    it('tolerates a blank grant AND the exact target selector both already present (does not throw on the PK)', () => {
+      // A stray/racing state: the blank row was never cleaned up after an
+      // earlier finalise that already granted this exact selector. The
+      // 'replaced' branch's plain INSERT would previously throw on
+      // reply_grant's PRIMARY KEY here.
+      store.insertRoute(route())
+      store.insertGrants('msg_r1', [
+        { handle: 'bob', instance: 'inst-1', selector: '' },
+        { handle: 'bob', instance: 'inst-1', selector: 'pane@gen1' },
+      ])
+      let result: FinalizeGrantResult | undefined
+      expect(() => { result = store.finalizeGrant('msg_r1', 'bob', 'inst-1', 'pane@gen1') }).not.toThrow()
+      expect(result).toBe('exists')
+      expect(store.hasGrant('msg_r1', 'bob', 'inst-1')).toBe(false)               // blank never survives
+      expect(store.hasGrant('msg_r1', 'bob', 'inst-1', 'pane@gen1')).toBe(true)
+      const count = db.prepare("SELECT COUNT(*) AS n FROM reply_grant WHERE msg_id='msg_r1'").get() as { n: number }
+      expect(count.n).toBe(1)
     })
   })
 
