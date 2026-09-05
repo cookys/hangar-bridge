@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import {
-  HANGAR_TEAM_ID,
   REPLY_ERROR_RETRYABLE,
   isValidMessageId, isValidInstanceId,
   type ReplyErrorCode,
