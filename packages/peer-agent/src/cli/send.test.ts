@@ -111,4 +111,38 @@ describe('runSend — identity headers', () => {
     const headers = calls[0]!.init.headers as Record<string, string>
     expect(headers['x-hangar-return-selector']).toBe('~none')
   })
+
+  /**
+   * Repair round item 5b (review finding, adopted): config.json's `instance`
+   * is written by saveConfig() (which validates it, §8.1), but this reader
+   * cannot assume the file on disk still matches — hand edits, an older
+   * schema version, or partial corruption a stray process wrote could leave
+   * a syntactically-string-but-not-a-ULID value. Sending a malformed
+   * x-hangar-instance would 400 the whole send at the relay chokepoint;
+   * treating an invalid value as ABSENT (mint fresh instead) degrades
+   * gracefully the same way a missing key already does.
+   */
+  it('a malformed persisted instance is treated as absent — mints fresh rather than sending garbage', async () => {
+    process.env.TMUX_PANE = '%7'
+    writeFileSync(join(workdir, 'config.json'), JSON.stringify({
+      relay_url: 'http://x', token_path: join(workdir, 'secret'), instance: 'not-a-valid-ulid',
+    }))
+    const { fn, calls } = fakeFetch()
+    await runSend(['bob', 'hi', '--relay', 'http://x'], {
+      fetchImpl: fn as any, findPaneRegistration: async () => undefined, mintInstanceId: () => '01MINTED000000000000000000',
+    })
+    const headers = calls[0]!.init.headers as Record<string, string>
+    expect(headers['x-hangar-instance']).toBe('01MINTED000000000000000000')
+  })
+
+  it('a validly-shaped persisted instance is still sent verbatim (no false rejection)', async () => {
+    process.env.TMUX_PANE = '%7'
+    writeFileSync(join(workdir, 'config.json'), JSON.stringify({
+      relay_url: 'http://x', token_path: join(workdir, 'secret'), instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    }))
+    const { fn, calls } = fakeFetch()
+    await runSend(['bob', 'hi', '--relay', 'http://x'], { fetchImpl: fn as any, findPaneRegistration: async () => undefined })
+    const headers = calls[0]!.init.headers as Record<string, string>
+    expect(headers['x-hangar-instance']).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
+  })
 })

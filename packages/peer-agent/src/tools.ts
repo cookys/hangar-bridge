@@ -12,6 +12,7 @@ import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
 import { detectWorkingContext } from './roots.ts'
+import { logJson } from './logger.ts'
 
 const AddressSchema = z.union([
   z.string().regex(HANDLE_REGEX),
@@ -693,7 +694,21 @@ export function registerTools(
       // does, because a reply that retries under a NEW key would mint a
       // second route/grant/limiter-increment for the same answer.
       const idempotencyKey = ulid().toLowerCase()
-      const returnSelector = getPaneSelector ? await getPaneSelector() : undefined
+      // §8.1: "not registered" already means "send no selector" — a
+      // registry READ failure (agent-call missing, ENOENT, a malformed JSON
+      // blip) is the same kind of "cannot tell" and must not fail the
+      // reply itself; the reply is the thing that matters, the selector is
+      // an optimisation on top of it.
+      let returnSelector: string | undefined
+      if (getPaneSelector) {
+        try {
+          returnSelector = await getPaneSelector()
+        } catch (err) {
+          logJson('warn', 'peer.reply_to_peer.pane_selector_read_failed', {
+            err: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
       const body: { in_reply_to: string; content: string; meta?: Record<string, string> } = {
         in_reply_to: input.in_reply_to, content: input.content,
       }

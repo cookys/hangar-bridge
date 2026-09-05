@@ -854,4 +854,22 @@ describe('registerTools — reply_to_peer', () => {
       expect(reply.mock.calls[1]![1].returnSelector).toBe('pane@01GEN0000000000000000000A')
     })
   })
+
+  /**
+   * Repair round item 5a (review finding, adopted): getPaneSelector is a
+   * registry read (agent-call list --json under the hood) — a failure
+   * there (agent-call missing, ENOENT, a malformed JSON blip) must never
+   * fail the reply itself; §8.1 already treats "not registered" as "send
+   * no selector", and a registry READ error is the same kind of "cannot
+   * tell" as a registry MISS, not a reason to abort answering at all.
+   */
+  it('a getPaneSelector failure yields no selector, and the reply still goes through', async () => {
+    const reply = vi.fn(async () => ({ ok: true, status: 200, body: { id: 'msg_01HRK7Y000000000000000000C', live: [], durable: [], matched: 0 } }))
+    const client = { ...baseClient(), reply } as unknown as RelayClient
+    const getPaneSelector = vi.fn(async () => { throw new Error('agent-call: ENOENT') })
+    const { callTool } = registerTools(client, presence, undefined, undefined, undefined, undefined, undefined, undefined, getPaneSelector)
+    const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+    expect(reply.mock.calls[0]![1].returnSelector).toBeUndefined()
+    expect((r.content[0] as any).text).toContain('replied msg_01HRK7Y000000000000000000C')
+  })
 })

@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { ulid } from 'ulid'
-import { RESERVED_CLI_INSTANCE, newInstanceId } from '@hangar-bridge/shared'
+import { RESERVED_CLI_INSTANCE, newInstanceId, isValidInstanceId } from '@hangar-bridge/shared'
 import { resolveRelayUrl } from './relay-url.ts'
 import { readTokenFile } from './token-file.ts'
 import { defaultSecretPath, defaultConfigPath } from '../paths.ts'
@@ -16,13 +16,20 @@ function flagValue(args: string[], flag: string): string | undefined {
  * relay-url.ts's readConfigRelayUrl: a missing/unparseable/older config file
  * (no `instance` key) is "absent", not an error, since this CLI must keep
  * working against a config that predates the field.
+ *
+ * Repair round item 5b: also validated against the same ULID grammar
+ * saveConfig() enforces on write. The file on disk can drift from what
+ * saveConfig last wrote (a hand edit, an older schema, partial corruption
+ * from a stray process) — accepting an unvalidated string here would send
+ * a malformed x-hangar-instance and 400 the whole send at the relay
+ * chokepoint. Treated as absent instead, exactly like a missing key.
  */
 function readConfigInstance(): string | undefined {
   const p = defaultConfigPath()
   if (!existsSync(p)) return undefined
   try {
     const cfg = JSON.parse(readFileSync(p, 'utf8')) as { instance?: unknown }
-    return typeof cfg.instance === 'string' ? cfg.instance : undefined
+    return typeof cfg.instance === 'string' && isValidInstanceId(cfg.instance) ? cfg.instance : undefined
   } catch {
     return undefined
   }
