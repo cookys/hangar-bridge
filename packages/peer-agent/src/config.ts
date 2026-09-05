@@ -1,7 +1,7 @@
-import { readFileSync, existsSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, statSync, writeFileSync, chmodSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
-import { NAMESPACE_REGEX, INTEREST_REGEX, HANDLE_REGEX } from '@hangar-bridge/shared'
+import { NAMESPACE_REGEX, INTEREST_REGEX, HANDLE_REGEX, isValidInstanceId } from '@hangar-bridge/shared'
 import { readTokenFile } from './cli/token-file.ts'
 import { defaultConfigPath, defaultAuditDir } from './paths.ts'
 
@@ -58,7 +58,12 @@ export const ConfigSchema = z.object({
     auto_publish_branch: z.boolean().default(true),
     auto_publish_repo: z.boolean().default(true)
   }).default({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }),
-  audit_log: z.string().default(() => defaultAuditDir())
+  audit_log: z.string().default(() => defaultAuditDir()),
+  // §8.1: a switchboard courier persists its process instance id here so a
+  // restart reuses it (no grant migration needed — every blank/finalised
+  // grant keyed to the old instance stays valid). Absent for every other
+  // peer-agent, which still mints a fresh instance id per process.
+  instance: z.string().refine(isValidInstanceId, 'must be a valid instance id').optional(),
 }).superRefine((value, ctx) => {
   if (value.transport === 'nats' && !value.nats) {
     ctx.addIssue({
@@ -97,6 +102,27 @@ export function loadConfig(path: string = defaultConfigPath()): HangarConfig {
   if (!existsSync(path)) throw new Error(`config file not found: ${path}`)
   const raw = JSON.parse(readFileSync(path, 'utf8'))
   return ConfigSchema.parse(raw)
+}
+
+/**
+ * Persist a config patch (currently only `instance`, §8.1) into an existing
+ * config.json. Reads the raw file (not the zod-normalized shape, so fields
+ * this process doesn't know about survive untouched), merges the patch,
+ * validates the RESULT against the same schema `loadConfig` enforces before
+ * writing anything — a patch that would fail validation leaves the file on
+ * disk untouched — and writes with owner-only permissions (0600), matching
+ * every other long-lived secret/identity file this peer-agent manages.
+ */
+export function saveConfig(path: string, patch: { instance?: string }): void {
+  if (!existsSync(path)) throw new Error(`config file not found: ${path}`)
+  const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+  const merged = { ...raw, ...patch }
+  ConfigSchema.parse(merged)
+  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 })
+  // `mode` on writeFileSync only applies at file CREATION time; an existing
+  // config.json (the overwhelmingly common case — this always patches a file
+  // an operator already created) keeps its prior permission bits otherwise.
+  if (process.platform !== 'win32') chmodSync(path, 0o600)
 }
 
 export function loadToken(path: string): string {

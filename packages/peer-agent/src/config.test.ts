@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig, loadToken, isInsideGitRepoWithRemote, assertSecretFilePrivate } from './config.ts'
+import { loadConfig, loadToken, isInsideGitRepoWithRemote, assertSecretFilePrivate, saveConfig } from './config.ts'
 
 let workdir = ''
 beforeEach(() => { workdir = mkdtempSync(join(tmpdir(), 'mesh-')) })
@@ -139,6 +139,79 @@ describe('loadConfig', () => {
       audit_log: join(workdir, 'audit'),
     }))
     expect(() => loadConfig(p)).toThrow(/ask_team/)
+  })
+
+  /**
+   * D5 item 4a (§8.1): the courier persists its instance id in config.json so
+   * a restart keeps every grant it holds valid ("no grant migration is
+   * needed on restart"). It is optional and format-checked the same way as
+   * every other instance id in the system.
+   */
+  describe('instance persistence (§8.1)', () => {
+    it('is absent by default', () => {
+      const p = join(workdir, 'no-instance.json')
+      writeFileSync(p, JSON.stringify({ relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok') }))
+      expect(loadConfig(p).instance).toBeUndefined()
+    })
+
+    it('round-trips a persisted instance id', () => {
+      const p = join(workdir, 'with-instance.json')
+      writeFileSync(p, JSON.stringify({
+        relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok'),
+        instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      }))
+      expect(loadConfig(p).instance).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
+    })
+
+    it('rejects a malformed instance id', () => {
+      const p = join(workdir, 'bad-instance.json')
+      writeFileSync(p, JSON.stringify({
+        relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok'),
+        instance: 'not-a-ulid',
+      }))
+      expect(() => loadConfig(p)).toThrow()
+    })
+  })
+
+  describe('saveConfig', () => {
+    it('writes a new instance id into an existing config file, preserving other fields', () => {
+      const p = join(workdir, 'save.json')
+      writeFileSync(p, JSON.stringify({
+        relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok'), self: 'cuda',
+      }))
+      saveConfig(p, { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' })
+      const cfg = loadConfig(p)
+      expect(cfg.instance).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
+      expect(cfg.relay_url).toBe('https://mesh.example.com')
+      expect(cfg.self).toBe('cuda')
+    })
+
+    it('overwrites a previously persisted instance id', () => {
+      const p = join(workdir, 'overwrite.json')
+      writeFileSync(p, JSON.stringify({
+        relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok'),
+        instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      }))
+      saveConfig(p, { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAW' })
+      expect(loadConfig(p).instance).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAW')
+    })
+
+    it('writes the file with owner-only permissions', () => {
+      const p = join(workdir, 'perms.json')
+      writeFileSync(p, JSON.stringify({ relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok') }))
+      saveConfig(p, { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' })
+      if (process.platform !== 'win32') {
+        expect(statSync(p).mode & 0o777).toBe(0o600)
+      }
+    })
+
+    it('refuses a patch that would fail schema validation', () => {
+      const p = join(workdir, 'invalid-patch.json')
+      writeFileSync(p, JSON.stringify({ relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok') }))
+      expect(() => saveConfig(p, { instance: 'not-a-ulid' })).toThrow()
+      // The file on disk is untouched by a rejected patch.
+      expect(JSON.parse(readFileSync(p, 'utf8'))).not.toHaveProperty('instance')
+    })
   })
 
   it('defaults transport to sse when omitted', () => {
