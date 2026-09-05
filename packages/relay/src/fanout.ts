@@ -33,6 +33,20 @@ export interface MatchedSub {
   instance?: string | undefined
 }
 
+/**
+ * `snapshotDetailed`'s return shape: the matched set plus whether the only
+ * thing excluded from it was the sender's own instance (§3.2 step 2 needs
+ * this preserved through to the frozen delivery — see `deliverDetailed`).
+ */
+export interface SnapshotDetail {
+  matched: MatchedSub[]
+  selfExcluded: boolean
+}
+
+function isSnapshotDetail(v: MatchedSub[] | SnapshotDetail): v is SnapshotDetail {
+  return !Array.isArray(v)
+}
+
 /** The same subscriber set minus one instance — used to self-exclude the
  *  sending session from its own narrowed broadcast without excluding the
  *  siblings that share its handle. */
@@ -40,6 +54,16 @@ function filterOutInstance(set: Set<Subscriber>, instance: string): Set<Subscrib
   const out = new Set<Subscriber>()
   for (const sub of set) if (sub.instance !== instance) out.add(sub)
   return out
+}
+
+/**
+ * Membership key for a frozen-snapshot delivery (§3.2 step 4): `handle#instance`,
+ * the same `#`-joined session syntax the spec's audience report already uses
+ * (never a raw control byte — a handle/instance id cannot contain '#', so this
+ * cannot collide two distinct sessions into one key).
+ */
+function snapshotKey(handle: string, instance: string | undefined): string {
+  return `${handle}#${instance ?? ''}`
 }
 
 export class Fanout {
@@ -92,18 +116,61 @@ export class Fanout {
    * receive it was the sender itself" from "nobody was listening": the former
    * must count as delivered, or a later cold start on this handle drains the
    * sender its own old message back.
+   *
+   * REPLY_ROUTING_SPEC.md §3.2 step 4: `snapshot`, taken by the send
+   * transaction before it commits, may be passed back in here so delivery
+   * targets exactly that frozen set — never a fresh match. A subscriber that
+   * joined after the snapshot is not delivered to live (no grant; a durable
+   * row reaches it on drain instead); a subscriber that departed since is
+   * simply absent from the live set and is tolerated, not an error.
    */
-  deliverDetailed(e: Envelope): { delivered: boolean; selfExcluded: boolean; matched: MatchedSub[] } {
+  deliverDetailed(
+    e: Envelope,
+    snapshot?: MatchedSub[] | SnapshotDetail
+  ): { delivered: boolean; selfExcluded: boolean; matched: MatchedSub[] } {
+    if (snapshot) {
+      const { matched, selfExcluded } = isSnapshotDetail(snapshot)
+        ? snapshot
+        : { matched: snapshot, selfExcluded: false }
+      return this.deliverFromSnapshot(e, matched, selfExcluded)
+    }
+    const { matched, selfExcluded } = this.resolveMatches(e, true)
+    return { delivered: matched.length > 0, selfExcluded, matched }
+  }
+
+  /**
+   * The matched `{handle, instance}` set `deliverDetailed` would deliver to
+   * RIGHT NOW, without sending anything — the §3.2 step 2 snapshot the send
+   * transaction commits routes/grants against before fanout ever runs.
+   */
+  snapshot(e: Envelope): MatchedSub[] {
+    return this.snapshotDetailed(e).matched
+  }
+
+  /**
+   * Same as `snapshot`, plus the self-exclusion outcome at snapshot time:
+   * a send whose only live match was its own instance (a narrowed @team, or
+   * a direct self-send) must carry `selfExcluded: true` through to the
+   * frozen delivery, exactly as a live `deliverDetailed(e)` would — otherwise
+   * "everyone who could receive it was the sender" and "nobody was
+   * listening" become indistinguishable once the snapshot is taken.
+   */
+  snapshotDetailed(e: Envelope): SnapshotDetail {
+    return this.resolveMatches(e, false)
+  }
+
+  /** Shared matching logic for both a live delivery and a snapshot-only read. */
+  private resolveMatches(e: Envelope, deliver: boolean): SnapshotDetail {
     const byHandle = this.subs.get(e.team)
     const matched: MatchedSub[] = []
-    if (!byHandle) return { delivered: false, selfExcluded: false, matched }
+    if (!byHandle) return { matched, selfExcluded: false }
     const senderInstance = e.meta['sender_instance']
     let selfExcluded = false
     // ONE collection path for @team and direct (unified so @team can also report a
     // matched count for to_filter{repo}). Per-subscriber `accept` carries BOTH the
     // subject-ownership gate AND the to_filter presence match (set by the stream
     // route, which has the presence registry); fanout stays presence-agnostic.
-    const deliverToSet = (handle: string, set: Set<Subscriber>): void => {
+    const collect = (handle: string, set: Set<Subscriber>): void => {
       for (const sub of set) {
         // Per-instance self-exclusion (direct only; @team already skips e.from's
         // whole handle). Legacy (either side lacks an instance) keeps old behaviour.
@@ -112,7 +179,7 @@ export class Fanout {
           continue
         }
         if (sub.accept && !sub.accept(e)) continue
-        sub.deliver(e)
+        if (deliver) sub.deliver(e)
         matched.push({ handle, instance: sub.instance })
       }
     }
@@ -131,15 +198,41 @@ export class Fanout {
         if (handle === e.from) {
           if (e.to_filter == null) continue
           if (senderInstance === undefined) continue   // legacy peer: keep old behaviour
-          deliverToSet(handle, filterOutInstance(set, senderInstance))
+          collect(handle, filterOutInstance(set, senderInstance))
           selfExcluded = true
           continue
         }
-        deliverToSet(handle, set)
+        collect(handle, set)
       }
     } else {
       const set = byHandle.get(e.to)
-      if (set) deliverToSet(e.to, set)
+      if (set) collect(e.to, set)
+    }
+    return { matched, selfExcluded }
+  }
+
+  /**
+   * Deliver only to subscribers currently connected AND present in the
+   * frozen snapshot (by `{handle, instance}`). Ignores `accept`/self-exclusion
+   * gates a second time — the snapshot already reflects them, taken once by
+   * `snapshot()` at commit time.
+   */
+  private deliverFromSnapshot(
+    e: Envelope,
+    snapshot: MatchedSub[],
+    selfExcluded: boolean
+  ): { delivered: boolean; selfExcluded: boolean; matched: MatchedSub[] } {
+    const allowed = new Set(snapshot.map(m => snapshotKey(m.handle, m.instance)))
+    const byHandle = this.subs.get(e.team)
+    const matched: MatchedSub[] = []
+    if (byHandle) {
+      for (const [handle, set] of byHandle) {
+        for (const sub of set) {
+          if (!allowed.has(snapshotKey(handle, sub.instance))) continue
+          sub.deliver(e)
+          matched.push({ handle, instance: sub.instance })
+        }
+      }
     }
     return { delivered: matched.length > 0, selfExcluded, matched }
   }

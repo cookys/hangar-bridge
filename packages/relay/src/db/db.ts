@@ -2,6 +2,8 @@ import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
+import { logJson } from '../logger.ts'
 
 export type Db = Database.Database
 
@@ -19,7 +21,132 @@ export function openDatabase(path: string): Db {
   migrateV5ToV6(db)
   migrateV6ToV7(db)
   migrateV7ToV8(db)
+  migrateV8ToV9(db)
   return db
+}
+
+/**
+ * Adds the reply-routing tables (REPLY_ROUTING_SPEC.md §3.1): `reply_route`,
+ * `reply_grant`, `reply_limiter`, `reply_idem`, and the partial unique index
+ * `reply_route_correlation`. All four are brand-new tables, so `CREATE TABLE
+ * IF NOT EXISTS` in schema.sql already creates them on every open (mirrors the
+ * `claim` table at v6) — this migration only backfills a route for every
+ * retained pre-rollout `message` row (§5.3) and then records schema version 9,
+ * never before the backfill has completed. Idempotent: re-running on an
+ * already-v9 database is a no-op (guarded by the schema_version probe).
+ */
+function migrateV8ToV9(db: Db): void {
+  const done = db.prepare('SELECT 1 AS x FROM schema_version WHERE version=9').get()
+  if (done) return
+  const result = backfillReplyRoutes(db)
+  logJson('info', 'migrate.v8_to_v9', { routes: result.routes, null_sender_instance: result.null_sender_instance })
+}
+
+interface BackfillResult {
+  routes: number
+  null_sender_instance: number
+}
+
+/**
+ * REPLY_ROUTING_SPEC.md §5.3. Backfills a `reply_route` for every retained
+ * `message` row of kind `chat` or `task_dispatch` (protocol kinds stay
+ * non-parents, §6.4). `legacy_width` is derived from the row's own shape —
+ * it is data recorded once at migration time, never recomputed.
+ *
+ * The row inserts AND the `schema_version=9` stamp run inside ONE
+ * transaction (mirrors migrateV6ToV7's atomicity): a crash before commit
+ * leaves nothing — no partial routes, no version 9 — so the next open
+ * starts clean and retries from scratch; a crash after commit leaves both
+ * together, so `migrateV8ToV9`'s guard sees version 9 and never re-enters.
+ * `INSERT OR IGNORE` on the row insert is defence in depth for a database
+ * that somehow already carries a route for one of these ids (e.g. hand
+ * repair, or an upgrade from an even older two-statement build of this
+ * migration): a retry converges instead of throwing on `reply_route`'s
+ * PRIMARY KEY or its `correlation_id` unique index.
+ */
+function backfillReplyRoutes(db: Db): BackfillResult {
+  const migratedAt = new Date()
+  const expiresAt = new Date(migratedAt.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
+  const rows = db.prepare(`
+    SELECT id, team_id, from_handle, to_handle, to_filter_json, thread_root, meta_json, sent_at
+    FROM message WHERE kind IN ('chat','task_dispatch')
+    ORDER BY id ASC
+  `).all() as Array<{
+    id: string
+    team_id: string
+    from_handle: string
+    to_handle: string
+    to_filter_json: string | null
+    thread_root: string | null
+    meta_json: string
+    sent_at: string
+  }>
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO reply_route(
+      msg_id, team_id, from_handle, sender_instance, return_selector, to_handle,
+      to_filter_json, thread_root, legacy_width, correlation_id, created_at, expires_at, unaddressable_at
+    ) VALUES (?,?,?,?,NULL,?,?,?,?,?,?,?,NULL)
+  `)
+  let routes = 0
+  let nullSenderInstance = 0
+  // reply_route_correlation is a UNIQUE index: two legacy rows that happen to
+  // share one meta.correlation_id can't both keep the alias. Rows are visited
+  // in id order (query ORDER BY above) so "first seen" is deterministic; the
+  // first occurrence keeps the alias, every later collision is backfilled
+  // with correlation_id NULL instead — every eligible row still gets EXACTLY
+  // one route (the load-bearing invariant), it just isn't reachable by the
+  // stale alias.
+  const seenCorrelationIds = new Set<string>()
+  db.transaction(() => {
+    for (const row of rows) {
+      let meta: Record<string, unknown> = {}
+      try {
+        const parsed = JSON.parse(row.meta_json) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) meta = parsed as Record<string, unknown>
+      } catch { /* corrupt legacy meta becomes an empty, safe object */ }
+      const senderInstance = typeof meta['sender_instance'] === 'string' ? (meta['sender_instance'] as string) : null
+      let correlationId = typeof meta['correlation_id'] === 'string' ? (meta['correlation_id'] as string) : null
+      if (correlationId !== null) {
+        if (seenCorrelationIds.has(correlationId)) {
+          correlationId = null
+        } else {
+          seenCorrelationIds.add(correlationId)
+        }
+      }
+      if (senderInstance === null) nullSenderInstance++
+      const legacyWidth = classifyLegacyWidth(row.to_handle, row.to_filter_json)
+      const threadRoot = row.thread_root ?? row.id
+      const info = insert.run(
+        row.id, row.team_id, row.from_handle, senderInstance, row.to_handle,
+        row.to_filter_json, threadRoot, legacyWidth, correlationId, row.sent_at, expiresAt
+      )
+      if (info.changes > 0) routes++
+    }
+    db.exec('INSERT INTO schema_version(version) VALUES (9)')
+  })()
+  return { routes, null_sender_instance: nullSenderInstance }
+}
+
+/**
+ * §5.3 row-shape table. `to_filter_json` null narrows the classification to
+ * the unfiltered cases; a set `to_filter` is `repo:<name>` only for an exact
+ * `@team` + `{repo}` project-chat shape (an instance-narrowed or handle+filter
+ * row is `unreplyable` — legacy width answers who may reply, not where).
+ */
+function classifyLegacyWidth(toHandle: string, toFilterJson: string | null): string {
+  if (toFilterJson == null) {
+    return toHandle === TEAM_BROADCAST_HANDLE ? 'team-not-sender' : 'handle'
+  }
+  if (toHandle === TEAM_BROADCAST_HANDLE) {
+    try {
+      const filter = JSON.parse(toFilterJson) as Record<string, unknown>
+      const keys = Object.keys(filter)
+      if (keys.length === 1 && keys[0] === 'repo' && typeof filter['repo'] === 'string') {
+        return `repo:${filter['repo'] as string}`
+      }
+    } catch { /* malformed to_filter_json: fall through to unreplyable */ }
+  }
+  return 'unreplyable'
 }
 
 /**
