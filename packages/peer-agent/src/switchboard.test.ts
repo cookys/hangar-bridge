@@ -204,6 +204,27 @@ describe('Switchboard — selector-bearing local_target (courier reply hardening
     expect(delivered).toEqual([])
   })
 
+  /**
+   * Repair round item 3 (review finding, adopted): finalizeGrantFn is a
+   * network call (POST /v1/grants/finalize). A transport-level failure —
+   * timeout, connection refused, an aborted fetch — throws rather than
+   * resolving false, and deliverSelector must classify that the SAME way
+   * as an explicit non-200: finalize_failed, paste suppressed. Without a
+   * catch here that throw would escape as whatever the transport happened
+   * to say (ETIMEDOUT, AbortError, ...), which is not in the §13 vocabulary
+   * and gives the caller no reason to believe the paste didn't happen.
+   */
+  it('finalize_failed when the finalize call itself throws (network/timeout), not an arbitrary escaped error', async () => {
+    const finalizeGrant = async () => { throw new Error('fetch failed: ETIMEDOUT') }
+    const { sb, delivered } = boardWithFinalize({ finalizeGrant })
+    await sb.refresh()
+    const selector = `revival.3d--agy@${GEN}`
+    await expect(sb.deliver(env({ meta: { local_target: selector } })))
+      .rejects.toThrow(/finalize_failed/)
+    // Paste is suppressed exactly as a non-200 finalize would suppress it.
+    expect(delivered).toEqual([])
+  })
+
   describe('return_target_gone reasons — never a broadcast fallback', () => {
     it('not_registered: no registration with that name', async () => {
       const { sb, delivered, finalizeCalls } = boardWithFinalize({ finalizeGrant: async () => true, regs: [] })

@@ -240,7 +240,19 @@ export class Switchboard {
     }
     const target = resolved.registration
 
-    const finalized = this.finalizeGrantFn ? await this.finalizeGrantFn(e.id, raw) : false
+    // A transport-level failure (timeout, connection refused, an aborted
+    // fetch) here is classified EXACTLY like an explicit non-200: the paste
+    // never happens. Without this catch a rejected finalizeGrantFn promise
+    // would escape as whatever the transport happened to throw (ETIMEDOUT,
+    // AbortError, ...) — not in the §13 vocabulary, and no reason for the
+    // caller to know the paste was suppressed rather than attempted.
+    let finalized: boolean
+    try {
+      finalized = this.finalizeGrantFn ? await this.finalizeGrantFn(e.id, raw) : false
+    } catch (err) {
+      const message = String(err instanceof Error ? err.message : err)
+      throw new Error(`switchboard: finalize_failed selector=${raw} msg=${e.id}: finalize call threw: ${message}`)
+    }
     if (!finalized) {
       throw new Error(`switchboard: finalize_failed selector=${raw} msg=${e.id}`)
     }
