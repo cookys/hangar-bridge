@@ -53,7 +53,12 @@ export const HANGAR_TEAM_ID = 'hangar' as const
 // valid `to` on an outbound client message (`reserved_address`, envelope.ts).
 export const MAILBOX_PREFIX = '@mailbox:' as const
 export function isMailboxHandle(value: string): boolean {
-  return value.startsWith(MAILBOX_PREFIX) && value.length > MAILBOX_PREFIX.length
+  if (!value.startsWith(MAILBOX_PREFIX)) return false
+  // The suffix must itself be a valid handle (reuse HANDLE_REGEX, don't
+  // duplicate it) — not any non-empty string. Rejects '@mailbox:', a
+  // suffix containing '@'/':'/whitespace (so '@team' and a nested
+  // '@mailbox:x' can't sneak in), and anything else HANDLE_REGEX rejects.
+  return HANDLE_REGEX.test(value.slice(MAILBOX_PREFIX.length))
 }
 // The CLI's mailbox identity (§8.2): the only accepted `x-hangar-instance`
 // value that is not a ULID. Instance ids are ULIDs, so this literal cannot

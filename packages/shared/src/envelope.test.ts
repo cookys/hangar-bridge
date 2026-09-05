@@ -44,6 +44,16 @@ describe('EnvelopeSchema', () => {
     const e = EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@mailbox:cuda' })
     expect(e.to).toBe('@mailbox:cuda')
   })
+  // The part after @mailbox: must itself be a valid handle (HANDLE_REGEX) —
+  // not any non-empty string.
+  it.each([
+    ['empty suffix', '@mailbox:'],
+    ['@team as the suffix', '@mailbox:@team'],
+    ['a space in the suffix', '@mailbox:has space'],
+    ['a nested mailbox address as the suffix', '@mailbox:@mailbox:x'],
+  ])('rejects a mailbox recipient with %s', (_label, to) => {
+    expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), to })).toThrow()
+  })
   it('rejects unknown kind', () => {
     expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), kind: 'surprise' })).toThrow()
   })

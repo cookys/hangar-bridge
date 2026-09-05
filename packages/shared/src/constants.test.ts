@@ -21,6 +21,17 @@ describe('isMailboxHandle (§6.5)', () => {
   it('is false for @team', () => {
     expect(isMailboxHandle('@team')).toBe(false)
   })
+  // The suffix after MAILBOX_PREFIX must itself satisfy HANDLE_REGEX — a
+  // mailbox address is not "any non-empty string after the prefix".
+  it('is false when the suffix is @team (not a valid handle)', () => {
+    expect(isMailboxHandle('@mailbox:@team')).toBe(false)
+  })
+  it('is false when the suffix contains a space', () => {
+    expect(isMailboxHandle('@mailbox:has space')).toBe(false)
+  })
+  it('is false when the suffix is itself a mailbox address', () => {
+    expect(isMailboxHandle('@mailbox:@mailbox:x')).toBe(false)
+  })
 })
 
 describe('RESERVED_CLI_INSTANCE (§6.5)', () => {
