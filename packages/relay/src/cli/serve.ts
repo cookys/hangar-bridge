@@ -20,6 +20,16 @@ export interface ServeOpts {
 }
 
 /**
+ * REPLY_ROUTING_SPEC.md §6 rollout flag env parsing, mirroring the
+ * HANGAR_BROADCAST_GATE pattern above: only the exact literal 'on' enables
+ * the new address refusals, so a typo or an unset env var keeps today's
+ * behaviour rather than silently failing open into stricter refusals.
+ */
+export function parseAddressRulesEnv(value: string | undefined): 'off' | 'on' {
+  return value === 'on' ? 'on' : 'off'
+}
+
+/**
  * Re-seed the roster from peers.json against the LIVE db handle. Idempotent
  * (see seedPeers): adding a peer or rotating a secret takes effect with no
  * restart and no dropped SSE streams. A malformed file is rejected and the
@@ -57,7 +67,8 @@ export function startServer(opts: ServeOpts) {
   // own: enforcement waits until the senders have a way to comply (a peer that
   // knows fleet_wide). Flipping it is a config change, not a redeploy.
   const broadcastGate = process.env.HANGAR_BROADCAST_GATE === 'enforce' ? 'enforce' as const : 'warn' as const
-  const app = buildApp({ db, store, fanout, presence, claims, now: () => new Date(), broadcastGate })
+  const addressRules = parseAddressRulesEnv(process.env.HANGAR_RELAY_ADDRESS_RULES)
+  const app = buildApp({ db, store, fanout, presence, claims, now: () => new Date(), broadcastGate, addressRules })
   const server = serve({ fetch: app.fetch, port: opts.port, hostname: opts.host })
 
   const days = opts.inactive_days ?? 30
