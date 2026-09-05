@@ -7,7 +7,7 @@ import {
   escapeChannelBody, escapeChannelAttr, ToFilterSchema,
   type OutboundMessage, type MessageId, type Envelope,
 } from '@hangar-bridge/shared'
-import type { ClaimClient, InboxClient, PeerTransport } from './outbound.ts'
+import type { ClaimClient, InboxClient, PeerTransport, ReplyClient } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
@@ -59,6 +59,12 @@ const MESSAGE_ID_INPUT = z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/)
 const PollInboxInput = z.object({
   since: MESSAGE_ID_INPUT.optional(),
   limit: z.number().int().min(1).max(1000).optional(),
+}).strict()
+// §5.1: strictly {in_reply_to, content, meta?} — no to/to_filter/subject/fleet_wide.
+const ReplyInput = z.object({
+  in_reply_to: MESSAGE_ID_INPUT,
+  content: z.string(),
+  meta: z.record(z.string()).optional(),
 }).strict()
 const ULID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/i
 const DispatchInput = z.object({
@@ -164,6 +170,27 @@ export const TOOL_DESCRIPTORS_CLAIMS = [
     },
   },
 ] as const
+
+/**
+ * D5 item 1 (§5.1, §8.3): answers ONE specific message by its id. A reply
+ * names a message id, never a handle — the relay already knows the
+ * audience from the parent's route/grants, so this tool takes no address at
+ * all. Advertised only when a reply client resolves (relay-backed SSE
+ * today; NATS has no /v1/replies endpoint yet).
+ */
+export const TOOL_DESCRIPTOR_REPLY = {
+  name: 'reply_to_peer',
+  description: 'Answer ONE specific message by its id — this is how you reply, not send_to_peer. A reply names a message id (in_reply_to), never a handle: the relay already knows who may see it from the parent message\'s own audience. To reach a DIFFERENT or WIDER audience than the parent reached, send a NEW message with send_to_peer and thread_root instead of replying.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      in_reply_to: { type: 'string', description: 'msg_id of the message you are answering' },
+      content: { type: 'string' },
+      meta: { type: 'object', additionalProperties: { type: 'string' }, description: 'free-form string map, informational' },
+    },
+    required: ['in_reply_to', 'content'],
+  },
+} as const
 
 export const TOOL_DESCRIPTOR_RESPOND = {
   name: 'respond_to_permission',
@@ -310,6 +337,21 @@ export function resolveInboxClient(
   return typeof candidate.pollInbox === 'function' ? candidate as InboxClient : undefined
 }
 
+/**
+ * Resolve who can serve reply_to_peer (POST /v1/replies): an explicitly
+ * supplied client wins, otherwise the transport itself if it implements
+ * `.reply`. Returns undefined on a transport with no reply-verb endpoint
+ * (NATS today) — same not-advertised-at-all pattern as resolveInboxClient.
+ */
+export function resolveReplyClient(
+  client: PeerTransport,
+  replyClient?: ReplyClient,
+): ReplyClient | undefined {
+  if (replyClient) return replyClient
+  const candidate = client as PeerTransport & Partial<ReplyClient>
+  return typeof candidate.reply === 'function' ? candidate as ReplyClient : undefined
+}
+
 // FIX6 — compact, whitelisted meta rendered in the AUTHENTICATED framing
 // region (never inside the untrusted body). Only these keys are ever shown,
 // so an unrelated/forged meta key on the envelope cannot inject extra lines
@@ -393,8 +435,21 @@ export function registerTools(
   dispatchTracker?: DispatchTracker,
   claimClient?: ClaimClient,
   inboxClient?: InboxClient,
+  replyClient?: ReplyClient,
+  /**
+   * §8.1: "when $TMUX_PANE is set, the peer-agent reads the pane's current
+   * registration (name@generation) from the local registry at call time".
+   * Injected so tests never shell out; index.ts wires the real
+   * findPaneRegistration(process.env.TMUX_PANE) read here. Returning
+   * undefined (no registration found) means "send no selector at all" —
+   * reply_to_peer never falls back to the literal `~none` the way the CLI
+   * does (item 5), because the CLI always needs SOME value on that header
+   * and reply_to_peer does not.
+   */
+  getPaneSelector?: () => Promise<string | undefined>,
 ) {
   const inbox = resolveInboxClient(client, inboxClient)
+  const reply = resolveReplyClient(client, replyClient)
   const candidate = client as PeerTransport & Partial<ClaimClient>
   const claims = claimClient ?? (
     typeof candidate.claim === 'function'
@@ -611,6 +666,47 @@ export function registerTools(
         return { content: [{ type: 'text', text: `${dispatchText}\n${report}` }] }
       }
       return { content: [{ type: 'text', text: dispatchText }] }
+    }
+    if (name === 'reply_to_peer') {
+      if (!reply) throw new Error('reply_to_peer unavailable: this transport has no relay reply-verb endpoint')
+      const input = ReplyInput.parse(args)
+      // One ULID per CALL, reused across any retry of this same logical call
+      // (§5.1 step 1) — minted here, not left to RelayClient.reply to default
+      // one per HTTP attempt the way send()/dispatch_task's ulid() defaulting
+      // does, because a reply that retries under a NEW key would mint a
+      // second route/grant/limiter-increment for the same answer.
+      const idempotencyKey = ulid().toLowerCase()
+      const returnSelector = getPaneSelector ? await getPaneSelector() : undefined
+      const body: { in_reply_to: string; content: string; meta?: Record<string, string> } = {
+        in_reply_to: input.in_reply_to, content: input.content,
+      }
+      if (input.meta !== undefined) body.meta = input.meta
+      const outcome = await reply.reply(body, {
+        idempotencyKey, ...(returnSelector !== undefined ? { returnSelector } : {}),
+      })
+      if (!outcome.ok) {
+        // §13: the relay's own {error, message, retryable, ...detail} is the
+        // hint — no local pre-check duplicates its rules, so this is always
+        // whatever the relay actually decided, verbatim.
+        return { content: [{ type: 'text', text: JSON.stringify(outcome.body) }] }
+      }
+      const b = outcome.body as Record<string, unknown>
+      const lines = [`replied ${String(b['id'])}`]
+      const live = b['live']
+      const durable = b['durable']
+      // Not reusing hasAudienceReport (typed for SendResult, an Envelope
+      // subtype) — this is a raw relay JSON body, so check inline.
+      if (Array.isArray(live) && Array.isArray(durable)) {
+        const matched = b['matched']
+        const senderState = b['sender_state']
+        const legacyParent = b['legacy_parent']
+        lines.push(renderAudienceReport({
+          live: live as string[], durable: durable as string[], matched: typeof matched === 'number' ? matched : 0,
+          ...(senderState !== undefined ? { sender_state: senderState as 'live' | 'offline' } : {}),
+          ...(legacyParent !== undefined ? { legacy_parent: legacyParent as true } : {}),
+        }))
+      }
+      return { content: [{ type: 'text', text: lines.join('\n') }] }
     }
     if (name === 'respond_to_permission') {
       if (!permissionTracker) throw new Error('permission relay disabled')
