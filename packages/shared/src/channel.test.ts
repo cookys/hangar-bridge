@@ -17,7 +17,7 @@ describe('envelopeToChannelNotification', () => {
   it('emits notifications/claude/channel for chat', () => {
     const n = envelopeToChannelNotification(baseEnvelope())
     expect(n.method).toBe('notifications/claude/channel')
-    expect(n.params.content).toBe('hello')
+    expect(n.params.content).toBe('hello\nReply: reply_to_peer in_reply_to=msg_01HRK7Y0000000000000000000')
     expect(n.params.meta).toMatchObject({
       from: 'alice', msg_id: 'msg_01HRK7Y0000000000000000000',
       source: 'hangar-bridge', repo: 'claudes-talking'
@@ -131,6 +131,34 @@ describe('envelopeToChannelNotification', () => {
     })
     const n = envelopeToChannelNotification(e)
     expect(n.params.correlation_id).toBe('msg_01HRK7Y0000000000000000001')
+  })
+
+  it('§8.3: chat frame default reply line is Reply: reply_to_peer in_reply_to=<msg_id>', () => {
+    const n = envelopeToChannelNotification(baseEnvelope({ id: 'msg_01HRK7Y0000000000000000009' }))
+    expect(n.params.content).toBe('hello\nReply: reply_to_peer in_reply_to=msg_01HRK7Y0000000000000000009')
+  })
+
+  it('§8.3: chat frame prints "reply route unavailable" and no command when meta.reply_route = "none"', () => {
+    const e = baseEnvelope({ meta: { reply_route: 'none' } })
+    const n = envelopeToChannelNotification(e)
+    expect(n.params.content).toBe('hello\nreply route unavailable')
+    expect(n.params.content).not.toContain('reply_to_peer')
+  })
+
+  it('§8.3: any other reply_route value is treated as "route available"', () => {
+    const e = baseEnvelope({ meta: { reply_route: 'bogus' } })
+    const n = envelopeToChannelNotification(e)
+    expect(n.params.content).toBe('hello\nReply: reply_to_peer in_reply_to=msg_01HRK7Y0000000000000000000')
+  })
+
+  it('§8.3: non-chat kinds (task_dispatch) are unchanged — no reply line appended', () => {
+    const e = baseEnvelope({
+      kind: 'task_dispatch',
+      content: 'run pytest',
+      meta: { correlation_id: 'corr_abc', task_kind: 'shell' }
+    })
+    const n = envelopeToChannelNotification(e)
+    expect(n.params.content).toBe('run pytest')
   })
 
   it('escapes </channel> in task_result body (Layer 4 inheritance)', () => {
