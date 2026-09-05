@@ -60,3 +60,87 @@ export function isMailboxHandle(value: string): boolean {
 // collide with a real one; it is never a valid `to_filter.instance`,
 // `--instance`, or registration name (`reserved_instance`, envelope.ts).
 export const RESERVED_CLI_INSTANCE = '~cli' as const
+
+// Reply-routing error vocabulary (§13), shared by relay, CLI, and MCP so all
+// three surface the same code/message. Each code maps to itself so a caller
+// can use the object as both a value set and a type-narrowing lookup.
+export const REPLY_ERROR_CODES = {
+  use_reply_verb: 'use_reply_verb',
+  unknown_parent: 'unknown_parent',
+  not_a_recipient: 'not_a_recipient',
+  legacy_unreplyable: 'legacy_unreplyable',
+  parent_unaddressable: 'parent_unaddressable',
+  reply_storm: 'reply_storm',
+  sender_instance_required: 'sender_instance_required',
+  handle_needs_all_sessions: 'handle_needs_all_sessions',
+  dispatch_needs_instance: 'dispatch_needs_instance',
+  not_in_thread: 'not_in_thread',
+  reserved_address: 'reserved_address',
+  reserved_instance: 'reserved_instance',
+  use_relay_lane: 'use_relay_lane',
+  return_target_gone: 'return_target_gone',
+  reply_in_progress: 'reply_in_progress',
+  idempotency_key_required: 'idempotency_key_required',
+  idempotency_mismatch: 'idempotency_mismatch',
+  grant_not_found: 'grant_not_found',
+  idempotency_key_invalid: 'idempotency_key_invalid',
+  instance_required: 'instance_required'
+} as const
+export type ReplyErrorCode = keyof typeof REPLY_ERROR_CODES
+
+// §13 HTTP status column. `use_relay_lane` (a `fleet local send` preflight)
+// and `return_target_gone` (a courier final-mile failure) are the two
+// non-HTTP codes.
+export const REPLY_ERROR_HTTP_STATUS: Record<ReplyErrorCode, number | null> = {
+  use_reply_verb: 400,
+  unknown_parent: 404,
+  not_a_recipient: 403,
+  legacy_unreplyable: 403,
+  parent_unaddressable: 410,
+  reply_storm: 429,
+  sender_instance_required: 400,
+  handle_needs_all_sessions: 400,
+  dispatch_needs_instance: 400,
+  not_in_thread: 403,
+  reserved_address: 400,
+  reserved_instance: 400,
+  use_relay_lane: null,
+  return_target_gone: null,
+  reply_in_progress: 409,
+  idempotency_key_required: 400,
+  idempotency_mismatch: 422,
+  grant_not_found: 404,
+  idempotency_key_invalid: 400,
+  instance_required: 400
+}
+
+// §13 Retryable column. `reply_storm` (retry after `retry_after_s`) and
+// `reply_in_progress` (another request holds the idempotency lease, or this
+// worker lost it) are the only retryable codes.
+export const REPLY_ERROR_RETRYABLE: Record<ReplyErrorCode, boolean> = {
+  use_reply_verb: false,
+  unknown_parent: false,
+  not_a_recipient: false,
+  legacy_unreplyable: false,
+  parent_unaddressable: false,
+  reply_storm: true,
+  sender_instance_required: false,
+  handle_needs_all_sessions: false,
+  dispatch_needs_instance: false,
+  not_in_thread: false,
+  reserved_address: false,
+  reserved_instance: false,
+  use_relay_lane: false,
+  return_target_gone: false,
+  reply_in_progress: true,
+  idempotency_key_required: false,
+  idempotency_mismatch: false,
+  grant_not_found: false,
+  idempotency_key_invalid: false,
+  instance_required: false
+}
+
+// Tunables (§12, relay config defaults — not normative).
+export const REPLY_LIMITER_DEFAULTS = { maxPerWindow: 10, windowMs: 10 * 60_000 } as const
+export const EPHEMERAL_ROUTE_TTL_MS = 7 * 24 * 60 * 60_000
+export const LEGACY_ROUTE_TTL_MS = 7 * 24 * 60 * 60_000
