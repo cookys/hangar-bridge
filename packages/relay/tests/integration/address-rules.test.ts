@@ -157,6 +157,16 @@ describe('address rules (REPLY_ROUTING_SPEC.md §6, §7)', () => {
       expect(body.thread_root).toBe(root.id)
     })
 
+    it('the SENDER of a route stamped with NO instance may still continue it (null-normalised, not undefined !== null)', async () => {
+      const root = await (await post(offApp, 'alice', { to: 'bob', kind: 'chat', content: 'root' })).json() as { id: string }
+      const res = await post(offApp, 'alice', {
+        to: 'bob', kind: 'chat', content: 'continuing', thread_root: root.id,
+      })
+      expect(res.status).toBe(201)
+      const body = await res.json() as { thread_root: string | null }
+      expect(body.thread_root).toBe(root.id)
+    })
+
     it('a GRANTED recipient of the named route may continue it for a different audience', async () => {
       fanout.subscribe({ handle: 'bob', team_id: 'hangar', instance: INST_B, deliver: () => {} })
       const root = await (await post(offApp, 'alice', { to: 'bob', kind: 'chat', content: 'root' }, { 'x-hangar-instance': INST_A })).json() as { id: string }

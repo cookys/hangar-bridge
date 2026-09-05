@@ -580,7 +580,12 @@ function resolveThreadContinuation(
   const sent = route.legacy_width != null
     ? route.from_handle === callerHandle
     : route.from_handle === callerHandle
-      && route.sender_instance === callerInstance
+      // Null-normalise: route.sender_instance is SQL NULL (JS null) for a
+      // route stamped with no x-hangar-instance; callerInstance is
+      // undefined when this request also carries none. `null === undefined`
+      // is false in JS, which would otherwise 403 the sender of its own
+      // no-instance route continuing its own thread.
+      && (route.sender_instance ?? undefined) === callerInstance
       && (
         route.return_selector == null
         || route.return_selector === ''
