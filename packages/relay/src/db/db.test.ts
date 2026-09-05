@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -311,5 +311,129 @@ describe('migrateV8ToV9 (reply routing tables, REPLY_ROUTING_SPEC §3.1)', () =>
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('migrateV8ToV9 backfill (REPLY_ROUTING_SPEC.md §5.3)', () => {
+  let tmpDir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v9-backfill-'))
+    dbPath = join(tmpDir, 'v8.db')
+    // Seed a v8-shape DB by hand (reply routing tables absent; message already
+    // carries to_filter_json from the to_filter-addressing feature).
+    const raw = new Database(dbPath)
+    raw.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+      CREATE TABLE team(id TEXT PRIMARY KEY, name TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 7, created_at TEXT NOT NULL);
+      CREATE TABLE human(id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id), handle TEXT NOT NULL, display_name TEXT NOT NULL, public_key BLOB, created_at TEXT NOT NULL, disabled_at TEXT, last_active_at TEXT, subjects TEXT, UNIQUE(team_id, handle));
+      CREATE TABLE token(id TEXT PRIMARY KEY, human_id TEXT NOT NULL REFERENCES human(id), token_hash BLOB NOT NULL UNIQUE, label TEXT NOT NULL, tier TEXT NOT NULL CHECK(tier IN ('human','admin')), created_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE TABLE message(id TEXT PRIMARY KEY, v INTEGER NOT NULL, team_id TEXT NOT NULL REFERENCES team(id), from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, in_reply_to TEXT, thread_root TEXT, kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')), content TEXT NOT NULL, meta_json TEXT NOT NULL DEFAULT '{}', sent_at TEXT NOT NULL, delivered_at TEXT, subject TEXT, to_filter_json TEXT);
+      CREATE TABLE idempotency_key(key_hash BLOB PRIMARY KEY, token_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL REFERENCES team(id), at TEXT NOT NULL, actor_human_id TEXT, event TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
+      CREATE TABLE claim(team_id TEXT NOT NULL REFERENCES team(id), claim_key TEXT NOT NULL, owner_handle TEXT NOT NULL, owner_label TEXT, note TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(team_id, claim_key));
+      INSERT INTO schema_version(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8);
+      INSERT INTO team(id,name,retention_days,created_at) VALUES ('hangar','hangar',7,'2026-05-17T00:00:00Z');
+    `)
+    const insMsg = raw.prepare(`
+      INSERT INTO message(id,v,team_id,from_handle,to_handle,thread_root,kind,content,meta_json,sent_at,to_filter_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `)
+    // shape 1: direct handle, no to_filter → 'handle'
+    insMsg.run('msg_h1', 2, 'hangar', 'alice', 'bob', null, 'chat', 'hi',
+      JSON.stringify({ sender_instance: 'inst-alice', correlation_id: 'corr-xyz' }), '2026-05-17T00:00:00Z', null)
+    // shape 2: @team, no to_filter, NO sender_instance (pre-attribution / CLI-sent) → 'team-not-sender'
+    insMsg.run('msg_h2', 2, 'hangar', 'alice', '@team', null, 'chat', 'hi team',
+      JSON.stringify({}), '2026-05-17T00:00:01Z', null)
+    // shape 3: @team + {repo} (project chat) → 'repo:<name>'
+    insMsg.run('msg_h3', 2, 'hangar', 'alice', '@team', null, 'chat', 'repo chat',
+      JSON.stringify({ sender_instance: 'inst-alice' }), '2026-05-17T00:00:02Z',
+      JSON.stringify({ repo: 'hangar-bridge' }))
+    // shape 4: direct handle + to_filter (instance-narrowed) → 'unreplyable'
+    insMsg.run('msg_h4', 2, 'hangar', 'alice', 'bob', null, 'task_dispatch', 'go',
+      JSON.stringify({ sender_instance: 'inst-alice' }), '2026-05-17T00:00:03Z',
+      JSON.stringify({ instance: '01HRK7Y0000000000000000000' }))
+    // a reply: proves thread_root COALESCEs from the message row's own column
+    insMsg.run('msg_h5', 2, 'hangar', 'bob', 'alice', 'msg_h1', 'chat', 'reply',
+      JSON.stringify({ sender_instance: 'inst-bob' }), '2026-05-17T00:00:04Z', null)
+    // task_result: a protocol kind — must get NO route
+    insMsg.run('msg_r1', 2, 'hangar', 'bob', 'alice', 'msg_h1', 'task_result', 'exit 0',
+      JSON.stringify({ sender_instance: 'inst-bob' }), '2026-05-17T00:00:05Z', null)
+    raw.close()
+  })
+
+  afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }) })
+
+  it('backfills a reply_route per legacy_width shape and skips protocol kinds', () => {
+    const before = Date.now()
+    const upgraded = openDatabase(dbPath)
+    const after = Date.now()
+    expect(getSchemaVersion(upgraded)).toBe(9)
+
+    const routes = upgraded.prepare(
+      'SELECT msg_id, legacy_width, sender_instance, thread_root, correlation_id, created_at, expires_at FROM reply_route ORDER BY msg_id'
+    ).all() as Array<{
+      msg_id: string; legacy_width: string; sender_instance: string | null
+      thread_root: string; correlation_id: string | null; created_at: string; expires_at: string | null
+    }>
+    const byId = Object.fromEntries(routes.map(r => [r.msg_id, r]))
+
+    expect(byId['msg_r1']).toBeUndefined()
+    expect(Object.keys(byId).sort()).toEqual(['msg_h1', 'msg_h2', 'msg_h3', 'msg_h4', 'msg_h5'])
+
+    expect(byId['msg_h1']!.legacy_width).toBe('handle')
+    expect(byId['msg_h2']!.legacy_width).toBe('team-not-sender')
+    expect(byId['msg_h3']!.legacy_width).toBe('repo:hangar-bridge')
+    expect(byId['msg_h4']!.legacy_width).toBe('unreplyable')
+    expect(byId['msg_h5']!.legacy_width).toBe('handle')
+
+    // thread_root is never NULL: own id for a root row, COALESCEd for a reply.
+    expect(byId['msg_h1']!.thread_root).toBe('msg_h1')
+    expect(byId['msg_h5']!.thread_root).toBe('msg_h1')
+
+    expect(byId['msg_h2']!.sender_instance).toBeNull()
+    expect(byId['msg_h1']!.sender_instance).toBe('inst-alice')
+    expect(byId['msg_h1']!.correlation_id).toBe('corr-xyz')
+    expect(byId['msg_h1']!.created_at).toBe('2026-05-17T00:00:00Z')
+
+    for (const id of ['msg_h1', 'msg_h2', 'msg_h3', 'msg_h4', 'msg_h5']) {
+      const expiresAt = byId[id]!.expires_at
+      expect(expiresAt).toBeTruthy()
+      const t = new Date(expiresAt!).getTime()
+      expect(t).toBeGreaterThanOrEqual(before + 7 * 24 * 60 * 60 * 1000 - 1000)
+      expect(t).toBeLessThanOrEqual(after + 7 * 24 * 60 * 60 * 1000 + 1000)
+    }
+
+    upgraded.close()
+  })
+
+  it('reports {routes, null_sender_instance} counts via the logger', () => {
+    const writes: string[] = []
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: any) => {
+      writes.push(String(chunk))
+      return true
+    })
+    try {
+      openDatabase(dbPath).close()
+    } finally {
+      spy.mockRestore()
+    }
+    const line = writes
+      .map(w => { try { return JSON.parse(w) } catch { return null } })
+      .find((j): j is { event: string; routes: number; null_sender_instance: number } =>
+        j !== null && j.event === 'migrate.v8_to_v9')
+    expect(line).toBeTruthy()
+    expect(line!.routes).toBe(5)
+    expect(line!.null_sender_instance).toBe(1)
+  })
+
+  it('is idempotent: a second open does not insert additional routes', () => {
+    openDatabase(dbPath).close()
+    const second = openDatabase(dbPath)
+    const count = second.prepare('SELECT COUNT(*) AS n FROM reply_route').get() as { n: number }
+    expect(count.n).toBe(5)
+    second.close()
   })
 })

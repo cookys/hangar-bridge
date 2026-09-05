@@ -2,6 +2,8 @@ import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
+import { logJson } from '../logger.ts'
 
 export type Db = Database.Database
 
@@ -36,7 +38,90 @@ export function openDatabase(path: string): Db {
 function migrateV8ToV9(db: Db): void {
   const done = db.prepare('SELECT 1 AS x FROM schema_version WHERE version=9').get()
   if (done) return
+  const result = backfillReplyRoutes(db)
+  logJson('info', 'migrate.v8_to_v9', { routes: result.routes, null_sender_instance: result.null_sender_instance })
   db.exec('INSERT INTO schema_version(version) VALUES (9)')
+}
+
+interface BackfillResult {
+  routes: number
+  null_sender_instance: number
+}
+
+/**
+ * REPLY_ROUTING_SPEC.md §5.3. Backfills a `reply_route` for every retained
+ * `message` row of kind `chat` or `task_dispatch` (protocol kinds stay
+ * non-parents, §6.4). `legacy_width` is derived from the row's own shape —
+ * it is data recorded once at migration time, never recomputed. Runs inside
+ * one transaction so a crash mid-backfill leaves nothing partially inserted
+ * (mirrors migrateV6ToV7's atomicity).
+ */
+function backfillReplyRoutes(db: Db): BackfillResult {
+  const migratedAt = new Date()
+  const expiresAt = new Date(migratedAt.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
+  const rows = db.prepare(`
+    SELECT id, team_id, from_handle, to_handle, to_filter_json, thread_root, meta_json, sent_at
+    FROM message WHERE kind IN ('chat','task_dispatch')
+  `).all() as Array<{
+    id: string
+    team_id: string
+    from_handle: string
+    to_handle: string
+    to_filter_json: string | null
+    thread_root: string | null
+    meta_json: string
+    sent_at: string
+  }>
+  const insert = db.prepare(`
+    INSERT INTO reply_route(
+      msg_id, team_id, from_handle, sender_instance, return_selector, to_handle,
+      to_filter_json, thread_root, legacy_width, correlation_id, created_at, expires_at, unaddressable_at
+    ) VALUES (?,?,?,?,NULL,?,?,?,?,?,?,?,NULL)
+  `)
+  let routes = 0
+  let nullSenderInstance = 0
+  db.transaction(() => {
+    for (const row of rows) {
+      let meta: Record<string, unknown> = {}
+      try {
+        const parsed = JSON.parse(row.meta_json) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) meta = parsed as Record<string, unknown>
+      } catch { /* corrupt legacy meta becomes an empty, safe object */ }
+      const senderInstance = typeof meta['sender_instance'] === 'string' ? (meta['sender_instance'] as string) : null
+      const correlationId = typeof meta['correlation_id'] === 'string' ? (meta['correlation_id'] as string) : null
+      if (senderInstance === null) nullSenderInstance++
+      const legacyWidth = classifyLegacyWidth(row.to_handle, row.to_filter_json)
+      const threadRoot = row.thread_root ?? row.id
+      insert.run(
+        row.id, row.team_id, row.from_handle, senderInstance, row.to_handle,
+        row.to_filter_json, threadRoot, legacyWidth, correlationId, row.sent_at, expiresAt
+      )
+      routes++
+    }
+  })()
+  return { routes, null_sender_instance: nullSenderInstance }
+}
+
+/**
+ * §5.3 row-shape table. `to_filter_json` null narrows the classification to
+ * the unfiltered cases; a set `to_filter` is `repo:<name>` only for an exact
+ * `@team` + `{repo}` project-chat shape (an instance-narrowed or handle+filter
+ * row is `unreplyable` — legacy width answers who may reply, not where).
+ */
+function classifyLegacyWidth(toHandle: string, toFilterJson: string | null): string {
+  if (toFilterJson == null) {
+    return toHandle === TEAM_BROADCAST_HANDLE ? 'team-not-sender' : 'handle'
+  }
+  if (toHandle === TEAM_BROADCAST_HANDLE) {
+    try {
+      const filter = JSON.parse(toFilterJson) as Record<string, unknown>
+      const keys = Object.keys(filter)
+      if (keys.length === 1 && keys[0] === 'repo' && typeof filter['repo'] === 'string') {
+        return `repo:${filter['repo'] as string}`
+      }
+    } catch { /* malformed to_filter_json: fall through to unreplyable */ }
+  }
+  return 'unreplyable'
 }
 
 /**
