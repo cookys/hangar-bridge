@@ -221,3 +221,83 @@ describe('Fanout — superseded instances', () => {
     expect(f.instanceCounts('t1', 'nobody').size).toBe(0)
   })
 })
+
+/**
+ * REPLY_ROUTING_SPEC.md §3.2 step 4: the send transaction takes a matched
+ * SNAPSHOT before it commits (routes + grants), then fanout delivers to
+ * exactly that frozen set — never a fresh match — so a session that
+ * subscribed between snapshot and fanout is not delivered to live (it has
+ * no grant; a durable row reaches it on drain instead).
+ */
+describe('Fanout — frozen snapshot delivery', () => {
+  let f: Fanout
+  beforeEach(() => { f = new Fanout() })
+
+  it('snapshot() returns exactly the set deliverDetailed would deliver to right now, without sending', () => {
+    const bob = collectingSub('bob')
+    const charlie = collectingSub('charlie')
+    f.subscribe(bob); f.subscribe(charlie)
+    const e = env('A', '@team', 'alice')
+
+    const snap = f.snapshot(e)
+
+    expect([...snap].sort((a, b) => a.handle.localeCompare(b.handle))).toEqual([
+      { handle: 'bob', instance: undefined },
+      { handle: 'charlie', instance: undefined },
+    ])
+    expect(bob.received).toHaveLength(0)
+    expect(charlie.received).toHaveLength(0)
+  })
+
+  it('snapshot() respects self-exclusion, same as a live delivery would', () => {
+    const cuda = { handle: 'cuda', team_id: 't1', instance: 'inst-A', deliver: () => {} }
+    f.subscribe(cuda)
+    const e = { ...env('A', 'cuda', 'cuda'), meta: { sender_instance: 'inst-A' } }
+    expect(f.snapshot(e)).toEqual([])
+  })
+
+  it('deliverDetailed(e, snapshot) delivers to a subscriber present in the snapshot', () => {
+    const bob = collectingSub('bob')
+    f.subscribe(bob)
+    const e = env('A', 'bob')
+    const snap = f.snapshot(e)
+    const result = f.deliverDetailed(e, snap)
+    expect(result).toEqual({ delivered: true, selfExcluded: false, matched: [{ handle: 'bob', instance: undefined }] })
+    expect(bob.received).toHaveLength(1)
+  })
+
+  it('a late subscriber (joined after the snapshot was taken) receives nothing from a frozen delivery', () => {
+    const e = env('A', 'bob')
+    const snap = f.snapshot(e)   // nobody subscribed yet — snapshot is empty
+    expect(snap).toHaveLength(0)
+    const bob = collectingSub('bob')
+    f.subscribe(bob)             // joins strictly after the snapshot
+    const result = f.deliverDetailed(e, snap)
+    expect(result).toEqual({ delivered: false, selfExcluded: false, matched: [] })
+    expect(bob.received).toHaveLength(0)
+  })
+
+  it('a departed subscriber (unsubscribed after the snapshot) is tolerated, not delivered to', () => {
+    const bob = collectingSub('bob')
+    f.subscribe(bob)
+    const e = env('A', 'bob')
+    const snap = f.snapshot(e)
+    f.unsubscribe(bob)
+    let result: ReturnType<Fanout['deliverDetailed']> | undefined
+    expect(() => { result = f.deliverDetailed(e, snap) }).not.toThrow()
+    expect(result).toEqual({ delivered: false, selfExcluded: false, matched: [] })
+    expect(bob.received).toHaveLength(0)
+  })
+
+  it('a frozen delivery to a multi-instance handle only reaches instances present in the snapshot', () => {
+    const bobA = collectingSub('bob'); bobA.instance = 'I1'
+    const bobB = collectingSub('bob'); bobB.instance = 'I2'
+    f.subscribe(bobA)
+    const e = env('A', 'bob')
+    const snap = f.snapshot(e)   // only I1 present at snapshot time
+    f.subscribe(bobB)            // I2 joins after
+    f.deliverDetailed(e, snap)
+    expect(bobA.received).toHaveLength(1)
+    expect(bobB.received).toHaveLength(0)
+  })
+})
