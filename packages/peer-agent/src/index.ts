@@ -45,21 +45,43 @@ import { pathToFileURL } from 'node:url'
 import { logJson } from './logger.ts'
 import { deliverViaAgentCall } from './agent-call-ingress.ts'
 
+/** DI seam for resolveCourierInstance (test-only). */
+export interface ResolveCourierInstanceDeps {
+  saveConfig?: typeof saveConfig
+  newInstanceId?: typeof newInstanceId
+}
+
 /**
  * §8.1: "the courier persists [its instance id] ... so a restart keeps
  * every route valid". Only a switchboard courier gets this treatment —
  * every other peer-agent still mints a fresh per-process instance id
- * (unchanged). A persist failure (unwritable config dir) is best-effort:
- * the courier still starts, it just mints a fresh instance every restart,
- * same as before this feature existed.
+ * (unchanged).
+ *
+ * Repair round item 2: a persist failure is FATAL, not best-effort. Every
+ * grant this courier is ever given is keyed to this instance id; starting
+ * anyway with an ephemeral one would look identical to success right up
+ * until the next restart, when every such grant quietly goes stale with no
+ * signal in between — worse than refusing to start, which at least fails
+ * where the operator is looking. Same shape as every other fatal startup
+ * precondition in this file: throw here, main().catch() logs and
+ * process.exit(1)s.
  */
-function resolveCourierInstance(cfg: HangarConfig, configPath: string): string {
+export function resolveCourierInstance(
+  cfg: HangarConfig, configPath: string, deps: ResolveCourierInstanceDeps = {},
+): string {
   if (cfg.instance) return cfg.instance
-  const minted = newInstanceId()
+  const save = deps.saveConfig ?? saveConfig
+  const mint = deps.newInstanceId ?? newInstanceId
+  const minted = mint()
   try {
-    saveConfig(configPath, { instance: minted })
+    save(configPath, { instance: minted })
   } catch (err) {
-    logJson('warn', 'peer.courier.instance_persist_failed', describeError(err))
+    throw new Error(
+      `refusing to start as a switchboard courier: could not persist the minted instance id to `
+      + `${configPath} (${err instanceof Error ? err.message : String(err)}). Starting with an `
+      + `unpersisted instance would silently break restart-stable grants (§8.1) the moment this `
+      + `process restarts. Fix the config directory's permissions/writability and restart.`,
+    )
   }
   return minted
 }
