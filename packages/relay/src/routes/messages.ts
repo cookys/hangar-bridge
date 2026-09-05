@@ -105,7 +105,7 @@ export function messagesRoute(deps: Deps) {
     const handle = c.get('peer').handle
     const owned = loadOwnedSet(deps.db, HANGAR_TEAM_ID, handle)
     const rows = deps.store.fetchInboxSince(HANGAR_TEAM_ID, handle, since ?? '', limit, pollerInstance)
-    let messages = rows.filter(e => e.subject === null || ownsNamespace(e.subject, owned))
+    const messages = rows.filter(e => e.subject === null || ownsNamespace(e.subject, owned))
     if (pollerInstance !== undefined) {
       // §4: grant BEFORE responding — same invariant as every other
       // presentation path. Idempotent; a route may be missing for a pre-v8
@@ -115,17 +115,20 @@ export function messagesRoute(deps: Deps) {
           deps.store.insertGrants(m.id, [{ handle, instance: pollerInstance, selector: '' }])
         }
       }
-    } else {
-      // Flag off + no instance: presented but ungranted (cannot be
-      // answered) — tagged independently of whatever attribution the
-      // ORIGINAL SENDER's `meta.attribution_status` already carries, since
-      // that describes the sender, not this poll's own inability to grant.
-      messages = messages.map(e => ({ ...e, meta: { ...e.meta, attribution_status: 'unverifiable' } }))
     }
     // The cursor advances over EVERY row read, not only the deliverable ones, so
     // a page full of gated rows can never wedge the caller below the live edge.
     const next_cursor = rows.length > 0 ? rows[rows.length - 1]!.id : (since ?? null)
-    return c.json({ messages, next_cursor })
+    // Flag off + no instance: this poll's OWN inability to grant is reported
+    // at the RESPONSE level, not stamped onto each envelope's meta —
+    // `meta.attribution_status` is the SENDER-stamped field (set only via
+    // x-hangar-attribution: v1 on the original send) and a poll must never
+    // overwrite it; the two describe different things (who sent it vs.
+    // whether THIS presentation could be granted).
+    return c.json({
+      messages, next_cursor,
+      ...(pollerInstance === undefined ? { attribution_status: 'unverifiable' } : {}),
+    })
   })
 
   app.post('/', async c => {

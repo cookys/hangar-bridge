@@ -144,11 +144,18 @@ describe('GET /v1/messages (poll_inbox)', () => {
       expect(store.hasGrant(sentBody.id, 'bob', INST)).toBe(true)
     })
 
-    it('flag off + no instance header: presents the message, tagged attribution_status: unverifiable', async () => {
-      store.insert('hangar', 'alice', { to: 'bob', kind: 'chat', content: 'x' })
+    it('flag off + no instance header: presents the message UNCHANGED, response-level attribution_status: unverifiable', async () => {
+      const sent = store.insert('hangar', 'alice', { to: 'bob', kind: 'chat', content: 'x' })
       const j = await body(await get('bob'))
       expect(j.messages).toHaveLength(1)
-      expect(j.messages[0].meta.attribution_status).toBe('unverifiable')
+      // meta.attribution_status is the SENDER-stamped field (set only via
+      // x-hangar-attribution: v1 on the send) — a poll must never overwrite
+      // it; this send set no such header, so it stays absent on the envelope.
+      expect(j.messages[0].meta.attribution_status).toBe(sent.meta['attribution_status'])
+      expect(j.messages[0].meta.attribution_status).toBeUndefined()
+      // The poll's OWN inability to grant (no instance header) is reported
+      // at the response level instead, next to `messages`.
+      expect(j.attribution_status).toBe('unverifiable')
     })
 
     it('flag on + no instance header: 400 instance_required', async () => {
