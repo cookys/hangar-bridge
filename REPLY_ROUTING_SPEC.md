@@ -1,5 +1,5 @@
 <!--
-STATUS: v7 — PROPOSED, not implemented. LOOP CLOSED at the five-round cap: round 5
+STATUS: v7 — relay/peer-agent/shared rollout step 1 + 2 code implemented on `feat/reply-routing` (2026-09-05; flag default off, not deployed; client-side CLI/agent-call and the step-3 gate are still open, see docs/BACKLOG.md). LOOP CLOSED at the five-round cap: round 5
 was 3× FIX-THEN-SHIP (codex 2 Critical, both folded: unaddressable routes are
 tombstoned not deleted; takeover CASes lease AND reserved_at). Findings were
 still arriving at implementation granularity each round; the operator's call
