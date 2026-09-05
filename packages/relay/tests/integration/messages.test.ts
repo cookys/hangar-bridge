@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { openDatabase, type Db } from '../../src/db/db.ts'
 import { MessageStore } from '../../src/messages/store.ts'
 import { Fanout } from '../../src/fanout.ts'
@@ -9,13 +9,15 @@ import { ClaimStore } from '../../src/claims/store.ts'
 
 describe('POST /v1/messages', () => {
   let db: Db
+  let store: MessageStore
   let app: ReturnType<typeof buildApp>
   let aliceToken: string
   beforeEach(() => {
     db = openDatabase(':memory:')
     const peers = seedPeerSecrets(db, ['alice', 'bob'])
     aliceToken = peers.alice!.token
-    app = buildApp({ db, store: new MessageStore(db), fanout: new Fanout(), presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date() })
+    store = new MessageStore(db)
+    app = buildApp({ db, store, fanout: new Fanout(), presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date() })
   })
 
   async function post(body: unknown, headers: Record<string, string> = {}) {
@@ -80,5 +82,194 @@ describe('POST /v1/messages', () => {
     const big = 'a'.repeat(70_000)
     const res = await post({ to: 'bob', kind: 'chat', content: big })
     expect([400, 413]).toContain(res.status)
+  })
+
+  // §8.1 return-selector grammar (item 3): parsed and syntax-checked at the
+  // send chokepoint, regardless of the addressRules flag.
+  describe('x-hangar-return-selector (§8.1)', () => {
+    it('400 invalid_return_selector on a malformed header', async () => {
+      const res = await post(
+        { to: 'bob', kind: 'chat', content: 'x' },
+        { 'x-hangar-return-selector': 'not-a-selector' }
+      )
+      expect(res.status).toBe(400)
+      const body = await res.json() as { error: string; retryable: boolean }
+      expect(body.error).toBe('invalid_return_selector')
+      expect(body.retryable).toBe(false)
+    })
+
+    it('accepts the literal ~none', async () => {
+      const res = await post(
+        { to: 'bob', kind: 'chat', content: 'x' },
+        { 'x-hangar-return-selector': '~none' }
+      )
+      expect(res.status).toBe(201)
+    })
+
+    it('accepts a well-formed <name>@<ULID>', async () => {
+      const res = await post(
+        { to: 'bob', kind: 'chat', content: 'x' },
+        { 'x-hangar-return-selector': 'agy@01HRK7Y0000000000000000000' }
+      )
+      expect(res.status).toBe(201)
+    })
+
+    it('absent header is accepted (no selector)', async () => {
+      const res = await post({ to: 'bob', kind: 'chat', content: 'x' })
+      expect(res.status).toBe(201)
+    })
+  })
+
+  // §3.2 write order: route + one grant per snapshot entry + the message row,
+  // all inside one transaction, BEFORE fanout ever writes a live SSE event.
+  describe('§3.2 write order (route + grants before delivery)', () => {
+    it('a directed task_dispatch matching nobody leaves no route (today: no row either)', async () => {
+      const res = await post({
+        to: 'bob', kind: 'task_dispatch', content: 'run',
+        to_filter: { instance: '01HRK7Y0000000000000000099' },
+      }, { 'x-hangar-instance': '01HRK7Y0000000000000000000' })
+      expect(res.status).toBe(201)
+      const body = await res.json() as { id: string; matched: number }
+      expect(body.matched).toBe(0)
+      expect(store.getRoute(body.id)).toBeNull()
+    })
+
+    it('an ordinary chat to a bare handle gets a route + a grant for the (only) live subscriber', async () => {
+      const fanout = new Fanout()
+      fanout.subscribe({ handle: 'bob', team_id: 'hangar', instance: 'inst-bob', deliver: () => {} })
+      const app2 = buildApp({
+        db, store, fanout, presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date(),
+      })
+      const res = await app2.request('/v1/messages', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${aliceToken}`, 'content-type': 'application/json',
+          'x-hangar-instance': '01HRK7Y0000000000000000001',
+        },
+        body: JSON.stringify({ to: 'bob', kind: 'chat', content: 'hi' }),
+      })
+      expect(res.status).toBe(201)
+      const body = await res.json() as { id: string }
+      const route = store.getRoute(body.id)
+      expect(route).not.toBeNull()
+      expect(route!.from_handle).toBe('alice')
+      expect(route!.sender_instance).toBe('01HRK7Y0000000000000000001')
+      expect(store.hasGrant(body.id, 'bob', 'inst-bob')).toBe(true)
+    })
+
+    it('protocol kinds (task_result etc.) get no route, message row unaffected', async () => {
+      const dispatch = await post(
+        { to: 'bob', kind: 'task_dispatch', content: 'run' },
+        { 'x-hangar-instance': '01HRK7Y0000000000000000000' }
+      )
+      const dispatchBody = await dispatch.json() as { id: string }
+      const res = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${aliceToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          to: 'bob', kind: 'task_result', content: 'done', in_reply_to: dispatchBody.id,
+        }),
+      })
+      expect(res.status).toBe(201)
+      const body = await res.json() as { id: string }
+      expect(store.getRoute(body.id)).toBeNull()
+      const row = db.prepare('SELECT id FROM message WHERE id=?').get(body.id)
+      expect(row).toBeTruthy()
+    })
+
+    it('a route-insert failure is fatal: 500 internal_error, no delivery, no message row, no route', async () => {
+      let delivered = false
+      const fanout = new Fanout()
+      fanout.subscribe({
+        handle: 'bob', team_id: 'hangar', instance: '01HRK7Y0000000000000000099',
+        deliver: () => { delivered = true },
+      })
+      const app2 = buildApp({
+        db, store, fanout, presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date(),
+      })
+      const spy = vi.spyOn(store, 'writeRouteAndMessage').mockImplementation(() => {
+        throw new Error('simulated route-insert failure')
+      })
+      try {
+        const res = await app2.request('/v1/messages', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${aliceToken}`, 'content-type': 'application/json',
+            'x-hangar-instance': '01HRK7Y0000000000000000000',
+          },
+          body: JSON.stringify({ to: 'bob', kind: 'chat', content: 'x' }),
+        })
+        expect(res.status).toBe(500)
+        const body = await res.json() as { error: string }
+        expect(body.error).toBe('internal_error')
+      } finally {
+        spy.mockRestore()
+      }
+      expect(delivered).toBe(false)
+      const messageCount = db.prepare('SELECT COUNT(*) AS c FROM message').get() as { c: number }
+      expect(messageCount.c).toBe(0)
+      const routeCount = db.prepare('SELECT COUNT(*) AS c FROM reply_route').get() as { c: number }
+      expect(routeCount.c).toBe(0)
+    })
+
+    it('route + grant are already committed when a live subscriber\'s deliver callback fires', async () => {
+      const fanout = new Fanout()
+      let sawRouteAndGrant = false
+      let deliveredId: string | null = null
+      fanout.subscribe({
+        handle: 'bob', team_id: 'hangar', instance: 'inst-bob',
+        deliver: (e) => {
+          deliveredId = e.id
+          const route = store.getRoute(e.id)
+          sawRouteAndGrant = route !== null && store.hasGrant(e.id, 'bob', 'inst-bob')
+        },
+      })
+      const app2 = buildApp({
+        db, store, fanout, presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date(),
+      })
+      const res = await app2.request('/v1/messages', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${aliceToken}`, 'content-type': 'application/json',
+          'x-hangar-instance': '01HRK7Y0000000000000000001',
+        },
+        body: JSON.stringify({ to: 'bob', kind: 'chat', content: 'hi' }),
+      })
+      expect(res.status).toBe(201)
+      expect(deliveredId).not.toBeNull()
+      expect(sawRouteAndGrant).toBe(true)
+    })
+  })
+
+  // §11 audience report must appear on the to_filter (directed) response too,
+  // not only the plain-branch response — including the idempotency-cached replay.
+  describe('§11 audience report on the to_filter response', () => {
+    it('a directed task_dispatch response carries live[]/durable/matched, and the idempotent replay matches', async () => {
+      const fanout = new Fanout()
+      fanout.subscribe({ handle: 'bob', team_id: 'hangar', instance: '01HRK7Y0000000000000000099', deliver: () => {} })
+      const app2 = buildApp({
+        db, store, fanout, presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date(),
+      })
+      const key = 'idem-audience-1'
+      const headers = {
+        authorization: `Bearer ${aliceToken}`, 'content-type': 'application/json',
+        'x-hangar-instance': '01HRK7Y0000000000000000000', 'idempotency-key': key,
+      }
+      const body = {
+        to: 'bob', kind: 'task_dispatch', content: 'run',
+        to_filter: { instance: '01HRK7Y0000000000000000099' },
+      }
+      const first = await app2.request('/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) })
+      expect(first.status).toBe(201)
+      const firstBody = await first.json() as { live: string[]; durable: string[]; matched: number }
+      expect(firstBody.live).toEqual(['bob#01HRK7Y0000000000000000099'])
+      expect(firstBody.durable).toEqual(['bob'])
+      expect(firstBody.matched).toBe(1)
+
+      const second = await app2.request('/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) })
+      expect(second.status).toBe(201)
+      const secondBody = await second.json() as { live: string[]; durable: string[]; matched: number }
+      expect(secondBody).toEqual(firstBody)
+    })
   })
 })

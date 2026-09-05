@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, type Envelope } from '@hangar-bridge/shared'
+import {
+  HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, type Envelope,
+} from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { loadOwnedSet, ownsNamespace, matchesInterest } from '../acl.ts'
 import type { Deps } from '../deps.ts'
@@ -28,6 +30,13 @@ export function streamRoute(deps: Deps) {
     const since = c.req.query('since')
     if (since !== undefined && !isValidMessageId(since)) {
       return c.json({ error: 'invalid_since' }, 400)
+    }
+    // §6.5: `~cli` is the CLI's mailbox identity (POST /v1/messages,
+    // /v1/replies) — never a valid streaming instance. Checked before
+    // parseInstanceHeader (which would otherwise reject it as merely
+    // malformed, losing the more specific code).
+    if (c.req.header('x-hangar-instance') === RESERVED_CLI_INSTANCE) {
+      return c.json({ error: 'reserved_instance', message: '~cli is never a valid streaming instance', retryable: false }, 400)
     }
     // Per-process instance id, constant across this process's reconnects. Absent ⇒
     // legacy client keyed on the bare token label (unchanged behavior).
@@ -115,7 +124,15 @@ export function streamRoute(deps: Deps) {
       // is buffered (not lost); dedupe-by-id prevents a backlog+live double-send.
       deps.fanout.subscribe(sub)
 
+      // §4: cold-start drain / ?since= replay is a presentation path — grant
+      // BEFORE the SSE write, same as the live send-transaction snapshot
+      // does. Idempotent (INSERT OR IGNORE); a route may be missing for a
+      // pre-v8 backfill-skipped row, which is tolerated (deliver, no grant)
+      // rather than thrown.
       const writeAndMark = async (e: Envelope) => {
+        if (instance !== undefined && deps.store.getRoute(e.id) !== null) {
+          deps.store.insertGrants(e.id, [{ handle, instance, selector: '' }])
+        }
         await stream.writeSSE({ event: 'message', data: JSON.stringify(e) })
         deps.store.markDelivered(e.id)
         markSeen(e.id)
