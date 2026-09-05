@@ -241,6 +241,36 @@ describe('OutboundMessageSchema all_sessions / thread_root (§6.1, §7)', () => 
       to: 'bob', kind: 'chat', content: 'x', thread_root: 'not-a-msg-id'
     })).toThrow()
   })
+
+  // Pins thread_root to the SAME message-id validator as in_reply_to (reuse,
+  // not a parallel regex, per §7 / the prompt's "reuse it, do not write a new
+  // regex"). Table-driven: for each representative value, build two
+  // otherwise-identical valid outbound chat messages — one with thread_root
+  // set, one with in_reply_to set — and assert they accept/reject identically.
+  it.each([
+    ['a valid msg_<26 Crockford chars> id', 'msg_01HRK7Y0000000000000000000', true],
+    ['lowercase Crockford chars', 'msg_01hrk7y0000000000000000000', false],
+    ['25 chars (one short)', 'msg_01HRK7Y000000000000000000', false],
+    ['27 chars (one long)', 'msg_01HRK7Y00000000000000000000', false],
+    ['an excluded Crockford letter (I)', 'msg_I1HRK7Y0000000000000000000', false],
+    ['a bare ULID without the msg_ prefix', '01HRK7Y0000000000000000000', false],
+    ['an empty string', '', false],
+    ['trailing whitespace', 'msg_01HRK7Y0000000000000000000 ', false],
+  ])('%s: thread_root and in_reply_to agree (valid=%s)', (_label, value, shouldParse) => {
+    const viaThreadRoot = () => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', thread_root: value
+    })
+    const viaInReplyTo = () => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', in_reply_to: value
+    })
+    if (shouldParse) {
+      expect(viaThreadRoot()).toBeDefined()
+      expect(viaInReplyTo()).toBeDefined()
+    } else {
+      expect(viaThreadRoot).toThrow()
+      expect(viaInReplyTo).toThrow()
+    }
+  })
   it('rejects all_sessions on @team (must be a concrete handle)', () => {
     expect(() => OutboundMessageSchema.parse({
       to: '@team', kind: 'chat', content: 'x', all_sessions: true
