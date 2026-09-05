@@ -10,6 +10,7 @@ import { claimsRoute } from './routes/claims.ts'
 import { healthRoute } from './routes/health.ts'
 import { repliesRoute } from './routes/replies.ts'
 import { inboxRoute } from './routes/inbox.ts'
+import { grantsRoute } from './routes/grants.ts'
 import { accessLog } from './middleware/access-log.ts'
 
 export function buildApp(deps: Deps) {
@@ -33,5 +34,7 @@ export function buildApp(deps: Deps) {
   app.route('/v1/replies', repliesRoute(deps))
   // REPLY_ROUTING_SPEC.md §8.2: the operator mailbox pull path.
   app.route('/v1/inbox', inboxRoute(deps))
+  // REPLY_ROUTING_SPEC.md §8.1: courier grant finalisation.
+  app.route('/v1/grants', grantsRoute(deps))
   return app
 }
