@@ -29,6 +29,15 @@ const SendInput = z.object({
   in_reply_to: z.string().optional(),
   meta: z.record(z.string()).optional(),
   to_filter: ToFilterSchema.optional(),
+  // §7 thread continuation (not a reply): names a route the caller sent or
+  // holds a grant on, for continuing that thread with a DIFFERENT audience.
+  // Format-only here; the relay resolves it to a route and canonicalises.
+  thread_root: z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/).optional(),
+  // §6.1: acknowledges that a bare-handle chat really is meant for every
+  // session on that host, now and later. Forwarded as-is; the relay is the
+  // authority on shape/authorization (handle_needs_all_sessions when absent
+  // and the rollout flag is on).
+  all_sessions: z.boolean().optional(),
 })
 const ListInput = z.object({}).strict()
 const SummaryInput = z.object({ summary: z.string().max(200) })
@@ -74,7 +83,9 @@ export const TOOL_DESCRIPTORS = [
         fleet_wide: { type: 'boolean', description: 'Send to every session on every host. Interrupts the whole fleet; ask the user first. Cannot be combined with `to`.' },
         content: { type: 'string' },
         subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); publisher must own the namespace. Allowed on @team only for chat, where receivers are filtered by ownership + interest' },
-        in_reply_to: { type: 'string', description: 'msg_id being replied to (optional)' },
+        in_reply_to: { type: 'string', description: 'DEPRECATED for answering one specific message — use reply_to_peer instead, which needs no address. This still works for continuing a route you own, but the relay may refuse it with use_reply_verb once the reply-routing rollout reaches that stage.' },
+        thread_root: { type: 'string', description: 'Continue a thread for a DIFFERENT audience than its previous messages reached (not a reply): the msg_id of a route you sent or were granted on. The relay canonicalises to that thread\'s root and widens/narrows delivery to THIS call\'s `to`/`to_filter`, not the parent\'s.' },
+        all_sessions: { type: 'boolean', description: 'Chat-only acknowledgement for a bare `to` handle (no to_filter): confirms this really is meant for every session on that host, now and later — not just the one that happens to be live. Required by the relay for a bare-handle chat once the rollout flag is on.' },
         to_filter: {
           type: 'object',
           properties: {
@@ -446,6 +457,8 @@ export function registerTools(
         meta: input.meta ?? {},
       }
       if (input.in_reply_to !== undefined) payload.in_reply_to = input.in_reply_to as MessageId
+      if (input.thread_root !== undefined) payload.thread_root = input.thread_root as MessageId
+      if (input.all_sessions !== undefined) payload.all_sessions = input.all_sessions
       const effectiveFilter = resolved.to_filter ?? input.to_filter
       if (effectiveFilter !== undefined) payload.to_filter = effectiveFilter
       const env = await client.send(payload)

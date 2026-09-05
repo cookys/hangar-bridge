@@ -596,3 +596,68 @@ describe('send_to_peer — the default audience is this session\'s project', () 
     expect((r.content[0] as any).text).toContain('2 session(s)')
   })
 })
+
+/**
+ * D5 item 2 (§6.1, §7): send_to_peer forwards `thread_root` (continuing a
+ * thread for a different audience, §7 — not a reply) and `all_sessions` (the
+ * chat-only "every other session on this host" acknowledgement, §6.1)
+ * straight through to the relay; it never validates or refuses them itself.
+ */
+describe('send_to_peer — thread_root / all_sessions passthrough', () => {
+  const mkClient = () => {
+    const send = vi.fn(async (payload: any) => ({
+      id: 'msg_01HRK7Y000000000000000000B', v: 2, team: 't1', from: 'a', to: payload.to,
+      in_reply_to: null, thread_root: payload.thread_root ?? null, kind: 'chat',
+      content: payload.content, meta: {},
+      sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+      live: [], durable: [payload.to], matched: 0,
+    }))
+    return { send, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient & { send: typeof send }
+  }
+  const presence = { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false }
+
+  it('forwards thread_root to the relay', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, presence)
+    await callTool('send_to_peer', { to: 'bob', content: 'more context', thread_root: 'msg_01HRK7Y000000000000000000A' })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload.thread_root).toBe('msg_01HRK7Y000000000000000000A')
+  })
+
+  it('forwards all_sessions to the relay', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, presence)
+    await callTool('send_to_peer', { to: 'bob', content: 'hi everyone on that host', all_sessions: true })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload.all_sessions).toBe(true)
+  })
+
+  it('omits thread_root/all_sessions from the payload when not given (no forced fields)', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, presence)
+    await callTool('send_to_peer', { to: 'bob', content: 'hi' })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload).not.toHaveProperty('thread_root')
+    expect(payload).not.toHaveProperty('all_sessions')
+  })
+
+  it('documents both fields on the tool schema', () => {
+    const send = TOOL_DESCRIPTORS.find(d => d.name === 'send_to_peer')!
+    expect(send.inputSchema.properties).toHaveProperty('thread_root')
+    expect(send.inputSchema.properties).toHaveProperty('all_sessions')
+  })
+
+  it('does not pre-check in_reply_to itself: a use_reply_verb relay refusal passes through verbatim', async () => {
+    const send = vi.fn(async () => {
+      throw new Error('send failed: 400 {"error":"use_reply_verb","message":"use `fleet reply <msg_id>`; to continue the thread for a different audience send a new message with `thread_root`","retryable":false}')
+    })
+    const client = { send, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    await expect(callTool('send_to_peer', { to: 'bob', content: 'hi', in_reply_to: 'msg_01HRK7Y000000000000000000A' }))
+      .rejects.toThrow(/use_reply_verb/)
+    // Verbatim: the relay's own hint text survives into the thrown error, not a
+    // locally-authored refusal message — the tool never pre-checks in_reply_to.
+    await expect(callTool('send_to_peer', { to: 'bob', content: 'hi', in_reply_to: 'msg_01HRK7Y000000000000000000A' }))
+      .rejects.toThrow(/continue the thread for a different audience send a new message with `thread_root`/)
+  })
+})
