@@ -1,0 +1,15 @@
+{
+  "_comment": "REPLY_ROUTING_SPEC.md §16 fills this in before HANGAR_RELAY_ADDRESS_RULES is flipped to on: pins written by the operator approving the flag flip; one entry per reply shape with parent/reply ids, audience report, host, and date; courier_pane recorded twice (crew-registered pane + lazily attached pane).",
+  "pins": {
+    "relay": null,
+    "peer_agent": null,
+    "courier_artifact": null,
+    "fleet_cli_commit": null,
+    "agent_call_version": null
+  },
+  "entries": {
+    "cli_directed": null,
+    "courier_pane": [],
+    "mailbox": null
+  }
+}

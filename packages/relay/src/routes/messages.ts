@@ -29,7 +29,7 @@ function isUserAuthoredKind(kind: Envelope['kind']): kind is 'chat' | 'task_disp
  * x-hangar-instance) cannot be granted: `reply_grant.instance` is NOT NULL,
  * and there is no address to positively route a reply to anyway.
  */
-function grantsFromSnapshot(snap: SnapshotDetail): ReplyGrantInput[] {
+export function grantsFromSnapshot(snap: SnapshotDetail): ReplyGrantInput[] {
   return snap.matched
     .filter((m): m is { handle: string; instance: string } => m.instance !== undefined)
     .map(m => ({ handle: m.handle, instance: m.instance, selector: '' }))
@@ -610,7 +610,7 @@ function resolveThreadContinuation(
  * durable `message` row; `['team']` for an unfiltered `@team`; `['repo:<name>']`
  * for a project-chat `to_filter{repo}`; `['<handle>']` otherwise.
  */
-function durableReport(built: Envelope, persisted: boolean, repo: string | undefined): string[] {
+export function durableReport(built: Envelope, persisted: boolean, repo: string | undefined): string[] {
   if (!persisted) return []
   if (built.to === TEAM_BROADCAST_HANDLE) return repo !== undefined ? [`repo:${repo}`] : ['team']
   return [built.to]
