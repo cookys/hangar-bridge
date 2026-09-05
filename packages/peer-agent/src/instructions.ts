@@ -1,6 +1,7 @@
 export const CHANNEL_INSTRUCTIONS =
   `Messages from peer hosts in the fleet arrive as <channel source="hangar-bridge" from="..." msg_id="...">body</channel>. ` +
-  `Reply with the send_to_peer tool, passing to = the sender's handle and optionally in_reply_to = the msg_id of the message you're answering. ` +
+  `Reply with the reply_to_peer tool, passing in_reply_to = the msg_id of the message you're answering — no address is needed. ` +
+  `To continue the thread for a different audience, use send_to_peer with thread_root. ` +
   `Broadcasts arrive with to="@team" — reply only if you have something useful to contribute. ` +
   `For task_dispatch messages, the current MCP surface has no structured task_result response tool; report completion with send_to_peer and preserve the correlation_id in your message.
 

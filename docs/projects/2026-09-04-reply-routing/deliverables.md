@@ -34,7 +34,7 @@ prompt 的內容來源;spec 節號指 `REPLY_ROUTING_SPEC.md`,implementer 只需
   `corepack pnpm -r typecheck` 綠(relay / peer-agent 尚未用新欄位也要能編譯)。
 - 預估 diff:300–450 行。
 
-## D2 — relay 資料層:schema v8、migration+backfill、store/fanout helpers、limiter(§3.1、§3.3、§3.4、§4 drain 述詞、§5.3、§9)
+## D2 — relay 資料層:schema v9（repo 已在 v8）、migration+backfill、store/fanout helpers、limiter(§3.1、§3.3、§3.4、§4 drain 述詞、§5.3、§9)
 
 - 路徑:`packages/relay/src/db/{schema.sql,db.ts,db.test.ts}`、`packages/relay/src/messages/store.ts`
   (+`store.test.ts`)、`packages/relay/src/fanout.ts`(+`fanout.test.ts`)、

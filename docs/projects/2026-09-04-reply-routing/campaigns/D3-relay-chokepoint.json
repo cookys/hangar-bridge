@@ -27,7 +27,7 @@
   "max_changed_files": 14,
   "baseline_churn": 800,
   "max_growth_ratio": 1.5,
-  "max_extra_churn": 500,
+  "max_extra_churn": 400,
   "max_repair_generations": 4,
   "max_wall_seconds": 7200,
   "verify_cmd": "corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci",

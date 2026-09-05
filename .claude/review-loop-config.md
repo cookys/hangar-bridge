@@ -62,6 +62,9 @@ Claude; set `reviewer_engine` here to make the review heterogeneous too.
 - spec_review: on
 - independent_harness: on
 - qc_panel: gpt-5.6-sol, MiniMax-M3, glm-5.3
+- qc_panel_runners: codex, anthropic-compatible, anthropic-compatible
+- qc_panel_efforts: xhigh, xhigh, high
+- qc_panel_endpoints: @none, MINIMAX, GLM
 - qc_panel_aggregation: union-on-verified-critical
 - review_diff_scope: full
 - min_panel_size: 3

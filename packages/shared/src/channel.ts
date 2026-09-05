@@ -71,7 +71,7 @@ export function envelopeToChannelNotification(e: Envelope): ChannelNotification 
   return {
     method: 'notifications/claude/channel',
     params: {
-      content: escapeChannelBody(e.content),
+      content: e.kind === 'chat' ? withReplyLine(e) : escapeChannelBody(e.content),
       meta: {
         from: e.from,
         msg_id: e.id,
@@ -87,6 +87,22 @@ export function envelopeToChannelNotification(e: Envelope): ChannelNotification 
       ...(e.subject && (e.kind === 'chat' || e.kind === 'task_dispatch') ? { gated_subject: e.subject } : {})
     }
   }
+}
+
+// §8.3: a chat frame carries one extra line after the body, naming the verb
+// that will actually pass §5.2 for THIS receiver — the bridge Claude
+// receiver's MCP tool, which stamps the pane selector itself when there is
+// one. A `~none` route (relay-stamped `meta.reply_route === 'none'` by a
+// later deliverable) prints "reply route unavailable" and no command; any
+// other value or absence means "route available". Body escaping (Layer 4)
+// is unchanged — only appended to, never applied to the reply line itself
+// (it names a message id, never peer-supplied content).
+function withReplyLine(e: Envelope): string {
+  const body = escapeChannelBody(e.content)
+  const replyLine = e.meta?.reply_route === 'none'
+    ? 'reply route unavailable'
+    : `Reply: reply_to_peer in_reply_to=${e.id}`
+  return `${body}\n${replyLine}`
 }
 
 const RESERVED = new Set<string>(RESERVED_META_KEYS)

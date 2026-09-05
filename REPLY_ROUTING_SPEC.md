@@ -1,5 +1,5 @@
 <!--
-STATUS: v7 — PROPOSED, not implemented. LOOP CLOSED at the five-round cap: round 5
+STATUS: v7 — relay/peer-agent/shared rollout step 1 + 2 code implemented on `feat/reply-routing` (2026-09-05; flag default off, not deployed; client-side CLI/agent-call and the step-3 gate are still open, see docs/BACKLOG.md). LOOP CLOSED at the five-round cap: round 5
 was 3× FIX-THEN-SHIP (codex 2 Critical, both folded: unaddressable routes are
 tombstoned not deleted; takeover CASes lease AND reserved_at). Findings were
 still arriving at implementation granularity each round; the operator's call
@@ -793,7 +793,7 @@ the machine-readable extra named in the last column.
 | `unknown_parent` | `/v1/replies` | 404 | no | no route (never existed, expired, zero-match dispatch) |
 | `not_a_recipient` | `/v1/replies` | 403 | no | replier not in the route's grants |
 | `legacy_unreplyable` | `/v1/replies` | 403 | no | backfilled row that carried a `to_filter` |
-| `parent_unaddressable` | `/v1/replies` | 410 | no | route has no `sender_instance`, has `return_selector = '~none'`, or `from_handle` disabled/removed; the route row is deleted on this response |
+| `parent_unaddressable` | `/v1/replies` | 410 | no | route has no `sender_instance`, has `return_selector = '~none'`, or `from_handle` disabled/removed; the route is tombstoned (`unaddressable_at` set, never deleted) on this response |
 | `reply_storm` | `/v1/replies` | 429 | after `retry_after_s` | §9; detail `retry_after_s` |
 | `sender_instance_required` | `/v1/messages`, `/v1/replies` (flag on) | 400 | no | no `x-hangar-instance` on a user-authored kind |
 | `handle_needs_all_sessions` | `/v1/messages` (flag on) | 400 | no | bare handle without `all_sessions`; detail `live_instances[]` |

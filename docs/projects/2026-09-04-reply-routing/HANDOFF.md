@@ -1,13 +1,13 @@
 ## 目標
 以 `/l5` 實作 `REPLY_ROUTING_SPEC.md` v7 的 rollout step 1 + step 2 程式碼(relay + peer-agent + shared + switchboard),做到 merge-ready 的 `feat/reply-routing` 分支,不部署。goal 原文見本檔末。
 
-## 現況
-- 分支 `develop`,HEAD `df42993`(本次 handoff commit 之前)。工作樹乾淨。**`feat/reply-routing` 尚未建立,零實作。**
-- DONE(2026-09-05 這個 session):L5 前置全部讀完並**蒸餾落地**成三份檔,下一個 session 靠它們就能派工,不必再讀 rail 原文:
-  - `docs/projects/2026-09-04-reply-routing/l5-runbook.md` — depth-0 完整命令序列(session-mode、seal、foreman 派工、watcher + 死人開關、引擎命令、outcome 表、qc 三席、status task、merge、GC、decision ledger)與已解析 roster 值。
-  - `docs/projects/2026-09-04-reply-routing/deliverables.md` — spec §15 切成 D1 shared → D2 relay 資料層 → D3 relay chokepoint → D4 relay 新端點 → D5 peer-agent,每節即 foreman brief / implementer prompt 的內容(路徑、spec 節、驗收、預估 diff)。
-  - `docs/projects/2026-09-04-reply-routing/campaigns/D1..D5*.json` — campaign contract 草稿(schema `implementation-campaign-contract` 必填欄位齊);D1 的 `base_sha` 已是 develop tip,D3–D5 的 `base_sha` 是占位字串,merge 前一個後再填。`repo_identity` 格式是猜的,seal 拒收就照錯誤訊息改那一欄。
-- 為什麼又交接:context-budget T2(165k)在讀完 rail 文件、尚未派工時觸發。前一個 session 也是同一位置倒下。原因是 read-order 要求整讀 front-door(1083 行)+ spec(962 行)+ hetero-dispatch,單這三份就超過 T1。**下一個 session 不得重蹈:read-order 見下,總量約 600 行。**
+## 現況（2026-09-05 收尾）
+- **`feat/reply-routing` 為 merge-ready**（tip 見 `git log`，從 develop `39c7cc5` 開，63+ commits、五個 `--no-ff` merge：D1 `f88e9e5` shared、D2 `934cd62` relay data layer、D3 `dd27712` relay chokepoint/flag/grants、D4 `3b3ecbd` relay endpoints、D5 `92bfcc3` peer-agent）。**未 push、未部署、未合進 develop**（operator 決定）。
+- 最終全 repo gate（feat tip，`corepack pnpm -r typecheck && build && test:ci`）全綠：shared 145 tests / lines 100 %；relay 386 tests / lines 94.3 %；peer-agent 492 tests / lines 92.5 %；e2e 62（2 skipped，無本機 NATS，既有行為）。`pnpm audit --prod --audit-level high` 無 high/critical（2 moderate，既有）。
+- 每個 deliverable 都經過：git artifact 驗範圍 → depth-0 獨立 gate（在 hands worktree）→ 三席 hetero qc（codex gpt-5.6-sol / MiniMax-M3 / glm-5.3，`/tmp/qc/run-qc.sh`）→ 每條 finding depth-0 對 spec 重驗（採納者交 hands 修、駁回者附證據記 `/tmp/autopilot-campaigns/decision-ledger.jsonl` d-1..d-20）→ merge `--no-ff` → feat 全 repo gate。無任何 verified Critical 留存。
+- 執行模式：`/l5` 的 precondition_failed fallback（l3 inline，sonnet hands 於 `Agent isolation:"worktree"`）；原因與環境修復見「已決事項」與 memory `l5-strict-projection-needs-mission`。
+- 已知 flake（未修、已入 BACKLOG）：`packages/peer-agent/src/stream-client.test.ts` reconnect timing 與 `p1-independent.test.ts` 本機 nats-server 啟動，都只在 `pnpm -r` 高負載時偶發，隔離重跑皆綠。
+- 文件：`REPLY_ROUTING_SPEC.md` STATUS 行與 `CLAUDE.md` 已改為「step 1+2 code implemented on feat/reply-routing」；`docs/BACKLOG.md` 有 out-of-scope 三項（dotfiles fleet/crew.zsh、@cookys/agent-call、hangar fleet-pulse gate）+ panel follow-ups + flake；`docs/evidence/address-rules-gate.json` 只是骨架。
 
 ## 已決事項(不重議)
 - ADR 與 spec 分家;`use_reply_verb` 與 §6 拒絕全在 `HANGAR_RELAY_ADDRESS_RULES` 後面,預設 off;不部署;out of scope = dotfiles `fleet`/`crew.zsh`、`@cookys/agent-call`、hangar `fleet-pulse`(寫進 `docs/BACKLOG.md`,不寫進程式)。
@@ -16,13 +16,11 @@
 - deliverable 切分與順序照 deliverables.md;D1 ∥ D2 可平行(路徑互斥),其餘串行;每個 merge 進 `feat/reply-routing` 即一個 handoff 邊界。
 - §13 錯誤表 `parent_unaddressable` 那格寫「route row is deleted」是 v6 殘句,與 §3.1/§5.1 的 tombstone 矛盾;D4 實作以 tombstone 為準並順手改 §13(已寫進 D4 節與 contract 的 allowed paths)。
 
-## 下一步
-1. fresh session 在 `~/projects/hangar-bridge`:`node ~/projects/autopilot/scripts/session-mode.js set --level l5 --repo-root ~/projects/hangar-bridge`。
-2. 讀 read-order 的三份(不要多)。對 operator 說一次 runbook §0 的三條 capability_warnings。
-3. `git branch feat/reply-routing develop && git checkout feat/reply-routing`。
-4. 照 runbook §3 跑 D1(可同時起 D2):seal → foreman(sonnet,brief ≤ 300 行 = deliverables.md D1 節 + runbook §3.3)→ watcher + 死人開關 → 等通知 → qc 三席 → status task `can_merge` → merge → GC → decision ledger。
-5. 每個 deliverable merge 後更新本檔「現況」並 commit(docs only);T1 一過就在下一個 merge 邊界交接。
-
+## 下一步（給 operator / 下一個 session）
+1. 檢視 `git log --oneline develop..feat/reply-routing` 與五個 merge commit 的 qc 摘要；要的話 `git push -u origin feat/reply-routing`（允許，尚未做）。
+2. 決定合進 develop 的時機：合併後 relay 啟動會跑 `migrateV8ToV9`（backfill 現有 chat/task_dispatch 列，log `{routes, null_sender_instance}`）；`HANGAR_RELAY_ADDRESS_RULES` 預設 off，`/v1/replies`、`/v1/inbox`、`/v1/grants/finalize` 立即可用，`/v1/messages` 行為不變。
+3. 部署屬 hangar deployment skill 範圍（本 run 明文不部署）。旗標翻 on 前要先做 BACKLOG 的三項 client-side 工作與 §16 evidence manifest。
+4. 若要重試真正的 `/l5` hetero rail：先在本 repo 建 Mission（authority + execution graph），否則會再撞 strict projection gate。
 ## 驗證方式
 ```
 cd ~/projects/hangar-bridge && corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci

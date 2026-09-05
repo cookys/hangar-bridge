@@ -4,7 +4,7 @@
   "profile": "internal-pilot",
   "mission_grant_ref": null,
   "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
-  "base_sha": "df42993d6ceb0d3746addcdd1ef5272239ea5c69",
+  "base_sha": "39c7cc55583f927ca3ca7c69de1c428e91b71b37",
   "branch": "hetero/reply-routing-D1",
   "vertical_acceptance": [
     "OutboundMessageSchema accepts all_sessions (chat, concrete handle only) and thread_root; rejects all_sessions on @team or with fleet_wide",
@@ -19,7 +19,7 @@
   "max_changed_files": 10,
   "baseline_churn": 450,
   "max_growth_ratio": 1.5,
-  "max_extra_churn": 300,
+  "max_extra_churn": 225,
   "max_repair_generations": 3,
   "max_wall_seconds": 5400,
   "verify_cmd": "corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci",

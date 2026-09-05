@@ -12,7 +12,7 @@ Source-of-truth docs:
 - **docs/architecture.md** — system + connection diagrams, inherited-vs-fork provenance audit, and the verified protocol deep-dive (membership, auth, envelope, subject-ACL, delivery, correlation). Start here for the big picture.
 - **README.md** — current SSE/NATS status, supported setup/CLI surface, security primitives, and closeout verification baseline.
 - **SUBJECT_ROUTING_SPEC.md** — subject-routing / envelope-kind semantics.
-- **REPLY_ROUTING_SPEC.md** — reply verb, reply routes + grants, CLI identity (courier / operator mailbox), address refusals; mechanism half of hangar ADR-_global/0015. PROPOSED, not implemented.
+- **REPLY_ROUTING_SPEC.md** — reply verb, reply routes + grants, CLI identity (courier / operator mailbox), address refusals; mechanism half of hangar ADR-_global/0015. Rollout step 1 + 2 code IMPLEMENTED on `feat/reply-routing` (relay + peer-agent + shared; `HANGAR_RELAY_ADDRESS_RULES` default off, not deployed); the dotfiles `fleet`/`crew.zsh`, `@cookys/agent-call` and hangar `fleet-pulse` gate halves are tracked in `docs/BACKLOG.md`.
 - **docs/PROJECT_ISOLATION.md** + **docs/plans/2026-06-25-cross-project-isolation.md** — same-box cross-project isolation (merged).
 - Hangar-side project tracking: `~/projects/hangar/docs/projects/2026-05-17-hangar-bridge/`.
 

@@ -3,7 +3,8 @@ import {
   HANDLE_REGEX, META_KEY_REGEX, MAX_CONTENT_BYTES,
   MAX_META_KEY_LENGTH, MAX_META_VALUE_LENGTH,
   PROTOCOL_VERSION, TEAM_BROADCAST_HANDLE,
-  SUBJECT_REGEX, MAX_SUBJECT_LENGTH
+  SUBJECT_REGEX, MAX_SUBJECT_LENGTH,
+  isMailboxHandle, RESERVED_CLI_INSTANCE
 } from './constants.ts'
 import { isValidInstanceId } from './ulid.ts'
 
@@ -63,9 +64,16 @@ function refineToFilter(
   }
 }
 
+// The wire recipient: a plain handle, the `@team` broadcast, or an operator
+// mailbox row (§8.2, §6.5 — `@mailbox:<handle>`). Widened to accept the
+// mailbox form here so the relay-stamped envelope can carry it; a
+// client-side OutboundMessage with a mailbox `to` is rejected separately
+// (reserved_address, see the OutboundMessageSchema refinement below) — only
+// the reply verb's mailbox branch is allowed to write one.
 export const AddressSchema = z.union([
   z.string().regex(HANDLE_REGEX, 'handle'),
-  z.literal(TEAM_BROADCAST_HANDLE)
+  z.literal(TEAM_BROADCAST_HANDLE),
+  z.string().refine(isMailboxHandle, 'mailbox handle')
 ])
 
 export const KindSchema = z.enum([
@@ -166,9 +174,41 @@ export const OutboundMessageSchema = z.object({
   // the field before any sender uses it — the schema is .strict(), so a peer
   // that sends it to a relay which does not know it gets a 400 and goes quiet.
   // Upgrade order is therefore relay first, senders second.
-  fleet_wide: z.boolean().optional()
+  fleet_wide: z.boolean().optional(),
+  // Acknowledgement (not a selector, §6.1) that a bare-handle chat really is
+  // meant for every session on that host, now and later — a durable row
+  // fetchSince hands to every sibling that connects after. Chat-only, one
+  // concrete handle only (never @team, never with fleet_wide); the relay
+  // validates shape/authorization here, liveness is out of scope.
+  all_sessions: z.boolean().optional(),
+  // Thread continuation (§7, not a reply): names the route the caller sent or
+  // holds a grant on. Format-only here — reuses the message-id validator so
+  // there is one definition of "a message id" in this file; the relay
+  // resolves it to a route and canonicalises to the effective root.
+  thread_root: MessageIdSchema.optional()
 }).strict().superRefine((e, ctx) => {
   refineToFilter(e, ctx)
+  // Reserved addresses (§6.5) — not feature-flagged, always apply. `to` is
+  // widened at the AddressSchema level to accept `@mailbox:<handle>` for the
+  // wire Envelope (§8.2); a client-side outbound message may never write one
+  // itself — only the reply verb's mailbox branch does.
+  if (isMailboxHandle(e.to)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to'], message: 'reserved_address' })
+  }
+  if (e.to_filter?.instance === RESERVED_CLI_INSTANCE) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: ['to_filter', 'instance'], message: 'reserved_instance'
+    })
+  }
+  if (e.all_sessions !== undefined) {
+    const concreteHandle = e.to !== TEAM_BROADCAST_HANDLE && !e.to.startsWith('@')
+    if (e.kind !== 'chat' || !concreteHandle || e.fleet_wide === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom, path: ['all_sessions'],
+        message: 'all_sessions is only allowed for chat to a concrete handle, without fleet_wide'
+      })
+    }
+  }
   // Same @team-subject + ack-channel invariants as EnvelopeSchema, with nullish
   // guards (B2): outbound subject is optional, so `!= null` would misfire on
   // every omitted-subject send (acks, null-subject @team broadcasts) → 400.

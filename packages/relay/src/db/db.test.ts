@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,7 +10,7 @@ describe('openDatabase', () => {
   beforeEach(() => { db = openDatabase(':memory:') })
 
   it('applies schema and reports latest version', () => {
-    expect(getSchemaVersion(db)).toBe(8)
+    expect(getSchemaVersion(db)).toBe(9)
   })
 
   it('human table has last_active_at column (v2)', () => {
@@ -36,6 +36,7 @@ describe('openDatabase', () => {
     ).all().map((r: any) => r.name)
     expect(names).toEqual(expect.arrayContaining([
       'audit_log', 'claim', 'human', 'idempotency_key', 'message',
+      'reply_grant', 'reply_idem', 'reply_limiter', 'reply_route',
       'schema_version', 'team', 'token'
     ]))
   })
@@ -110,7 +111,7 @@ describe('migrateV3ToV4 (rebuild path)', () => {
 
   it('rebuilds message table to accept new kinds and preserves existing rows', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(8)
+    expect(getSchemaVersion(upgraded)).toBe(9)
     const legacy = upgraded.prepare("SELECT content FROM message WHERE id='msg_legacy_chat'").get() as { content: string } | undefined
     expect(legacy?.content).toBe('pre-migration')
     expect(() =>
@@ -124,9 +125,9 @@ describe('migrateV3ToV4 (rebuild path)', () => {
   it('is idempotent: second open does not rebuild again', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(8)
+    expect(getSchemaVersion(second)).toBe(9)
     const versions = second.prepare("SELECT version FROM schema_version ORDER BY version").all() as Array<{ version: number }>
-    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
     second.close()
   })
 })
@@ -159,7 +160,7 @@ describe('migrateV5ToV6 (claim table)', () => {
 
   it('adds the claim table to an existing v5 DB and records version 6', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(8)
+    expect(getSchemaVersion(upgraded)).toBe(9)
     const has = upgraded.prepare(
       "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='claim'"
     ).get()
@@ -176,7 +177,7 @@ describe('migrateV5ToV6 (claim table)', () => {
   it('is idempotent: re-open keeps version 6 and one claim table', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(8)
+    expect(getSchemaVersion(second)).toBe(9)
     second.close()
   })
 })
@@ -218,7 +219,7 @@ describe('migrateV6ToV7 (legacy attribution scrub)', () => {
 
   it('removes newly reserved routing meta before recording v7', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(8)
+    expect(getSchemaVersion(upgraded)).toBe(9)
     const row = upgraded.prepare(
       "SELECT meta_json FROM message WHERE id='msg_legacy_attribution'"
     ).get() as { meta_json: string }
@@ -230,5 +231,302 @@ describe('migrateV6ToV7 (legacy attribution scrub)', () => {
       "SELECT meta_json FROM message WHERE id='msg_legacy_attribution'"
     ).get() as { meta_json: string }).meta_json)).toEqual({ keep: 'yes' })
     reopened.close()
+  })
+})
+
+describe('migrateV8ToV9 (reply routing tables, REPLY_ROUTING_SPEC §3.1)', () => {
+  it('a fresh DB ends at version 9 with all four tables + the correlation index', () => {
+    const db = openDatabase(':memory:')
+    expect(getSchemaVersion(db)).toBe(9)
+    const names = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'reply_%' ORDER BY name"
+    ).all().map((r: any) => r.name)
+    expect(names).toEqual(['reply_grant', 'reply_idem', 'reply_limiter', 'reply_route'])
+    const idx = db.prepare(
+      "SELECT 1 AS x FROM sqlite_master WHERE type='index' AND name='reply_route_correlation'"
+    ).get()
+    expect(idx).toBeTruthy()
+  })
+
+  it('reply_route columns match §3.1 exactly', () => {
+    const db = openDatabase(':memory:')
+    const cols = (db.pragma('table_info(reply_route)') as Array<{ name: string; notnull: number }>)
+      .map(c => c.name)
+    expect(cols).toEqual([
+      'msg_id', 'team_id', 'from_handle', 'sender_instance', 'return_selector',
+      'to_handle', 'to_filter_json', 'thread_root', 'legacy_width',
+      'correlation_id', 'created_at', 'expires_at', 'unaddressable_at',
+    ])
+  })
+
+  it('reply_grant has a composite PK and cascades on reply_route delete', () => {
+    const db = openDatabase(':memory:')
+    db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES ('t1','t1',7,'2026-01-01T00:00:00Z')").run()
+    db.prepare(`
+      INSERT INTO reply_route(msg_id,team_id,from_handle,to_handle,thread_root,created_at)
+      VALUES ('msg_a','t1','alice','bob','msg_a','2026-01-01T00:00:00Z')
+    `).run()
+    db.prepare(
+      "INSERT INTO reply_grant(msg_id,handle,instance,selector) VALUES ('msg_a','bob','inst-1','')"
+    ).run()
+    // duplicate grant key is a no-op error path exercised via INSERT OR IGNORE by the store (item 3);
+    // here we just prove the PK rejects a raw duplicate insert.
+    expect(() => db.prepare(
+      "INSERT INTO reply_grant(msg_id,handle,instance,selector) VALUES ('msg_a','bob','inst-1','')"
+    ).run()).toThrow()
+    db.prepare("DELETE FROM reply_route WHERE msg_id='msg_a'").run()
+    const remaining = db.prepare("SELECT COUNT(*) AS n FROM reply_grant WHERE msg_id='msg_a'").get() as { n: number }
+    expect(remaining.n).toBe(0)
+  })
+
+  it('reply_route_correlation is a partial unique index (NULLs do not collide)', () => {
+    const db = openDatabase(':memory:')
+    db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES ('t1','t1',7,'2026-01-01T00:00:00Z')").run()
+    const ins = db.prepare(`
+      INSERT INTO reply_route(msg_id,team_id,from_handle,to_handle,thread_root,correlation_id,created_at)
+      VALUES (?,?,?,?,?,?,?)
+    `)
+    ins.run('msg_a', 't1', 'alice', 'bob', 'msg_a', null, '2026-01-01T00:00:00Z')
+    ins.run('msg_b', 't1', 'alice', 'bob', 'msg_b', null, '2026-01-01T00:00:00Z')
+    expect(() => ins.run('msg_c', 't1', 'alice', 'bob', 'msg_c', 'corr-1', '2026-01-01T00:00:00Z')).not.toThrow()
+    expect(() => ins.run('msg_d', 't1', 'alice', 'bob', 'msg_d', 'corr-1', '2026-01-01T00:00:00Z')).toThrow()
+  })
+
+  it('is idempotent: opening a v9 DB twice does not duplicate tables or the index', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v9-'))
+    const dbPath = join(tmpDir, 'v9.db')
+    try {
+      openDatabase(dbPath).close()
+      const second = openDatabase(dbPath)
+      expect(getSchemaVersion(second)).toBe(9)
+      const tableCount = second.prepare(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='reply_route'"
+      ).get() as { n: number }
+      expect(tableCount.n).toBe(1)
+      const idxCount = second.prepare(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='index' AND name='reply_route_correlation'"
+      ).get() as { n: number }
+      expect(idxCount.n).toBe(1)
+      second.close()
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('migrateV8ToV9 backfill (REPLY_ROUTING_SPEC.md §5.3)', () => {
+  let tmpDir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v9-backfill-'))
+    dbPath = join(tmpDir, 'v8.db')
+    // Seed a v8-shape DB by hand (reply routing tables absent; message already
+    // carries to_filter_json from the to_filter-addressing feature).
+    const raw = new Database(dbPath)
+    raw.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+      CREATE TABLE team(id TEXT PRIMARY KEY, name TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 7, created_at TEXT NOT NULL);
+      CREATE TABLE human(id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id), handle TEXT NOT NULL, display_name TEXT NOT NULL, public_key BLOB, created_at TEXT NOT NULL, disabled_at TEXT, last_active_at TEXT, subjects TEXT, UNIQUE(team_id, handle));
+      CREATE TABLE token(id TEXT PRIMARY KEY, human_id TEXT NOT NULL REFERENCES human(id), token_hash BLOB NOT NULL UNIQUE, label TEXT NOT NULL, tier TEXT NOT NULL CHECK(tier IN ('human','admin')), created_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE TABLE message(id TEXT PRIMARY KEY, v INTEGER NOT NULL, team_id TEXT NOT NULL REFERENCES team(id), from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, in_reply_to TEXT, thread_root TEXT, kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')), content TEXT NOT NULL, meta_json TEXT NOT NULL DEFAULT '{}', sent_at TEXT NOT NULL, delivered_at TEXT, subject TEXT, to_filter_json TEXT);
+      CREATE TABLE idempotency_key(key_hash BLOB PRIMARY KEY, token_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL REFERENCES team(id), at TEXT NOT NULL, actor_human_id TEXT, event TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
+      CREATE TABLE claim(team_id TEXT NOT NULL REFERENCES team(id), claim_key TEXT NOT NULL, owner_handle TEXT NOT NULL, owner_label TEXT, note TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(team_id, claim_key));
+      INSERT INTO schema_version(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8);
+      INSERT INTO team(id,name,retention_days,created_at) VALUES ('hangar','hangar',7,'2026-05-17T00:00:00Z');
+    `)
+    const insMsg = raw.prepare(`
+      INSERT INTO message(id,v,team_id,from_handle,to_handle,thread_root,kind,content,meta_json,sent_at,to_filter_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `)
+    // shape 1: direct handle, no to_filter → 'handle'
+    insMsg.run('msg_h1', 2, 'hangar', 'alice', 'bob', null, 'chat', 'hi',
+      JSON.stringify({ sender_instance: 'inst-alice', correlation_id: 'corr-xyz' }), '2026-05-17T00:00:00Z', null)
+    // shape 2: @team, no to_filter, NO sender_instance (pre-attribution / CLI-sent) → 'team-not-sender'
+    insMsg.run('msg_h2', 2, 'hangar', 'alice', '@team', null, 'chat', 'hi team',
+      JSON.stringify({}), '2026-05-17T00:00:01Z', null)
+    // shape 3: @team + {repo} (project chat) → 'repo:<name>'
+    insMsg.run('msg_h3', 2, 'hangar', 'alice', '@team', null, 'chat', 'repo chat',
+      JSON.stringify({ sender_instance: 'inst-alice' }), '2026-05-17T00:00:02Z',
+      JSON.stringify({ repo: 'hangar-bridge' }))
+    // shape 4: direct handle + to_filter (instance-narrowed) → 'unreplyable'
+    insMsg.run('msg_h4', 2, 'hangar', 'alice', 'bob', null, 'task_dispatch', 'go',
+      JSON.stringify({ sender_instance: 'inst-alice' }), '2026-05-17T00:00:03Z',
+      JSON.stringify({ instance: '01HRK7Y0000000000000000000' }))
+    // a reply: proves thread_root COALESCEs from the message row's own column
+    insMsg.run('msg_h5', 2, 'hangar', 'bob', 'alice', 'msg_h1', 'chat', 'reply',
+      JSON.stringify({ sender_instance: 'inst-bob' }), '2026-05-17T00:00:04Z', null)
+    // task_result: a protocol kind — must get NO route
+    insMsg.run('msg_r1', 2, 'hangar', 'bob', 'alice', 'msg_h1', 'task_result', 'exit 0',
+      JSON.stringify({ sender_instance: 'inst-bob' }), '2026-05-17T00:00:05Z', null)
+    raw.close()
+  })
+
+  afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }) })
+
+  it('backfills a reply_route per legacy_width shape and skips protocol kinds', () => {
+    const before = Date.now()
+    const upgraded = openDatabase(dbPath)
+    const after = Date.now()
+    expect(getSchemaVersion(upgraded)).toBe(9)
+
+    const routes = upgraded.prepare(
+      'SELECT msg_id, legacy_width, sender_instance, thread_root, correlation_id, created_at, expires_at FROM reply_route ORDER BY msg_id'
+    ).all() as Array<{
+      msg_id: string; legacy_width: string; sender_instance: string | null
+      thread_root: string; correlation_id: string | null; created_at: string; expires_at: string | null
+    }>
+    const byId = Object.fromEntries(routes.map(r => [r.msg_id, r]))
+
+    expect(byId['msg_r1']).toBeUndefined()
+    expect(Object.keys(byId).sort()).toEqual(['msg_h1', 'msg_h2', 'msg_h3', 'msg_h4', 'msg_h5'])
+
+    expect(byId['msg_h1']!.legacy_width).toBe('handle')
+    expect(byId['msg_h2']!.legacy_width).toBe('team-not-sender')
+    expect(byId['msg_h3']!.legacy_width).toBe('repo:hangar-bridge')
+    expect(byId['msg_h4']!.legacy_width).toBe('unreplyable')
+    expect(byId['msg_h5']!.legacy_width).toBe('handle')
+
+    // thread_root is never NULL: own id for a root row, COALESCEd for a reply.
+    expect(byId['msg_h1']!.thread_root).toBe('msg_h1')
+    expect(byId['msg_h5']!.thread_root).toBe('msg_h1')
+
+    expect(byId['msg_h2']!.sender_instance).toBeNull()
+    expect(byId['msg_h1']!.sender_instance).toBe('inst-alice')
+    expect(byId['msg_h1']!.correlation_id).toBe('corr-xyz')
+    expect(byId['msg_h1']!.created_at).toBe('2026-05-17T00:00:00Z')
+
+    for (const id of ['msg_h1', 'msg_h2', 'msg_h3', 'msg_h4', 'msg_h5']) {
+      const expiresAt = byId[id]!.expires_at
+      expect(expiresAt).toBeTruthy()
+      const t = new Date(expiresAt!).getTime()
+      expect(t).toBeGreaterThanOrEqual(before + 7 * 24 * 60 * 60 * 1000 - 1000)
+      expect(t).toBeLessThanOrEqual(after + 7 * 24 * 60 * 60 * 1000 + 1000)
+    }
+
+    upgraded.close()
+  })
+
+  it('reports {routes, null_sender_instance} counts via the logger', () => {
+    const writes: string[] = []
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: any) => {
+      writes.push(String(chunk))
+      return true
+    })
+    try {
+      openDatabase(dbPath).close()
+    } finally {
+      spy.mockRestore()
+    }
+    const line = writes
+      .map(w => { try { return JSON.parse(w) } catch { return null } })
+      .find((j): j is { event: string; routes: number; null_sender_instance: number } =>
+        j !== null && j.event === 'migrate.v8_to_v9')
+    expect(line).toBeTruthy()
+    expect(line!.routes).toBe(5)
+    expect(line!.null_sender_instance).toBe(1)
+  })
+
+  it('is idempotent: a second open does not insert additional routes', () => {
+    openDatabase(dbPath).close()
+    const second = openDatabase(dbPath)
+    const count = second.prepare('SELECT COUNT(*) AS n FROM reply_route').get() as { n: number }
+    expect(count.n).toBe(5)
+    second.close()
+  })
+
+  it('writes the backfill and schema_version=9 atomically: routes and the version stamp always land together', () => {
+    const upgraded = openDatabase(dbPath)
+    const version = upgraded.prepare('SELECT 1 AS x FROM schema_version WHERE version=9').get()
+    const routeCount = upgraded.prepare('SELECT COUNT(*) AS n FROM reply_route').get() as { n: number }
+    expect(version).toBeTruthy()
+    expect(routeCount.n).toBe(5)
+    upgraded.close()
+  })
+
+  it('recovers from a partial state (routes already present, version stuck at 8) without crashing', () => {
+    // Simulates a crash between the backfill commit and the schema_version
+    // stamp under the OLD two-statement migration: reply_route rows already
+    // exist for the qualifying messages, but schema_version=9 was never
+    // recorded, so the next open would retry the backfill and violate
+    // reply_route's PRIMARY KEY. Manufacture exactly that state by hand.
+    openDatabase(dbPath).close()
+    const raw = new Database(dbPath)
+    raw.prepare('DELETE FROM schema_version WHERE version=9').run()
+    raw.close()
+
+    expect(() => openDatabase(dbPath)).not.toThrow()
+
+    const reopened = openDatabase(dbPath)
+    expect(getSchemaVersion(reopened)).toBe(9)
+    const count = reopened.prepare('SELECT COUNT(*) AS n FROM reply_route').get() as { n: number }
+    expect(count.n).toBe(5)
+    reopened.close()
+  })
+})
+
+describe('migrateV8ToV9 backfill — legacy correlation_id collisions (REPLY_ROUTING_SPEC.md §5.3, reply_route_correlation)', () => {
+  let tmpDir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v9-corr-collision-'))
+    dbPath = join(tmpDir, 'v8.db')
+    const raw = new Database(dbPath)
+    raw.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+      CREATE TABLE team(id TEXT PRIMARY KEY, name TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 7, created_at TEXT NOT NULL);
+      CREATE TABLE human(id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id), handle TEXT NOT NULL, display_name TEXT NOT NULL, public_key BLOB, created_at TEXT NOT NULL, disabled_at TEXT, last_active_at TEXT, subjects TEXT, UNIQUE(team_id, handle));
+      CREATE TABLE token(id TEXT PRIMARY KEY, human_id TEXT NOT NULL REFERENCES human(id), token_hash BLOB NOT NULL UNIQUE, label TEXT NOT NULL, tier TEXT NOT NULL CHECK(tier IN ('human','admin')), created_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE TABLE message(id TEXT PRIMARY KEY, v INTEGER NOT NULL, team_id TEXT NOT NULL REFERENCES team(id), from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, in_reply_to TEXT, thread_root TEXT, kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')), content TEXT NOT NULL, meta_json TEXT NOT NULL DEFAULT '{}', sent_at TEXT NOT NULL, delivered_at TEXT, subject TEXT, to_filter_json TEXT);
+      CREATE TABLE idempotency_key(key_hash BLOB PRIMARY KEY, token_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL REFERENCES team(id), at TEXT NOT NULL, actor_human_id TEXT, event TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
+      CREATE TABLE claim(team_id TEXT NOT NULL REFERENCES team(id), claim_key TEXT NOT NULL, owner_handle TEXT NOT NULL, owner_label TEXT, note TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(team_id, claim_key));
+      INSERT INTO schema_version(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8);
+      INSERT INTO team(id,name,retention_days,created_at) VALUES ('hangar','hangar',7,'2026-05-17T00:00:00Z');
+    `)
+    const insMsg = raw.prepare(`
+      INSERT INTO message(id,v,team_id,from_handle,to_handle,thread_root,kind,content,meta_json,sent_at,to_filter_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `)
+    // Two DISTINCT chat rows sharing the same legacy meta.correlation_id — the
+    // reply_route_correlation unique index would reject the second row's alias
+    // outright; the backfill must still give it a route, just without the alias.
+    insMsg.run('msg_c1', 2, 'hangar', 'alice', 'bob', null, 'chat', 'first',
+      JSON.stringify({ sender_instance: 'inst-alice', correlation_id: 'corr-shared' }), '2026-05-17T00:00:00Z', null)
+    insMsg.run('msg_c2', 2, 'hangar', 'alice', 'bob', null, 'chat', 'second',
+      JSON.stringify({ sender_instance: 'inst-alice', correlation_id: 'corr-shared' }), '2026-05-17T00:00:01Z', null)
+    raw.close()
+  })
+
+  afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }) })
+
+  it('both rows get a route; exactly one carries the colliding correlation_id', () => {
+    const upgraded = openDatabase(dbPath)
+    const routes = upgraded.prepare(
+      'SELECT msg_id, correlation_id FROM reply_route WHERE msg_id IN (?,?) ORDER BY msg_id'
+    ).all('msg_c1', 'msg_c2') as Array<{ msg_id: string; correlation_id: string | null }>
+    expect(routes).toHaveLength(2)
+    const withCorrelation = routes.filter(r => r.correlation_id === 'corr-shared')
+    const withoutCorrelation = routes.filter(r => r.correlation_id === null)
+    expect(withCorrelation).toHaveLength(1)
+    expect(withoutCorrelation).toHaveLength(1)
+    // First-seen (by id order) keeps the alias.
+    expect(withCorrelation[0]!.msg_id).toBe('msg_c1')
+    expect(withoutCorrelation[0]!.msg_id).toBe('msg_c2')
+    upgraded.close()
+  })
+
+  it('stays idempotent across a second open', () => {
+    openDatabase(dbPath).close()
+    const second = openDatabase(dbPath)
+    const count = second.prepare(
+      "SELECT COUNT(*) AS n FROM reply_route WHERE msg_id IN ('msg_c1','msg_c2')"
+    ).get() as { n: number }
+    expect(count.n).toBe(2)
+    second.close()
   })
 })

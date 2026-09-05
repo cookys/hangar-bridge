@@ -3,14 +3,61 @@ import {
   registerTools,
   buildPresenceBody,
   dispatchToolDescriptor,
+  renderAudienceReport,
+  resolveReplyClient,
   TOOL_DESCRIPTORS,
   TOOL_DESCRIPTORS_CLAIMS,
   TOOL_DESCRIPTOR_DISPATCH,
+  TOOL_DESCRIPTOR_REPLY,
   peerCaps,
 } from './tools.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import type { RelayClient } from './outbound.ts'
+
+/**
+ * D5 item 6 (§11): the relay's audience report is TWO separate lists — a
+ * live subscription snapshot and a durable-drain description — never
+ * flattened into one. `renderAudienceReport` is the one place send_to_peer,
+ * dispatch_task and reply_to_peer turn that shape into model-facing text.
+ */
+describe('renderAudienceReport', () => {
+  it('renders live + durable + matched', () => {
+    const text = renderAudienceReport({ live: ['bob#01A', 'carol#01B'], durable: ['bob'], matched: 2 })
+    expect(text).toBe('live: bob#01A, carol#01B\ndurable: bob\nmatched: 2')
+  })
+
+  it('renders an empty live/durable list as []', () => {
+    const text = renderAudienceReport({ live: [], durable: [], matched: 0 })
+    expect(text).toBe('live: []\ndurable: []\nmatched: 0')
+  })
+
+  it('renders durable: team for an unfiltered @team chat', () => {
+    expect(renderAudienceReport({ live: [], durable: ['team'], matched: 0 }))
+      .toContain('durable: team')
+  })
+
+  it('renders durable: repo:<name> for a project-scoped send', () => {
+    expect(renderAudienceReport({ live: [], durable: ['repo:hangar-bridge'], matched: 0 }))
+      .toContain('durable: repo:hangar-bridge')
+  })
+
+  it('appends sender_state when present', () => {
+    const text = renderAudienceReport({ live: [], durable: ['alice'], matched: 0, sender_state: 'offline' })
+    expect(text).toBe('live: []\ndurable: alice\nmatched: 0\nsender_state: offline')
+  })
+
+  it('appends legacy_parent when present', () => {
+    const text = renderAudienceReport({ live: ['alice#01A'], durable: ['alice'], matched: 1, legacy_parent: true })
+    expect(text.split('\n')).toContain('legacy_parent: true')
+  })
+
+  it('omits sender_state/legacy_parent lines when absent', () => {
+    const text = renderAudienceReport({ live: [], durable: [], matched: 0 })
+    expect(text).not.toContain('sender_state')
+    expect(text).not.toContain('legacy_parent')
+  })
+})
 
 describe('registerTools', () => {
   it('send_to_peer calls RelayClient.send', async () => {
@@ -549,5 +596,280 @@ describe('send_to_peer — the default audience is this session\'s project', () 
     const { callTool } = registerTools(client, withRepo)
     const r = await callTool('send_to_peer', { content: 'hi' })
     expect((r.content[0] as any).text).toContain('2 session(s)')
+  })
+})
+
+/**
+ * D5 item 2 (§6.1, §7): send_to_peer forwards `thread_root` (continuing a
+ * thread for a different audience, §7 — not a reply) and `all_sessions` (the
+ * chat-only "every other session on this host" acknowledgement, §6.1)
+ * straight through to the relay; it never validates or refuses them itself.
+ */
+describe('send_to_peer — thread_root / all_sessions passthrough', () => {
+  const mkClient = () => {
+    const send = vi.fn(async (payload: any) => ({
+      id: 'msg_01HRK7Y000000000000000000B', v: 2, team: 't1', from: 'a', to: payload.to,
+      in_reply_to: null, thread_root: payload.thread_root ?? null, kind: 'chat',
+      content: payload.content, meta: {},
+      sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+      live: [], durable: [payload.to], matched: 0,
+    }))
+    return { send, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient & { send: typeof send }
+  }
+  const presence = { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false }
+
+  it('forwards thread_root to the relay', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, presence)
+    await callTool('send_to_peer', { to: 'bob', content: 'more context', thread_root: 'msg_01HRK7Y000000000000000000A' })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload.thread_root).toBe('msg_01HRK7Y000000000000000000A')
+  })
+
+  it('forwards all_sessions to the relay', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, presence)
+    await callTool('send_to_peer', { to: 'bob', content: 'hi everyone on that host', all_sessions: true })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload.all_sessions).toBe(true)
+  })
+
+  it('omits thread_root/all_sessions from the payload when not given (no forced fields)', async () => {
+    const client = mkClient()
+    const { callTool } = registerTools(client, presence)
+    await callTool('send_to_peer', { to: 'bob', content: 'hi' })
+    const payload = (client.send as any).mock.calls[0][0]
+    expect(payload).not.toHaveProperty('thread_root')
+    expect(payload).not.toHaveProperty('all_sessions')
+  })
+
+  it('documents both fields on the tool schema', () => {
+    const send = TOOL_DESCRIPTORS.find(d => d.name === 'send_to_peer')!
+    expect(send.inputSchema.properties).toHaveProperty('thread_root')
+    expect(send.inputSchema.properties).toHaveProperty('all_sessions')
+  })
+
+  it('does not pre-check in_reply_to itself: a use_reply_verb relay refusal passes through verbatim', async () => {
+    const send = vi.fn(async () => {
+      throw new Error('send failed: 400 {"error":"use_reply_verb","message":"use `fleet reply <msg_id>`; to continue the thread for a different audience send a new message with `thread_root`","retryable":false}')
+    })
+    const client = { send, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    await expect(callTool('send_to_peer', { to: 'bob', content: 'hi', in_reply_to: 'msg_01HRK7Y000000000000000000A' }))
+      .rejects.toThrow(/use_reply_verb/)
+    // Verbatim: the relay's own hint text survives into the thrown error, not a
+    // locally-authored refusal message — the tool never pre-checks in_reply_to.
+    await expect(callTool('send_to_peer', { to: 'bob', content: 'hi', in_reply_to: 'msg_01HRK7Y000000000000000000A' }))
+      .rejects.toThrow(/continue the thread for a different audience send a new message with `thread_root`/)
+  })
+})
+
+describe('resolveReplyClient', () => {
+  it('prefers an explicitly supplied ReplyClient', async () => {
+    const reply = vi.fn()
+    const explicit = { reply }
+    const client = { send: vi.fn(), listPeers: vi.fn(), setPresence: vi.fn() } as unknown as RelayClient
+    expect(resolveReplyClient(client, explicit as any)).toBe(explicit)
+  })
+
+  it('falls back to the transport itself when it implements .reply', () => {
+    const reply = vi.fn()
+    const client = { send: vi.fn(), listPeers: vi.fn(), setPresence: vi.fn(), reply } as unknown as RelayClient
+    expect(resolveReplyClient(client)).toBe(client)
+  })
+
+  it('returns undefined when neither is available (e.g. NATS)', () => {
+    const client = { send: vi.fn(), listPeers: vi.fn(), setPresence: vi.fn() } as unknown as RelayClient
+    expect(resolveReplyClient(client)).toBeUndefined()
+  })
+})
+
+/**
+ * D5 item 1 (§5.1, §8.1, §8.3): reply_to_peer names a message id, never a
+ * handle — the relay resolves the audience from the parent's route/grants.
+ */
+describe('registerTools — reply_to_peer', () => {
+  const presence = { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false }
+  const baseClient = () => ({ send: vi.fn(), listPeers: vi.fn(async () => []), setPresence: vi.fn() })
+
+  it('is not advertised without a reply client', () => {
+    expect(TOOL_DESCRIPTORS.map(t => t.name)).not.toContain('reply_to_peer')
+  })
+
+  it('names a message id, never a handle, in its description', () => {
+    expect(TOOL_DESCRIPTOR_REPLY.description).toMatch(/message id/)
+    expect(TOOL_DESCRIPTOR_REPLY.description).toMatch(/never a handle/)
+    expect(TOOL_DESCRIPTOR_REPLY.description).toMatch(/send_to_peer/)
+    expect(TOOL_DESCRIPTOR_REPLY.description).toMatch(/thread_root/)
+  })
+
+  it('fails closed without a reply client wired', async () => {
+    const client = baseClient() as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    await expect(callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' }))
+      .rejects.toThrow(/reply_to_peer unavailable/)
+  })
+
+  it('mints ONE idempotency key per call and posts {in_reply_to, content}', async () => {
+    const reply = vi.fn(async () => ({
+      ok: true, status: 200,
+      body: {
+        id: 'msg_01HRK7Y000000000000000000C', v: 2, team: 'hangar', from: 'a', to: 'bob',
+        in_reply_to: 'msg_01HRK7Y000000000000000000A', thread_root: 'msg_01HRK7Y000000000000000000A',
+        kind: 'chat', content: 'ack', meta: {}, sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+        live: ['bob#01A'], durable: ['bob'], matched: 1, sender_state: 'live',
+      },
+    }))
+    const client = { ...baseClient(), reply } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+    expect(reply).toHaveBeenCalledTimes(1)
+    const [body, opts] = reply.mock.calls[0]!
+    expect(body).toEqual({ in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+    expect(opts.idempotencyKey).toMatch(/^[0-9a-z]+$/)
+    const text = (r.content[0] as any).text
+    expect(text).toContain('replied msg_01HRK7Y000000000000000000C')
+    expect(text).toContain('live: bob#01A')
+    expect(text).toContain('durable: bob')
+    expect(text).toContain('sender_state: live')
+  })
+
+  it('forwards meta when given', async () => {
+    const reply = vi.fn(async () => ({ ok: true, status: 200, body: { id: 'msg_01HRK7Y000000000000000000C', live: [], durable: [], matched: 0 } }))
+    const client = { ...baseClient(), reply } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack', meta: { disposition: 'accepted' } })
+    expect(reply.mock.calls[0]![0]).toEqual({
+      in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack', meta: { disposition: 'accepted' },
+    })
+  })
+
+  it('surfaces a relay refusal verbatim instead of throwing', async () => {
+    const reply = vi.fn(async () => ({
+      ok: false, status: 403,
+      body: { error: 'not_a_recipient', message: 'you are not in this route\'s grants', retryable: false },
+    }))
+    const client = { ...baseClient(), reply } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+    const text = (r.content[0] as any).text
+    expect(JSON.parse(text)).toEqual({ error: 'not_a_recipient', message: 'you are not in this route\'s grants', retryable: false })
+  })
+
+  it('when $TMUX_PANE is set and the registry knows this pane, sends x-hangar-return-selector', async () => {
+    const reply = vi.fn(async () => ({ ok: true, status: 200, body: { id: 'msg_01HRK7Y000000000000000000C', live: [], durable: [], matched: 0 } }))
+    const client = { ...baseClient(), reply } as unknown as RelayClient
+    const getPaneSelector = vi.fn(async () => 'revival.3d--agy@01GEN0000000000000000000A')
+    const { callTool } = registerTools(client, presence, undefined, undefined, undefined, undefined, undefined, undefined, getPaneSelector)
+    await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+    expect(getPaneSelector).toHaveBeenCalledTimes(1)
+    expect(reply.mock.calls[0]![1].returnSelector).toBe('revival.3d--agy@01GEN0000000000000000000A')
+  })
+
+  it('sends no selector (not ~none) when the pane is not registered — never attaches', async () => {
+    const reply = vi.fn(async () => ({ ok: true, status: 200, body: { id: 'msg_01HRK7Y000000000000000000C', live: [], durable: [], matched: 0 } }))
+    const client = { ...baseClient(), reply } as unknown as RelayClient
+    const getPaneSelector = vi.fn(async () => undefined)
+    const { callTool } = registerTools(client, presence, undefined, undefined, undefined, undefined, undefined, undefined, getPaneSelector)
+    await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+    expect(reply.mock.calls[0]![1].returnSelector).toBeUndefined()
+  })
+
+  it('rejects a malformed in_reply_to', async () => {
+    const reply = vi.fn()
+    const client = { ...baseClient(), reply } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence)
+    await expect(callTool('reply_to_peer', { in_reply_to: 'not-a-msg-id', content: 'ack' })).rejects.toThrow()
+    expect(reply).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Repair round item 4 (review finding, adopted): RelayClient.reply throws
+   * on a TRANSPORT failure (network error, or a non-JSON 5xx body it cannot
+   * parse into a business outcome) — distinct from a business refusal,
+   * which it returns as {ok:false, ...}, never throws. reply_to_peer must
+   * never let that throw escape the tool boundary as an unstructured Error:
+   * it retries ONCE under the SAME idempotency key (§5.1 — a fresh key on
+   * retry would risk minting a second route/grant/limiter-increment for an
+   * answer that may have actually landed the first time), then reports a
+   * structured, retryable §13-shaped failure if both attempts fail.
+   */
+  describe('reply_to_peer — transport-failure retry (repair round item 4)', () => {
+    const okBody = {
+      id: 'msg_01HRK7Y000000000000000000C', v: 2, team: 'hangar', from: 'a', to: 'bob',
+      in_reply_to: 'msg_01HRK7Y000000000000000000A', thread_root: 'msg_01HRK7Y000000000000000000A',
+      kind: 'chat', content: 'ack', meta: {}, sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+      live: [], durable: ['bob'], matched: 0,
+    }
+
+    it('a 5xx/non-JSON throw then a 200 on retry: succeeds, using the SAME idempotency key both times', async () => {
+      const reply = vi.fn()
+        .mockRejectedValueOnce(new Error('reply failed: 502 <html>Bad Gateway</html>'))
+        .mockResolvedValueOnce({ ok: true, status: 200, body: okBody })
+      const client = { ...baseClient(), reply } as unknown as RelayClient
+      const { callTool } = registerTools(client, presence)
+      const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+      expect(reply).toHaveBeenCalledTimes(2)
+      const key1 = reply.mock.calls[0]![1].idempotencyKey
+      const key2 = reply.mock.calls[1]![1].idempotencyKey
+      expect(key1).toBe(key2)
+      expect((r.content[0] as any).text).toContain('replied msg_01HRK7Y000000000000000000C')
+    })
+
+    it('a network throw on both attempts: reports a structured retryable relay_unreachable failure, never throws, same key both times', async () => {
+      const reply = vi.fn(async () => { throw new TypeError('fetch failed') })
+      const client = { ...baseClient(), reply } as unknown as RelayClient
+      const { callTool } = registerTools(client, presence)
+      const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+      expect(reply).toHaveBeenCalledTimes(2)
+      const key1 = reply.mock.calls[0]![1].idempotencyKey
+      const key2 = reply.mock.calls[1]![1].idempotencyKey
+      expect(key1).toBe(key2)
+      const body = JSON.parse((r.content[0] as any).text)
+      expect(body.error).toBe('relay_unreachable')
+      expect(body.retryable).toBe(true)
+      expect(body.message).toContain('fetch failed')
+    })
+
+    it('a non-JSON-body throw on both attempts: reports relay_error (reached the relay, could not parse it)', async () => {
+      const reply = vi.fn(async () => { throw new Error('reply failed: 500 <html>oops</html>') })
+      const client = { ...baseClient(), reply } as unknown as RelayClient
+      const { callTool } = registerTools(client, presence)
+      const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+      const body = JSON.parse((r.content[0] as any).text)
+      expect(body.error).toBe('relay_error')
+      expect(body.retryable).toBe(true)
+    })
+
+    it('does not call getPaneSelector twice across the retry — the selector is computed once and reused', async () => {
+      const reply = vi.fn()
+        .mockRejectedValueOnce(new Error('fetch failed'))
+        .mockResolvedValueOnce({ ok: true, status: 200, body: okBody })
+      const client = { ...baseClient(), reply } as unknown as RelayClient
+      const getPaneSelector = vi.fn(async () => 'pane@01GEN0000000000000000000A')
+      const { callTool } = registerTools(client, presence, undefined, undefined, undefined, undefined, undefined, undefined, getPaneSelector)
+      await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+      expect(getPaneSelector).toHaveBeenCalledTimes(1)
+      expect(reply.mock.calls[0]![1].returnSelector).toBe('pane@01GEN0000000000000000000A')
+      expect(reply.mock.calls[1]![1].returnSelector).toBe('pane@01GEN0000000000000000000A')
+    })
+  })
+
+  /**
+   * Repair round item 5a (review finding, adopted): getPaneSelector is a
+   * registry read (agent-call list --json under the hood) — a failure
+   * there (agent-call missing, ENOENT, a malformed JSON blip) must never
+   * fail the reply itself; §8.1 already treats "not registered" as "send
+   * no selector", and a registry READ error is the same kind of "cannot
+   * tell" as a registry MISS, not a reason to abort answering at all.
+   */
+  it('a getPaneSelector failure yields no selector, and the reply still goes through', async () => {
+    const reply = vi.fn(async () => ({ ok: true, status: 200, body: { id: 'msg_01HRK7Y000000000000000000C', live: [], durable: [], matched: 0 } }))
+    const client = { ...baseClient(), reply } as unknown as RelayClient
+    const getPaneSelector = vi.fn(async () => { throw new Error('agent-call: ENOENT') })
+    const { callTool } = registerTools(client, presence, undefined, undefined, undefined, undefined, undefined, undefined, getPaneSelector)
+    const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+    expect(reply.mock.calls[0]![1].returnSelector).toBeUndefined()
+    expect((r.content[0] as any).text).toContain('replied msg_01HRK7Y000000000000000000C')
   })
 })

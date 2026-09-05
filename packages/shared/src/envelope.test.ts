@@ -40,6 +40,20 @@ describe('EnvelopeSchema', () => {
   it('accepts `to: "@team"` for broadcast', () => {
     expect(EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@team' })).toBeDefined()
   })
+  it('accepts a mailbox recipient (§8.2 operator mailbox row)', () => {
+    const e = EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@mailbox:cuda' })
+    expect(e.to).toBe('@mailbox:cuda')
+  })
+  // The part after @mailbox: must itself be a valid handle (HANDLE_REGEX) —
+  // not any non-empty string.
+  it.each([
+    ['empty suffix', '@mailbox:'],
+    ['@team as the suffix', '@mailbox:@team'],
+    ['a space in the suffix', '@mailbox:has space'],
+    ['a nested mailbox address as the suffix', '@mailbox:@mailbox:x'],
+  ])('rejects a mailbox recipient with %s', (_label, to) => {
+    expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), to })).toThrow()
+  })
   it('rejects unknown kind', () => {
     expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), kind: 'surprise' })).toThrow()
   })
@@ -218,6 +232,115 @@ describe('OutboundMessageSchema subject', () => {
     expect(() => OutboundMessageSchema.parse({
       to: 'bob', kind: 'chat', content: 'x', subject: 'mple2.x', in_reply_to: 'msg_01HRK7Y0000000000000000001'
     })).toThrow(/subject=null/)
+  })
+})
+
+describe('OutboundMessageSchema all_sessions / thread_root (§6.1, §7)', () => {
+  it('accepts all_sessions=true on chat to a concrete handle', () => {
+    const m = OutboundMessageSchema.parse({ to: 'bob', kind: 'chat', content: 'x', all_sessions: true })
+    expect(m.all_sessions).toBe(true)
+  })
+  it('accepts thread_root as a valid message id', () => {
+    const m = OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', thread_root: 'msg_01HRK7Y0000000000000000001'
+    })
+    expect(m.thread_root).toBe('msg_01HRK7Y0000000000000000001')
+  })
+  it('rejects thread_root that is not a valid message id', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', thread_root: 'not-a-msg-id'
+    })).toThrow()
+  })
+
+  // Pins thread_root to the SAME message-id validator as in_reply_to (reuse,
+  // not a parallel regex, per §7 / the prompt's "reuse it, do not write a new
+  // regex"). Table-driven: for each representative value, build two
+  // otherwise-identical valid outbound chat messages — one with thread_root
+  // set, one with in_reply_to set — and assert they accept/reject identically.
+  it.each([
+    ['a valid msg_<26 Crockford chars> id', 'msg_01HRK7Y0000000000000000000', true],
+    ['lowercase Crockford chars', 'msg_01hrk7y0000000000000000000', false],
+    ['25 chars (one short)', 'msg_01HRK7Y000000000000000000', false],
+    ['27 chars (one long)', 'msg_01HRK7Y00000000000000000000', false],
+    ['an excluded Crockford letter (I)', 'msg_I1HRK7Y0000000000000000000', false],
+    ['a bare ULID without the msg_ prefix', '01HRK7Y0000000000000000000', false],
+    ['an empty string', '', false],
+    ['trailing whitespace', 'msg_01HRK7Y0000000000000000000 ', false],
+  ])('%s: thread_root and in_reply_to agree (valid=%s)', (_label, value, shouldParse) => {
+    const viaThreadRoot = () => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', thread_root: value
+    })
+    const viaInReplyTo = () => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', in_reply_to: value
+    })
+    if (shouldParse) {
+      expect(viaThreadRoot()).toBeDefined()
+      expect(viaInReplyTo()).toBeDefined()
+    } else {
+      expect(viaThreadRoot).toThrow()
+      expect(viaInReplyTo).toThrow()
+    }
+  })
+  it('rejects all_sessions on @team (must be a concrete handle)', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: '@team', kind: 'chat', content: 'x', all_sessions: true
+    })).toThrow(/all_sessions/)
+  })
+  it('rejects all_sessions together with fleet_wide', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', all_sessions: true, fleet_wide: true
+    })).toThrow(/all_sessions/)
+  })
+  it('rejects all_sessions on a non-chat kind', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'task_dispatch', content: 'x', all_sessions: true
+    })).toThrow(/all_sessions/)
+  })
+  // The audience-restriction rule applies whenever all_sessions is explicitly
+  // set — true OR false — since the field is only meaningful for chat to one
+  // concrete handle; there is no "false is a harmless no-op" carve-out.
+  it('accepts all_sessions=false on chat to a concrete handle', () => {
+    expect(OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', all_sessions: false
+    })).toBeDefined()
+  })
+  it('rejects all_sessions=false on @team (must be a concrete handle)', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: '@team', kind: 'chat', content: 'x', all_sessions: false
+    })).toThrow(/all_sessions/)
+  })
+  it('rejects all_sessions=false on a non-chat kind', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'task_dispatch', content: 'x', all_sessions: false
+    })).toThrow(/all_sessions/)
+  })
+  it('rejects all_sessions=false together with fleet_wide', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', all_sessions: false, fleet_wide: true
+    })).toThrow(/all_sessions/)
+  })
+})
+
+describe('OutboundMessageSchema reserved addresses (§6.5)', () => {
+  it('rejects a mailbox handle as `to` with a reserved_address issue', () => {
+    try {
+      OutboundMessageSchema.parse({ to: '@mailbox:cuda', kind: 'chat', content: 'x' })
+      expect.unreachable('expected a ZodError')
+    } catch (err) {
+      const issues = (err as { issues: Array<{ message: string }> }).issues
+      expect(issues.some(i => i.message === 'reserved_address')).toBe(true)
+    }
+  })
+  it('rejects to_filter.instance = "~cli" with a reserved_instance issue', () => {
+    try {
+      OutboundMessageSchema.parse({
+        to: 'bob', kind: 'chat', content: 'x', to_filter: { instance: '~cli' }
+      })
+      expect.unreachable('expected a ZodError')
+    } catch (err) {
+      const issues = (err as { issues: Array<{ message: string }> }).issues
+      expect(issues.some(i => i.message === 'reserved_instance')).toBe(true)
+    }
   })
 })
 

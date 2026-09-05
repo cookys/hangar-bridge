@@ -11,6 +11,16 @@ export type SendResult = Envelope & {
   matched?: number
   matched_sessions?: Array<{ handle: string; instance?: string }>
   note?: string
+  /**
+   * §11 audience report (D2-D4): the live-subscription snapshot and the
+   * durable-drain description, always present together once the relay
+   * computes them. Optional here so a mock/legacy response missing both
+   * still type-checks (see tools.ts hasAudienceReport feature-detection).
+   */
+  live?: string[]
+  durable?: string[]
+  sender_state?: 'live' | 'offline'
+  legacy_parent?: true
 }
 
 export interface RelayClientOpts {
@@ -104,7 +114,36 @@ export interface ClaimClient {
   releaseClaim(key: string): Promise<{ ok: true; released: boolean } | { ok: false; owner: string }>
 }
 
-export class RelayClient implements PeerTransport, ClaimClient, InboxClient {
+/** §5.1 body: strictly {in_reply_to, content, meta?} — no to/to_filter/subject. */
+export interface ReplyBody {
+  in_reply_to: string
+  content: string
+  meta?: Record<string, string>
+}
+
+/**
+ * §13: every /v1/replies status (200 success, or a refusal) is a JSON body
+ * shaped `{error, message, retryable, ...detail}` on failure. Modelled as a
+ * plain outcome (never thrown) so the MCP tool can hand a relay refusal back
+ * to the model verbatim instead of losing structure inside an Error message.
+ */
+export interface ReplyOutcome {
+  ok: boolean
+  status: number
+  body: Record<string, unknown>
+}
+
+export interface ReplyClient {
+  reply(body: ReplyBody, opts: { idempotencyKey: string; returnSelector?: string }): Promise<ReplyOutcome>
+}
+
+/** §8.1: {ok:true} only on a 200 (the courier may paste); any other status is finalize_failed. */
+export interface FinalizeGrantResult {
+  ok: boolean
+  status: number
+}
+
+export class RelayClient implements PeerTransport, ClaimClient, InboxClient, ReplyClient {
   readonly capabilities = { teamTaskFanout: true, teamPermissionFanout: true } as const
   private fetchImpl: typeof globalThis.fetch
 
@@ -186,6 +225,50 @@ export class RelayClient implements PeerTransport, ClaimClient, InboxClient {
       return { ok: false, conflict: { owner: j.owner, expires_at: j.expires_at } }
     }
     throw new Error(`claim failed: ${res.status} ${text}`)
+  }
+
+  /**
+   * §5.1 `POST /v1/replies`. Never throws on a relay refusal (unlike `send`)
+   * — the whole point of this call, per REPLY_ROUTING_SPEC.md §13, is that
+   * the tool surfaces the relay's `{error, message, retryable, ...detail}`
+   * verbatim rather than losing structure inside a thrown Error string.
+   * Still throws on a transport failure (non-JSON body) — that is not a
+   * business refusal, it is this call not having reached the relay at all.
+   */
+  async reply(body: ReplyBody, opts: { idempotencyKey: string; returnSelector?: string }): Promise<ReplyOutcome> {
+    const res = await this.request(new URL('/v1/replies', this.opts.relayUrl), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${this.opts.token}`,
+        'content-type': 'application/json',
+        'idempotency-key': opts.idempotencyKey,
+        ...(this.opts.instance ? { 'x-hangar-instance': this.opts.instance } : {}),
+        ...(opts.returnSelector ? { 'x-hangar-return-selector': opts.returnSelector } : {}),
+      },
+      body: JSON.stringify(body),
+    })
+    const text = await res.text()
+    let parsed: Record<string, unknown>
+    try {
+      parsed = text.length > 0 ? JSON.parse(text) as Record<string, unknown> : {}
+    } catch {
+      throw new Error(`reply failed: ${res.status} ${text}`)
+    }
+    return { ok: res.status === 200, status: res.status, body: parsed }
+  }
+
+  /** §8.1 `POST /v1/grants/finalize`, under the courier's own bearer + instance header. */
+  async finalizeGrant(msgId: string, selector: string): Promise<FinalizeGrantResult> {
+    const res = await this.request(new URL('/v1/grants/finalize', this.opts.relayUrl), {
+      method: 'POST',
+      headers: {
+        ...this.authHeaders(),
+        ...(this.opts.instance ? { 'x-hangar-instance': this.opts.instance } : {}),
+      },
+      body: JSON.stringify({ msg_id: msgId, selector }),
+    })
+    await res.text()
+    return { ok: res.status === 200, status: res.status }
   }
 
   async pollInbox(opts: { since?: string; limit?: number } = {}): Promise<InboxPage> {
