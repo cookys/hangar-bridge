@@ -207,6 +207,43 @@ export function messagesRoute(deps: Deps) {
       continuationRoot = resolved.canonicalRoot
     }
 
+    // §6.1-6.3 address refusals, gated behind addressRules (default 'off' —
+    // byte-identical to today until an operator opts in). reserved_address /
+    // reserved_instance (§6.5) are NOT gated: they already 400 above, from
+    // the shared OutboundMessageSchema/ToFilterSchema refinements (D1).
+    if ((deps.addressRules ?? 'off') === 'on' && isUserAuthoredKind(data.kind)) {
+      if (data.in_reply_to != null) {
+        return c.json({
+          error: 'use_reply_verb',
+          message: "use `fleet reply <msg_id>`; to continue the thread for a different "
+            + "audience send a new message with `thread_root`",
+          retryable: false,
+        }, 400)
+      }
+      if (stampedInstance.instance === undefined) {
+        return c.json({ error: 'sender_instance_required', message: 'x-hangar-instance is required', retryable: false }, 400)
+      }
+      if (data.kind === 'chat' && data.to !== TEAM_BROADCAST_HANDLE && data.to_filter == null && data.all_sessions !== true) {
+        const liveInstances = Array.from(deps.fanout.instanceCounts(HANGAR_TEAM_ID, data.to as string).keys())
+          .filter(i => i !== '')
+        return c.json({
+          error: 'handle_needs_all_sessions',
+          message: 'a bare-handle chat is durable and reaches every sibling that connects '
+            + 'later; resend with all_sessions: true to acknowledge that',
+          retryable: false,
+          live_instances: liveInstances,
+        }, 400)
+      }
+      if (data.kind === 'task_dispatch' && data.to_filter == null) {
+        return c.json({
+          error: 'dispatch_needs_instance',
+          message: 'task_dispatch must target exactly one instance via to_filter.instance '
+            + '(a host-wide command is not supported)',
+          retryable: false,
+        }, 400)
+      }
+    }
+
     // Fail-closed namespace ACL — gate on SUBJECT PRESENCE, not a kind allow-list.
     // A non-null subject is only meaningful on a command-carrying kind; a subjected
     // reactive/system kind (presence_update/permission_*/task_result) is rejected
