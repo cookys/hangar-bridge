@@ -300,4 +300,27 @@ describe('Fanout — frozen snapshot delivery', () => {
     expect(bobA.received).toHaveLength(1)
     expect(bobB.received).toHaveLength(0)
   })
+
+  it('the snapshot membership key does not collide across a handle/instance boundary shift', () => {
+    // Without a join-point separator, handle 'ab' + instance 'c' and handle
+    // 'a' + instance 'bc' would both concatenate to 'abc'. A frozen snapshot
+    // naming only the first must never also deliver to the second.
+    const abInstC = collectingSub('ab'); abInstC.instance = 'c'
+    const aInstBc = collectingSub('a'); aInstBc.instance = 'bc'
+    f.subscribe(abInstC)
+    f.subscribe(aInstBc)
+    const e = env('A', '@team', 'zzz')
+
+    const fullSnapshot = f.snapshot(e)
+    expect([...fullSnapshot].sort((x, y) => x.handle.localeCompare(y.handle))).toEqual([
+      { handle: 'a', instance: 'bc' },
+      { handle: 'ab', instance: 'c' },
+    ])
+
+    // Freeze delivery to ONLY the {handle:'ab', instance:'c'} entry.
+    const narrowedSnapshot = fullSnapshot.filter(m => m.handle === 'ab')
+    f.deliverDetailed(e, narrowedSnapshot)
+    expect(abInstC.received).toHaveLength(1)
+    expect(aInstBc.received).toHaveLength(0)
+  })
 })
