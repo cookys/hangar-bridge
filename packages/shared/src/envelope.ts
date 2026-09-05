@@ -3,7 +3,8 @@ import {
   HANDLE_REGEX, META_KEY_REGEX, MAX_CONTENT_BYTES,
   MAX_META_KEY_LENGTH, MAX_META_VALUE_LENGTH,
   PROTOCOL_VERSION, TEAM_BROADCAST_HANDLE,
-  SUBJECT_REGEX, MAX_SUBJECT_LENGTH
+  SUBJECT_REGEX, MAX_SUBJECT_LENGTH,
+  isMailboxHandle
 } from './constants.ts'
 import { isValidInstanceId } from './ulid.ts'
 
@@ -63,9 +64,16 @@ function refineToFilter(
   }
 }
 
+// The wire recipient: a plain handle, the `@team` broadcast, or an operator
+// mailbox row (§8.2, §6.5 — `@mailbox:<handle>`). Widened to accept the
+// mailbox form here so the relay-stamped envelope can carry it; a
+// client-side OutboundMessage with a mailbox `to` is rejected separately
+// (reserved_address, see the OutboundMessageSchema refinement below) — only
+// the reply verb's mailbox branch is allowed to write one.
 export const AddressSchema = z.union([
   z.string().regex(HANDLE_REGEX, 'handle'),
-  z.literal(TEAM_BROADCAST_HANDLE)
+  z.literal(TEAM_BROADCAST_HANDLE),
+  z.string().refine(isMailboxHandle, 'mailbox handle')
 ])
 
 export const KindSchema = z.enum([

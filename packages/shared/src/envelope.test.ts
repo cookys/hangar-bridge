@@ -40,6 +40,10 @@ describe('EnvelopeSchema', () => {
   it('accepts `to: "@team"` for broadcast', () => {
     expect(EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@team' })).toBeDefined()
   })
+  it('accepts a mailbox recipient (§8.2 operator mailbox row)', () => {
+    const e = EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@mailbox:cuda' })
+    expect(e.to).toBe('@mailbox:cuda')
+  })
   it('rejects unknown kind', () => {
     expect(() => EnvelopeSchema.parse({ ...validChatEnvelope(), kind: 'surprise' })).toThrow()
   })

@@ -47,3 +47,11 @@ export const RESERVED_META_KEYS = ['subject', 'kind'] as const
 // D10 stub posture: single-tenant. Every authenticated request binds to this
 // team_id; schema retains the column + FK to keep migration risk at zero.
 export const HANGAR_TEAM_ID = 'hangar' as const
+
+// Reserved addresses (reply-routing spec §6.5). `@mailbox:<handle>` is the
+// operator mailbox row a reply-verb write may target (§8.2); it is never a
+// valid `to` on an outbound client message (`reserved_address`, envelope.ts).
+export const MAILBOX_PREFIX = '@mailbox:' as const
+export function isMailboxHandle(value: string): boolean {
+  return value.startsWith(MAILBOX_PREFIX) && value.length > MAILBOX_PREFIX.length
+}
