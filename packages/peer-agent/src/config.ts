@@ -1,5 +1,6 @@
-import { readFileSync, existsSync, statSync, writeFileSync, chmodSync } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { readFileSync, existsSync, statSync, writeFileSync, chmodSync, renameSync, rmSync } from 'node:fs'
+import { dirname, basename, isAbsolute, resolve, join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import { NAMESPACE_REGEX, INTEREST_REGEX, HANDLE_REGEX, isValidInstanceId } from '@hangar-bridge/shared'
 import { readTokenFile } from './cli/token-file.ts'
@@ -104,25 +105,53 @@ export function loadConfig(path: string = defaultConfigPath()): HangarConfig {
   return ConfigSchema.parse(raw)
 }
 
+/** DI seam for saveConfig's atomic-write step (repair round item 1 — test-only). */
+export interface SaveConfigDeps {
+  writeFileSync?: typeof writeFileSync
+  renameSync?: typeof renameSync
+  chmodSync?: typeof chmodSync
+}
+
 /**
  * Persist a config patch (currently only `instance`, §8.1) into an existing
  * config.json. Reads the raw file (not the zod-normalized shape, so fields
- * this process doesn't know about survive untouched), merges the patch,
+ * this process doesn't know about survive untouched), merges the patch, and
  * validates the RESULT against the same schema `loadConfig` enforces before
  * writing anything — a patch that would fail validation leaves the file on
- * disk untouched — and writes with owner-only permissions (0600), matching
- * every other long-lived secret/identity file this peer-agent manages.
+ * disk untouched.
+ *
+ * Written ATOMICALLY: a same-directory temp file (mode 0600) is written and
+ * chmod'd first, then `rename`d over `path`. An in-place overwrite can be
+ * torn by a crash or a killed process mid-write, leaving config.json neither
+ * the old content nor the new — unreadable by a concurrent loadConfig, and
+ * on POSIX `rename` is a single filesystem operation that can only ever
+ * land at the old inode or the new one. On any failure (write or rename)
+ * the temp file is cleaned up (best-effort) and the ORIGINAL file is
+ * untouched, since nothing writes to `path` itself until the rename.
  */
-export function saveConfig(path: string, patch: { instance?: string }): void {
+export function saveConfig(path: string, patch: { instance?: string }, deps: SaveConfigDeps = {}): void {
   if (!existsSync(path)) throw new Error(`config file not found: ${path}`)
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
   const merged = { ...raw, ...patch }
   ConfigSchema.parse(merged)
-  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 })
-  // `mode` on writeFileSync only applies at file CREATION time; an existing
-  // config.json (the overwhelmingly common case — this always patches a file
-  // an operator already created) keeps its prior permission bits otherwise.
-  if (process.platform !== 'win32') chmodSync(path, 0o600)
+
+  const write = deps.writeFileSync ?? writeFileSync
+  const rename = deps.renameSync ?? renameSync
+  const chmod = deps.chmodSync ?? chmodSync
+
+  // Same directory as `path` — rename is only atomic within one filesystem.
+  const tmpPath = join(dirname(path), `.${basename(path)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`)
+  try {
+    write(tmpPath, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 })
+    // `mode` on writeFileSync only applies at file CREATION time; the temp
+    // path is always freshly created, but chmod explicitly anyway so the
+    // guarantee doesn't silently depend on that.
+    if (process.platform !== 'win32') chmod(tmpPath, 0o600)
+    rename(tmpPath, path)
+  } catch (err) {
+    try { rmSync(tmpPath, { force: true }) } catch { /* best-effort cleanup */ }
+    throw err
+  }
 }
 
 export function loadToken(path: string): string {

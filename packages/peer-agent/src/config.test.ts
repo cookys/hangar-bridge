@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, loadToken, isInsideGitRepoWithRemote, assertSecretFilePrivate, saveConfig } from './config.ts'
@@ -211,6 +211,59 @@ describe('loadConfig', () => {
       expect(() => saveConfig(p, { instance: 'not-a-ulid' })).toThrow()
       // The file on disk is untouched by a rejected patch.
       expect(JSON.parse(readFileSync(p, 'utf8'))).not.toHaveProperty('instance')
+    })
+
+    /**
+     * Repair round item 1: write atomically — same-directory temp file at
+     * mode 0600, then rename over config.json — instead of overwriting in
+     * place. An in-place write is torn if the process dies mid-write (a
+     * config.json neither the old nor the new content, unreadable by a
+     * concurrent loadConfig); rename is a single filesystem operation that
+     * can only ever land at the old content or the new content, never
+     * between them.
+     */
+    describe('atomic write (repair round item 1)', () => {
+      it('leaves no temp file behind after a successful save', () => {
+        const p = join(workdir, 'atomic.json')
+        writeFileSync(p, JSON.stringify({ relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok') }))
+        saveConfig(p, { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' })
+        const entries = readdirSync(workdir)
+        expect(entries).toContain('atomic.json')
+        expect(entries.some(e => e !== 'atomic.json' && e.includes('atomic.json'))).toBe(false)
+      })
+
+      it('the final file is mode 0600 (the rename preserves the temp file\'s mode)', () => {
+        const p = join(workdir, 'atomic-perms.json')
+        writeFileSync(p, JSON.stringify({ relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok') }))
+        saveConfig(p, { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' })
+        if (process.platform !== 'win32') {
+          expect(statSync(p).mode & 0o777).toBe(0o600)
+        }
+      })
+
+      it('a failure while writing the temp file leaves the old file byte-for-byte intact, and no temp file remains', () => {
+        const p = join(workdir, 'atomic-fail.json')
+        const original = JSON.stringify({ relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok') })
+        writeFileSync(p, original)
+        expect(() => saveConfig(p, { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, {
+          writeFileSync: () => { throw new Error('simulated ENOSPC') },
+        })).toThrow(/simulated ENOSPC/)
+        expect(readFileSync(p, 'utf8')).toBe(original)
+        const entries = readdirSync(workdir)
+        expect(entries).toEqual(['atomic-fail.json'])
+      })
+
+      it('a failure during rename leaves the old file intact, and cleans up the temp file', () => {
+        const p = join(workdir, 'atomic-rename-fail.json')
+        const original = JSON.stringify({ relay_url: 'https://mesh.example.com', token_path: join(workdir, 'tok') })
+        writeFileSync(p, original)
+        expect(() => saveConfig(p, { instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, {
+          renameSync: () => { throw new Error('simulated EXDEV') },
+        })).toThrow(/simulated EXDEV/)
+        expect(readFileSync(p, 'utf8')).toBe(original)
+        const entries = readdirSync(workdir)
+        expect(entries).toEqual(['atomic-rename-fail.json'])
+      })
     })
   })
 
