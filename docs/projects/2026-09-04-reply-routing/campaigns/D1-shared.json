@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "ticket": "reply-routing-D1-shared",
+  "profile": "internal-pilot",
+  "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "df42993d6ceb0d3746addcdd1ef5272239ea5c69",
+  "branch": "hetero/reply-routing-D1",
+  "vertical_acceptance": [
+    "OutboundMessageSchema accepts all_sessions (chat, concrete handle only) and thread_root; rejects all_sessions on @team or with fleet_wide",
+    "to='@mailbox:<h>' refused as reserved_address; to_filter.instance='~cli' refused as reserved_instance",
+    "channel.ts chat frame carries a per-receiver Reply line (reply_to_peer in_reply_to=<msg_id>) or 'reply route unavailable'; escaping property test still passes",
+    "shared exports the §13 error-code table and §12 tunables",
+    "corepack pnpm -F @hangar-bridge/shared exec vitest run --coverage passes with lines >= 95%"
+  ],
+  "allowed_path_prefixes": [
+    "packages/shared/src/"
+  ],
+  "max_changed_files": 10,
+  "baseline_churn": 450,
+  "max_growth_ratio": 1.5,
+  "max_extra_churn": 300,
+  "max_repair_generations": 3,
+  "max_wall_seconds": 5400,
+  "verify_cmd": "corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci",
+  "rubric_ids": ["SPEC2", "SPEC6-5", "SPEC7", "SPEC8-3", "SPEC11", "SPEC13"],
+  "unit_class": "mechanical"
+}

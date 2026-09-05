@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "ticket": "reply-routing-D4-relay-endpoints",
+  "profile": "internal-pilot",
+  "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "REPLACE_WITH_feat/reply-routing_TIP_AFTER_D3_MERGE",
+  "branch": "hetero/reply-routing-D4",
+  "vertical_acceptance": [
+    "POST /v1/replies requires Idempotency-Key ([A-Za-z0-9_-]{1,64}); key_hash and request_digest (JCS) per §3.1; pending/committed/final/error state machine with lease fencing and 60s takeover CAS per §5.1 step 1",
+    "refusals unknown_parent 404, not_a_recipient 403 (selector-aware), legacy_unreplyable 403, parent_unaddressable 410 (tombstone, never delete), reply_storm 429 with retry_after_s; every error body has retry_with_new_key:true",
+    "session branch delivers to route.from_handle + to_filter.instance=route.sender_instance with thread_root copied and meta.local_target stamped from the route; mailbox branch persists to='@mailbox:<h>' with one grant and no fanout",
+    "GET /v1/inbox?since=&limit= returns {messages,last_id,has_more}, never stamps delivered_at; POST /v1/grants/finalize implements the blank->replace->insert->no-op->404 state machine",
+    "docs/evidence/address-rules-gate.json skeleton exists with null pins and empty entries",
+    "corepack pnpm -F @hangar-bridge/relay exec vitest run --coverage passes with lines >= 85%"
+  ],
+  "allowed_path_prefixes": [
+    "packages/relay/src/routes/replies.ts",
+    "packages/relay/src/routes/inbox.ts",
+    "packages/relay/src/routes/grants.ts",
+    "packages/relay/src/app.ts",
+    "packages/relay/src/messages/",
+    "packages/relay/tests/integration/",
+    "docs/evidence/address-rules-gate.json",
+    "REPLY_ROUTING_SPEC.md"
+  ],
+  "max_changed_files": 12,
+  "baseline_churn": 1000,
+  "max_growth_ratio": 1.5,
+  "max_extra_churn": 600,
+  "max_repair_generations": 4,
+  "max_wall_seconds": 7200,
+  "verify_cmd": "corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci",
+  "rubric_ids": ["SPEC5-1", "SPEC5-2", "SPEC5-4", "SPEC8-1", "SPEC8-2", "SPEC9", "SPEC13", "SPEC16"],
+  "unit_class": "judgment"
+}

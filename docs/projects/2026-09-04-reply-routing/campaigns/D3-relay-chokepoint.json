@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "ticket": "reply-routing-D3-relay-chokepoint",
+  "profile": "internal-pilot",
+  "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "REPLACE_WITH_feat/reply-routing_TIP_AFTER_D2_MERGE",
+  "branch": "hetero/reply-routing-D3",
+  "vertical_acceptance": [
+    "POST /v1/messages on user-authored kinds runs validate -> snapshot -> one transaction (route, grants, message row per existing rules) -> deliverDetailed(frozen snapshot); route insert failure is 500 with nothing delivered",
+    "x-hangar-return-selector parsed (<name>@<ULID> | ~none) into route.return_selector; thread_root validated sent-or-granted else 403 not_in_thread and canonicalised",
+    "HANGAR_RELAY_ADDRESS_RULES defaults off and off keeps every existing integration test green unchanged; on refuses use_reply_verb, sender_instance_required, handle_needs_all_sessions (live_instances detail), dispatch_needs_instance",
+    "reserved_address / reserved_instance refused regardless of the flag; stream rejects x-hangar-instance=~cli",
+    "drain/replay and poll_inbox write the grant before presenting; poll without instance is 400 instance_required when the flag is on",
+    "response carries the §11 audience report {live, durable, matched}; the 'never positive routing' comment is rewritten per §10",
+    "corepack pnpm -F @hangar-bridge/relay exec vitest run --coverage passes with lines >= 85%"
+  ],
+  "allowed_path_prefixes": [
+    "packages/relay/src/routes/messages.ts",
+    "packages/relay/src/routes/stream.ts",
+    "packages/relay/src/deps.ts",
+    "packages/relay/src/app.ts",
+    "packages/relay/src/cli/serve.ts",
+    "packages/relay/src/messages/",
+    "packages/relay/tests/integration/"
+  ],
+  "max_changed_files": 14,
+  "baseline_churn": 800,
+  "max_growth_ratio": 1.5,
+  "max_extra_churn": 500,
+  "max_repair_generations": 4,
+  "max_wall_seconds": 7200,
+  "verify_cmd": "corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci",
+  "rubric_ids": ["SPEC3-2", "SPEC4", "SPEC6", "SPEC7", "SPEC10", "SPEC11", "SPEC13"],
+  "unit_class": "judgment"
+}

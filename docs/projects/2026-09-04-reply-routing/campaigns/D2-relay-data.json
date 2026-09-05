@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "ticket": "reply-routing-D2-relay-data",
+  "profile": "internal-pilot",
+  "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "df42993d6ceb0d3746addcdd1ef5272239ea5c69",
+  "branch": "hetero/reply-routing-D2",
+  "vertical_acceptance": [
+    "schema v8 adds reply_route, reply_grant, reply_limiter, reply_idem and the reply_route_correlation unique index exactly as spec §3.1; version 8 recorded only after migrateV7ToV8 completes",
+    "backfill creates a route for every retained chat/task_dispatch row with legacy_width by row shape, thread_root=COALESCE(thread_root,id), expires_at=migration+7d, and reports {routes, null_sender_instance}",
+    "MessageStore gains route/grant helpers, finalizeGrant state machine, fetchMailboxSince; drain predicates self-exclude by sender_instance and never return @mailbox rows",
+    "Fanout.snapshot returns the would-match set without delivering; deliverDetailed accepts a frozen snapshot",
+    "reply-limiter.ts increments and checks in one conditional statement (count<10 per thread_root+handle per 10-min window); purge sweeps old windows and expired routes",
+    "corepack pnpm -F @hangar-bridge/relay exec vitest run --coverage passes with lines >= 85% and attribution.test.ts self-excluded accounting unchanged"
+  ],
+  "allowed_path_prefixes": [
+    "packages/relay/src/db/",
+    "packages/relay/src/messages/",
+    "packages/relay/src/fanout.ts",
+    "packages/relay/src/fanout.test.ts",
+    "packages/relay/src/fanout-self.test.ts",
+    "packages/relay/src/reply-limiter.ts",
+    "packages/relay/src/reply-limiter.test.ts",
+    "packages/relay/src/purge.ts"
+  ],
+  "max_changed_files": 14,
+  "baseline_churn": 900,
+  "max_growth_ratio": 1.5,
+  "max_extra_churn": 500,
+  "max_repair_generations": 4,
+  "max_wall_seconds": 7200,
+  "verify_cmd": "corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci",
+  "rubric_ids": ["SPEC3-1", "SPEC3-3", "SPEC3-4", "SPEC4", "SPEC5-3", "SPEC9"],
+  "unit_class": "mechanical"
+}

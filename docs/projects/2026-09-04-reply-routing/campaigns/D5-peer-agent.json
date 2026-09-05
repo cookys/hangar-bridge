@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "ticket": "reply-routing-D5-peer-agent",
+  "profile": "internal-pilot",
+  "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "REPLACE_WITH_feat/reply-routing_TIP_AFTER_D4_MERGE",
+  "branch": "hetero/reply-routing-D5",
+  "vertical_acceptance": [
+    "reply_to_peer({in_reply_to, content, meta?}) posts to /v1/replies with a per-call ULID Idempotency-Key reused on retry and stamps x-hangar-return-selector from the local agent-call registry when $TMUX_PANE is set",
+    "send_to_peer forwards thread_root and all_sessions and surfaces relay refusals (use_reply_verb hint verbatim); both tools return the two-part audience report",
+    "instructions.ts replaces only the 'passing to = the sender's handle and optionally in_reply_to' sentence with the reply verb; the six-point charter is byte-identical",
+    "switchboard persists its courier instance in config.json, calls POST /v1/grants/finalize before pasting, reports return_target_gone with reason in {not_registered, generation_stale, harness_changed, pid_dead, none_selector} and finalize_failed, and has no fallback to all panes",
+    "cli/send.ts always sends x-hangar-instance (courier instance in a pane, ~cli outside) and x-hangar-return-selector (<name>@<generation> or ~none)",
+    "corepack pnpm -F @hangar-bridge/peer-agent exec vitest run --coverage passes with lines >= 80%"
+  ],
+  "allowed_path_prefixes": [
+    "packages/peer-agent/src/"
+  ],
+  "max_changed_files": 16,
+  "baseline_churn": 900,
+  "max_growth_ratio": 1.5,
+  "max_extra_churn": 600,
+  "max_repair_generations": 4,
+  "max_wall_seconds": 7200,
+  "verify_cmd": "corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci",
+  "rubric_ids": ["SPEC5-1", "SPEC8-1", "SPEC8-3", "SPEC11", "SPEC13"],
+  "unit_class": "judgment"
+}
