@@ -89,10 +89,39 @@ export function messagesRoute(deps: Deps) {
       if (limit < 1 || limit > MAX_INBOX_LIMIT) return c.json({ error: 'invalid_limit' }, 400)
     }
 
+    // §4/item 7: the poller's declared instance is what this peek's grant
+    // (below) and the D2 self-exclusion in fetchInboxSince key on.
+    const parsedInstance = parseInstanceHeader(c.req.header('x-hangar-instance'))
+    if (!parsedInstance.ok) return c.json({ error: 'invalid_instance_header' }, 400)
+    const pollerInstance = parsedInstance.instance
+    if (pollerInstance === undefined && (deps.addressRules ?? 'off') === 'on') {
+      return c.json({
+        error: 'instance_required',
+        message: 'a poll without x-hangar-instance cannot be granted and cannot be answered',
+        retryable: false,
+      }, 400)
+    }
+
     const handle = c.get('peer').handle
     const owned = loadOwnedSet(deps.db, HANGAR_TEAM_ID, handle)
-    const rows = deps.store.fetchInboxSince(HANGAR_TEAM_ID, handle, since ?? '', limit)
-    const messages = rows.filter(e => e.subject === null || ownsNamespace(e.subject, owned))
+    const rows = deps.store.fetchInboxSince(HANGAR_TEAM_ID, handle, since ?? '', limit, pollerInstance)
+    let messages = rows.filter(e => e.subject === null || ownsNamespace(e.subject, owned))
+    if (pollerInstance !== undefined) {
+      // §4: grant BEFORE responding — same invariant as every other
+      // presentation path. Idempotent; a route may be missing for a pre-v8
+      // backfill-skipped row, tolerated (present it, no grant) not thrown.
+      for (const m of messages) {
+        if (deps.store.getRoute(m.id) !== null) {
+          deps.store.insertGrants(m.id, [{ handle, instance: pollerInstance, selector: '' }])
+        }
+      }
+    } else {
+      // Flag off + no instance: presented but ungranted (cannot be
+      // answered) — tagged independently of whatever attribution the
+      // ORIGINAL SENDER's `meta.attribution_status` already carries, since
+      // that describes the sender, not this poll's own inability to grant.
+      messages = messages.map(e => ({ ...e, meta: { ...e.meta, attribution_status: 'unverifiable' } }))
+    }
     // The cursor advances over EVERY row read, not only the deliverable ones, so
     // a page full of gated rows can never wedge the caller below the live edge.
     const next_cursor = rows.length > 0 ? rows[rows.length - 1]!.id : (since ?? null)

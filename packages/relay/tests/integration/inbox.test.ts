@@ -23,6 +23,7 @@ import { ClaimStore } from '../../src/claims/store.ts'
 describe('GET /v1/messages (poll_inbox)', () => {
   let db: Db
   let app: ReturnType<typeof buildApp>
+  let onApp: ReturnType<typeof buildApp>
   let store: MessageStore
   let tok: Record<string, string>
 
@@ -31,14 +32,16 @@ describe('GET /v1/messages (poll_inbox)', () => {
     const peers = seedPeerSecrets(db, ['alice', 'bob', 'carol'])
     tok = { alice: peers.alice!.token, bob: peers.bob!.token, carol: peers.carol!.token }
     store = new MessageStore(db)
-    app = buildApp({
+    const deps = {
       db, store, fanout: new Fanout(), presence: new PresenceRegistry(),
       claims: new ClaimStore(db), now: () => new Date(),
-    })
+    }
+    app = buildApp(deps)
+    onApp = buildApp({ ...deps, addressRules: 'on' })
   })
 
-  const get = (who: string, qs = '') =>
-    app.request(`/v1/messages${qs}`, { headers: { authorization: `Bearer ${tok[who]}` } })
+  const get = (who: string, qs = '', headers: Record<string, string> = {}) =>
+    app.request(`/v1/messages${qs}`, { headers: { authorization: `Bearer ${tok[who]}`, ...headers } })
 
   const body = async (res: Response): Promise<any> => await res.json()
 
@@ -120,5 +123,47 @@ describe('GET /v1/messages (poll_inbox)', () => {
     ).run()
     const j = await body(await get('bob'))
     expect(j.messages).toHaveLength(0)
+  })
+
+  // §4: poll_inbox grants `(msg_id, handle, poller instance)` before
+  // responding, same as every other presentation path.
+  describe('§4 / item 7 — instance-scoped grant on poll', () => {
+    const INST = '01HRK7Y0000000000000000000'
+
+    it('writes a grant for the poller instance before responding', async () => {
+      const sent = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${tok.alice}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ to: 'bob', kind: 'chat', content: 'hi' }),
+      })
+      const sentBody = await sent.json() as { id: string }
+      expect(store.hasGrant(sentBody.id, 'bob', INST)).toBe(false)
+
+      const res = await get('bob', '', { 'x-hangar-instance': INST })
+      expect(res.status).toBe(200)
+      expect(store.hasGrant(sentBody.id, 'bob', INST)).toBe(true)
+    })
+
+    it('flag off + no instance header: presents the message, tagged attribution_status: unverifiable', async () => {
+      store.insert('hangar', 'alice', { to: 'bob', kind: 'chat', content: 'x' })
+      const j = await body(await get('bob'))
+      expect(j.messages).toHaveLength(1)
+      expect(j.messages[0].meta.attribution_status).toBe('unverifiable')
+    })
+
+    it('flag on + no instance header: 400 instance_required', async () => {
+      const res = await onApp.request('/v1/messages', { headers: { authorization: `Bearer ${tok.bob}` } })
+      expect(res.status).toBe(400)
+      const j = await res.json() as { error: string; retryable: boolean }
+      expect(j.error).toBe('instance_required')
+      expect(j.retryable).toBe(false)
+    })
+
+    it('flag on + instance header present: 200, no refusal', async () => {
+      const res = await onApp.request('/v1/messages', {
+        headers: { authorization: `Bearer ${tok.bob}`, 'x-hangar-instance': INST },
+      })
+      expect(res.status).toBe(200)
+    })
   })
 })
