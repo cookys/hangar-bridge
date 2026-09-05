@@ -291,4 +291,15 @@ describe('drain self-exclusion (REPLY_ROUTING_SPEC.md §4)', () => {
     expect(store.fetchPendingSince('t1', 'bob', '')).toHaveLength(0)
     expect(store.fetchInboxSince('t1', 'bob', '', 100)).toHaveLength(0)
   })
+
+  it('returns nothing even when the caller passes a @mailbox:-prefixed to_handle literally (no caller should, but the predicate must not trust it)', () => {
+    const now = new Date().toISOString()
+    db.prepare(`
+      INSERT INTO message(id,v,team_id,from_handle,to_handle,kind,content,meta_json,sent_at)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run('msg_mb_y', 2, 't1', 'alice', '@mailbox:bob', 'chat', 'for bob', '{}', now)
+    expect(store.fetchSince('t1', '@mailbox:bob', '')).toHaveLength(0)
+    expect(store.fetchPendingSince('t1', '@mailbox:bob', '')).toHaveLength(0)
+    expect(store.fetchInboxSince('t1', '@mailbox:bob', '', 100)).toHaveLength(0)
+  })
 })

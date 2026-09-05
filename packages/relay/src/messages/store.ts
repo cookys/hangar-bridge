@@ -154,6 +154,7 @@ export class MessageStore {
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ?
+        AND to_handle NOT LIKE '@mailbox:%'
         AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
       ORDER BY id ASC LIMIT 1000
     `).all(...params) as EnvelopeRow[]
@@ -178,6 +179,7 @@ export class MessageStore {
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ? AND delivered_at IS NULL
+        AND to_handle NOT LIKE '@mailbox:%'
         AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
       ORDER BY id ASC LIMIT 1000
     `).all(...params) as EnvelopeRow[]
@@ -205,6 +207,7 @@ export class MessageStore {
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ?
+        AND to_handle NOT LIKE '@mailbox:%'
         AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
       ORDER BY id ASC LIMIT ?
     `).all(...params) as EnvelopeRow[]
