@@ -1,16 +1,13 @@
 ## 目標
 以 `/l5` 實作 `REPLY_ROUTING_SPEC.md` v7 的 rollout step 1 + step 2 程式碼(relay + peer-agent + shared + switchboard),做到 merge-ready 的 `feat/reply-routing` 分支,不部署。goal 原文見本檔末。
 
-## 現況
-- 分支 `feat/reply-routing`（從 develop `39c7cc5` 開）。已 merge：**D1**（`f88e9e5`，shared）、**D2**（`934cd62`，relay data layer）、**D3**（`dd27712`，relay chokepoint/flag/grants）、**D4**（`3b3ecbd`，impl/reply-routing-D4 = `6af3a51`，7 commits：`POST /v1/replies`（idempotency lease fence、audience check、limiter、session + mailbox 分支）、`GET /v1/inbox`、`POST /v1/grants/finalize`、§13 tombstone 表格、`docs/evidence/address-rules-gate.json` 骨架）。D4 merge 前獨立 gate 綠（relay 386 tests / lines 94.3 %）。**D5 hands 進行中**（`impl/reply-routing-D5`，從 3b3ecbd 分出，prompt `/tmp/autopilot-campaigns/D5.prompt.md`，reviewer spec `/tmp/qc/D5.spec.md`）。`docs/BACKLOG.md` 已補 out-of-scope 三項 + panel follow-ups + peer-agent flake。
-- D4 qc：glm SHIP；codex/MiniMax 的 FIX 項全部對照 spec 駁回（session reply 無 message row 是 §5.1 明文；route/grants 在同一圍欄交易內，讀碼證實；`durable: ['<handle>~cli']` 是 §11 原文），只採納 unused import 清理（ledger d-15）。
-- D3 qc：三席 FIX；採納 4（to_filter 回應的 audience report 測試、`sender_instance` NULL/undefined 正規化、poll 無 instance 改回應層級 `attribution_status`、兩個補測），駁回 7（附 spec 證據，見 decision ledger d-13）。
-- D2 qc 兩輪：第一輪三席都 FIX（fanout.ts 含 2 個原始 NUL byte → git 視為 binary、三席審不到；v9 版本號未與 backfill 同交易；purge 迴圈冗餘）；第二輪 MiniMax/glm SHIP、codex 4 項 hardening 採納（correlation 重複掉 route、drain 述詞明確排除 `@mailbox:`、frozen delivery 帶 selfExcluded、finalizeGrant blank+exact）。未採納（有證據）：insertRoute 改 OR IGNORE（spec 要 route 寫入失敗即中止）、limiter 雙連線併發測試（單述句原子性即證據）。
-- 既有 flake：`packages/peer-agent/src/stream-client.test.ts` reconnect timing 在 `pnpm -r` 負載下偶發（今日 3 次，隔離重跑皆綠；D1/D2 未碰 peer-agent）→ 收尾時寫進 `docs/BACKLOG.md`。
-- **執行模式已改為 `/l5` 的 precondition_failed fallback（operator 2026-09-05 決定）**：session-mode `l3 --entry-level l5 --fallback precondition_failed`。原因：dispatch-hetero 的 session-mode gate 在 ACTIVE l5 marker 下要求 sealed campaign **strict projection**（contract 要有 `mission_runtime` + `strict_dispatch`，即 Mission runtime），本 repo 無 Mission；v1 contract 只在非 l5/l6 admissible（autopilot `hooks/tests/dispatch-hetero.test.sh` 明文）。所以 implementer 改為 depth-0 派 Claude hands（sonnet，`Agent isolation:"worktree"`，分支 `impl/reply-routing-Dk`），qc 三席（codex gpt-5.6-sol / MiniMax-M3 / glm-5.3）照舊在 depth-0 跑；hetero 引擎路徑不再使用。
-- 為了走到那一步修掉的環境阻塞（都已落地，見 decision ledger `/tmp/autopilot-campaigns/decision-ledger.jsonl` d-1..d-8）：`/etc/apparmor.d/bwrap`（userns，operator 核准）；autopilot `18f46faf`（agy `--effort`）、`ffe6838d`（live-probe budget 512）；本 repo `153cbed`（qc_panel_runners/efforts/endpoints）；`~/.agents/skills/game-logic-optimization/SKILL.md` 補 frontmatter（codex chrome frame）。六席 live probe 全 ready；`campaign_intake` 不得帶 `--campaign-ledger`。兩個 dead v1 campaign 留在 `.git/autopilot/implementation-campaign.jsonl`，未 resume。
-- 工作檔（/tmp，session 重開仍在）：`/tmp/autopilot-campaigns/D{1..5}.prompt.md`（implementer prompt，D3–D5 依 D1/D2 實際 API 名稱再微調）、`/tmp/qc/D{1,2}.spec.md`（reviewer baseline）、`/tmp/qc/run-qc.sh <Dk> <diff> <spec>`（三席 detached 啟動，codex 要在 repo 目錄起）。
-- D1 qc 結果：glm SHIP-AS-IS；MiniMax 1 誤報（message id 是嚴格 regex）+1 測試強化（採納）；codex 2 項（`all_sessions:false` 漏檢、`@mailbox:` 後綴未驗 handle）皆採納修復。
+## 現況（2026-09-05 收尾）
+- **`feat/reply-routing` 為 merge-ready**（tip 見 `git log`，從 develop `39c7cc5` 開，63+ commits、五個 `--no-ff` merge：D1 `f88e9e5` shared、D2 `934cd62` relay data layer、D3 `dd27712` relay chokepoint/flag/grants、D4 `3b3ecbd` relay endpoints、D5 `92bfcc3` peer-agent）。**未 push、未部署、未合進 develop**（operator 決定）。
+- 最終全 repo gate（feat tip，`corepack pnpm -r typecheck && build && test:ci`）全綠：shared 145 tests / lines 100 %；relay 386 tests / lines 94.3 %；peer-agent 492 tests / lines 92.5 %；e2e 62（2 skipped，無本機 NATS，既有行為）。`pnpm audit --prod --audit-level high` 無 high/critical（2 moderate，既有）。
+- 每個 deliverable 都經過：git artifact 驗範圍 → depth-0 獨立 gate（在 hands worktree）→ 三席 hetero qc（codex gpt-5.6-sol / MiniMax-M3 / glm-5.3，`/tmp/qc/run-qc.sh`）→ 每條 finding depth-0 對 spec 重驗（採納者交 hands 修、駁回者附證據記 `/tmp/autopilot-campaigns/decision-ledger.jsonl` d-1..d-20）→ merge `--no-ff` → feat 全 repo gate。無任何 verified Critical 留存。
+- 執行模式：`/l5` 的 precondition_failed fallback（l3 inline，sonnet hands 於 `Agent isolation:"worktree"`）；原因與環境修復見「已決事項」與 memory `l5-strict-projection-needs-mission`。
+- 已知 flake（未修、已入 BACKLOG）：`packages/peer-agent/src/stream-client.test.ts` reconnect timing 與 `p1-independent.test.ts` 本機 nats-server 啟動，都只在 `pnpm -r` 高負載時偶發，隔離重跑皆綠。
+- 文件：`REPLY_ROUTING_SPEC.md` STATUS 行與 `CLAUDE.md` 已改為「step 1+2 code implemented on feat/reply-routing」；`docs/BACKLOG.md` 有 out-of-scope 三項（dotfiles fleet/crew.zsh、@cookys/agent-call、hangar fleet-pulse gate）+ panel follow-ups + flake；`docs/evidence/address-rules-gate.json` 只是骨架。
 
 ## 已決事項(不重議)
 - ADR 與 spec 分家;`use_reply_verb` 與 §6 拒絕全在 `HANGAR_RELAY_ADDRESS_RULES` 後面,預設 off;不部署;out of scope = dotfiles `fleet`/`crew.zsh`、`@cookys/agent-call`、hangar `fleet-pulse`(寫進 `docs/BACKLOG.md`,不寫進程式)。
@@ -19,13 +16,11 @@
 - deliverable 切分與順序照 deliverables.md;D1 ∥ D2 可平行(路徑互斥),其餘串行;每個 merge 進 `feat/reply-routing` 即一個 handoff 邊界。
 - §13 錯誤表 `parent_unaddressable` 那格寫「route row is deleted」是 v6 殘句,與 §3.1/§5.1 的 tombstone 矛盾;D4 實作以 tombstone 為準並順手改 §13(已寫進 D4 節與 contract 的 allowed paths)。
 
-## 下一步
-1. fresh session：`node ~/projects/autopilot/scripts/session-mode.js set --level l3 --entry-level l5 --fallback precondition_failed --repo-root ~/projects/hangar-bridge`（不要再設 l5，會撞 strict projection gate）。
-2. 讀本檔 + `l5-runbook.md` §3.5–3.8（qc / merge / GC / ledger 仍適用）+ `deliverables.md`。
-3. D2：若 `impl/reply-routing-D2` 已有完整 6 commits → `git diff feat/reply-routing..impl/reply-routing-D2 > /tmp/qc/D2.diff` → `bash /tmp/qc/run-qc.sh D2 /tmp/qc/D2.diff /tmp/qc/D2.spec.md` → 合成 → merge `--no-ff` → 全 repo gate。否則以 `Agent(model:"sonnet", isolation:"worktree")` 重派 hands，prompt = `Engine: sonnet` + 「讀 /tmp/autopilot-campaigns/D2.prompt.md、`git checkout -b impl/reply-routing-D2`、TDD、自跑 gate、DONE 行」。
-4. D3 → D4 → D5 串行，同樣流程（prompt 已寫好；派工前先 `sed -n` 看 D1/D2 實際 helper 名稱對一下）。每個 merge 後更新本檔並 commit。
-5. 收尾照 runbook §4：`docs/BACKLOG.md` 補 out-of-scope；不部署、不 push develop。
-
+## 下一步（給 operator / 下一個 session）
+1. 檢視 `git log --oneline develop..feat/reply-routing` 與五個 merge commit 的 qc 摘要；要的話 `git push -u origin feat/reply-routing`（允許，尚未做）。
+2. 決定合進 develop 的時機：合併後 relay 啟動會跑 `migrateV8ToV9`（backfill 現有 chat/task_dispatch 列，log `{routes, null_sender_instance}`）；`HANGAR_RELAY_ADDRESS_RULES` 預設 off，`/v1/replies`、`/v1/inbox`、`/v1/grants/finalize` 立即可用，`/v1/messages` 行為不變。
+3. 部署屬 hangar deployment skill 範圍（本 run 明文不部署）。旗標翻 on 前要先做 BACKLOG 的三項 client-side 工作與 §16 evidence manifest。
+4. 若要重試真正的 `/l5` hetero rail：先在本 repo 建 Mission（authority + execution graph），否則會再撞 strict projection gate。
 ## 驗證方式
 ```
 cd ~/projects/hangar-bridge && corepack pnpm -r typecheck && corepack pnpm -r build && corepack pnpm -r test:ci
