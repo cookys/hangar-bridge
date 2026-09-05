@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { MAILBOX_PREFIX, isMailboxHandle } from './constants.ts'
+import { MAILBOX_PREFIX, isMailboxHandle, RESERVED_CLI_INSTANCE } from './constants.ts'
 
 describe('isMailboxHandle (§6.5)', () => {
   it('is true for a mailbox-prefixed handle with a name after the prefix', () => {
@@ -16,5 +16,11 @@ describe('isMailboxHandle (§6.5)', () => {
   })
   it('is false for @team', () => {
     expect(isMailboxHandle('@team')).toBe(false)
+  })
+})
+
+describe('RESERVED_CLI_INSTANCE (§6.5)', () => {
+  it(`is '~cli'`, () => {
+    expect(RESERVED_CLI_INSTANCE).toBe('~cli')
   })
 })

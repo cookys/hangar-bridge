@@ -4,7 +4,7 @@ import {
   MAX_META_KEY_LENGTH, MAX_META_VALUE_LENGTH,
   PROTOCOL_VERSION, TEAM_BROADCAST_HANDLE,
   SUBJECT_REGEX, MAX_SUBJECT_LENGTH,
-  isMailboxHandle
+  isMailboxHandle, RESERVED_CLI_INSTANCE
 } from './constants.ts'
 import { isValidInstanceId } from './ulid.ts'
 
@@ -188,6 +188,18 @@ export const OutboundMessageSchema = z.object({
   thread_root: MessageIdSchema.optional()
 }).strict().superRefine((e, ctx) => {
   refineToFilter(e, ctx)
+  // Reserved addresses (§6.5) — not feature-flagged, always apply. `to` is
+  // widened at the AddressSchema level to accept `@mailbox:<handle>` for the
+  // wire Envelope (§8.2); a client-side outbound message may never write one
+  // itself — only the reply verb's mailbox branch does.
+  if (isMailboxHandle(e.to)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to'], message: 'reserved_address' })
+  }
+  if (e.to_filter?.instance === RESERVED_CLI_INSTANCE) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: ['to_filter', 'instance'], message: 'reserved_instance'
+    })
+  }
   if (e.all_sessions === true) {
     const concreteHandle = e.to !== TEAM_BROADCAST_HANDLE && !e.to.startsWith('@')
     if (e.kind !== 'chat' || !concreteHandle || e.fleet_wide === true) {

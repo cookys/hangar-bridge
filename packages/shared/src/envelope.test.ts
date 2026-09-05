@@ -263,6 +263,29 @@ describe('OutboundMessageSchema all_sessions / thread_root (§6.1, §7)', () => 
   })
 })
 
+describe('OutboundMessageSchema reserved addresses (§6.5)', () => {
+  it('rejects a mailbox handle as `to` with a reserved_address issue', () => {
+    try {
+      OutboundMessageSchema.parse({ to: '@mailbox:cuda', kind: 'chat', content: 'x' })
+      expect.unreachable('expected a ZodError')
+    } catch (err) {
+      const issues = (err as { issues: Array<{ message: string }> }).issues
+      expect(issues.some(i => i.message === 'reserved_address')).toBe(true)
+    }
+  })
+  it('rejects to_filter.instance = "~cli" with a reserved_instance issue', () => {
+    try {
+      OutboundMessageSchema.parse({
+        to: 'bob', kind: 'chat', content: 'x', to_filter: { instance: '~cli' }
+      })
+      expect.unreachable('expected a ZodError')
+    } catch (err) {
+      const issues = (err as { issues: Array<{ message: string }> }).issues
+      expect(issues.some(i => i.message === 'reserved_instance')).toBe(true)
+    }
+  })
+})
+
 describe('to_filter (presence-narrowed addressing)', () => {
   const base = { to: 'bob', kind: 'chat' as const, content: 'x' }
 

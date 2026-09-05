@@ -55,3 +55,8 @@ export const MAILBOX_PREFIX = '@mailbox:' as const
 export function isMailboxHandle(value: string): boolean {
   return value.startsWith(MAILBOX_PREFIX) && value.length > MAILBOX_PREFIX.length
 }
+// The CLI's mailbox identity (§8.2): the only accepted `x-hangar-instance`
+// value that is not a ULID. Instance ids are ULIDs, so this literal cannot
+// collide with a real one; it is never a valid `to_filter.instance`,
+// `--instance`, or registration name (`reserved_instance`, envelope.ts).
+export const RESERVED_CLI_INSTANCE = '~cli' as const
