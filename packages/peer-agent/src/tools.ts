@@ -419,6 +419,23 @@ function hasAudienceReport(env: { live?: unknown; durable?: unknown }): env is {
   return Array.isArray(env.live) && Array.isArray(env.durable)
 }
 
+/**
+ * Repair round item 4: RelayClient.reply THROWS only on a transport-level
+ * failure — a rejected fetch (network error, timeout, DNS) never reaches
+ * the relay at all, versus a response that DID come back but wasn't
+ * parseable JSON (RelayClient.reply's own `reply failed: <status> <text>`
+ * message, e.g. a reverse proxy's HTML error page on a 5xx). Both are
+ * distinct from a business refusal, which reply.reply returns as
+ * `{ok:false, ...}` and never throws. Classified into the §13 response
+ * shape so the model gets a structured, retryable failure instead of a
+ * bare thrown-error string.
+ */
+function classifyReplyTransportError(err: unknown): { error: 'relay_unreachable' | 'relay_error'; message: string } {
+  const message = err instanceof Error ? err.message : String(err)
+  const reachedRelay = /^reply failed: \d+/.test(message)
+  return { error: reachedRelay ? 'relay_error' : 'relay_unreachable', message }
+}
+
 function renderInboxMessage(m: Envelope): string {
   const header = `[${m.id}] from=${m.from} to=${m.to} kind=${m.kind}`
     + `${m.subject ? ` subject=${m.subject}` : ''}`
@@ -681,9 +698,22 @@ export function registerTools(
         in_reply_to: input.in_reply_to, content: input.content,
       }
       if (input.meta !== undefined) body.meta = input.meta
-      const outcome = await reply.reply(body, {
-        idempotencyKey, ...(returnSelector !== undefined ? { returnSelector } : {}),
-      })
+      const replyOpts = { idempotencyKey, ...(returnSelector !== undefined ? { returnSelector } : {}) }
+      let outcome: Awaited<ReturnType<ReplyClient['reply']>>
+      try {
+        outcome = await reply.reply(body, replyOpts)
+      } catch {
+        // §5.1: retry ONCE, under the SAME idempotency key/selector — never
+        // a fresh one. A retry that minted a new key would risk a second
+        // route/grant/limiter-increment for an answer that may have already
+        // landed on the relay's side and only the RESPONSE was lost.
+        try {
+          outcome = await reply.reply(body, replyOpts)
+        } catch (secondErr) {
+          const classified = classifyReplyTransportError(secondErr)
+          return { content: [{ type: 'text', text: JSON.stringify({ ...classified, retryable: true }) }] }
+        }
+      }
       if (!outcome.ok) {
         // §13: the relay's own {error, message, retryable, ...detail} is the
         // hint — no local pre-check duplicates its rules, so this is always

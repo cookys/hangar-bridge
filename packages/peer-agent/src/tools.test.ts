@@ -782,4 +782,76 @@ describe('registerTools — reply_to_peer', () => {
     await expect(callTool('reply_to_peer', { in_reply_to: 'not-a-msg-id', content: 'ack' })).rejects.toThrow()
     expect(reply).not.toHaveBeenCalled()
   })
+
+  /**
+   * Repair round item 4 (review finding, adopted): RelayClient.reply throws
+   * on a TRANSPORT failure (network error, or a non-JSON 5xx body it cannot
+   * parse into a business outcome) — distinct from a business refusal,
+   * which it returns as {ok:false, ...}, never throws. reply_to_peer must
+   * never let that throw escape the tool boundary as an unstructured Error:
+   * it retries ONCE under the SAME idempotency key (§5.1 — a fresh key on
+   * retry would risk minting a second route/grant/limiter-increment for an
+   * answer that may have actually landed the first time), then reports a
+   * structured, retryable §13-shaped failure if both attempts fail.
+   */
+  describe('reply_to_peer — transport-failure retry (repair round item 4)', () => {
+    const okBody = {
+      id: 'msg_01HRK7Y000000000000000000C', v: 2, team: 'hangar', from: 'a', to: 'bob',
+      in_reply_to: 'msg_01HRK7Y000000000000000000A', thread_root: 'msg_01HRK7Y000000000000000000A',
+      kind: 'chat', content: 'ack', meta: {}, sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+      live: [], durable: ['bob'], matched: 0,
+    }
+
+    it('a 5xx/non-JSON throw then a 200 on retry: succeeds, using the SAME idempotency key both times', async () => {
+      const reply = vi.fn()
+        .mockRejectedValueOnce(new Error('reply failed: 502 <html>Bad Gateway</html>'))
+        .mockResolvedValueOnce({ ok: true, status: 200, body: okBody })
+      const client = { ...baseClient(), reply } as unknown as RelayClient
+      const { callTool } = registerTools(client, presence)
+      const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+      expect(reply).toHaveBeenCalledTimes(2)
+      const key1 = reply.mock.calls[0]![1].idempotencyKey
+      const key2 = reply.mock.calls[1]![1].idempotencyKey
+      expect(key1).toBe(key2)
+      expect((r.content[0] as any).text).toContain('replied msg_01HRK7Y000000000000000000C')
+    })
+
+    it('a network throw on both attempts: reports a structured retryable relay_unreachable failure, never throws, same key both times', async () => {
+      const reply = vi.fn(async () => { throw new TypeError('fetch failed') })
+      const client = { ...baseClient(), reply } as unknown as RelayClient
+      const { callTool } = registerTools(client, presence)
+      const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+      expect(reply).toHaveBeenCalledTimes(2)
+      const key1 = reply.mock.calls[0]![1].idempotencyKey
+      const key2 = reply.mock.calls[1]![1].idempotencyKey
+      expect(key1).toBe(key2)
+      const body = JSON.parse((r.content[0] as any).text)
+      expect(body.error).toBe('relay_unreachable')
+      expect(body.retryable).toBe(true)
+      expect(body.message).toContain('fetch failed')
+    })
+
+    it('a non-JSON-body throw on both attempts: reports relay_error (reached the relay, could not parse it)', async () => {
+      const reply = vi.fn(async () => { throw new Error('reply failed: 500 <html>oops</html>') })
+      const client = { ...baseClient(), reply } as unknown as RelayClient
+      const { callTool } = registerTools(client, presence)
+      const r = await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+      const body = JSON.parse((r.content[0] as any).text)
+      expect(body.error).toBe('relay_error')
+      expect(body.retryable).toBe(true)
+    })
+
+    it('does not call getPaneSelector twice across the retry — the selector is computed once and reused', async () => {
+      const reply = vi.fn()
+        .mockRejectedValueOnce(new Error('fetch failed'))
+        .mockResolvedValueOnce({ ok: true, status: 200, body: okBody })
+      const client = { ...baseClient(), reply } as unknown as RelayClient
+      const getPaneSelector = vi.fn(async () => 'pane@01GEN0000000000000000000A')
+      const { callTool } = registerTools(client, presence, undefined, undefined, undefined, undefined, undefined, undefined, getPaneSelector)
+      await callTool('reply_to_peer', { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' })
+      expect(getPaneSelector).toHaveBeenCalledTimes(1)
+      expect(reply.mock.calls[0]![1].returnSelector).toBe('pane@01GEN0000000000000000000A')
+      expect(reply.mock.calls[1]![1].returnSelector).toBe('pane@01GEN0000000000000000000A')
+    })
+  })
 })
