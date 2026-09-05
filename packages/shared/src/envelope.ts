@@ -200,7 +200,7 @@ export const OutboundMessageSchema = z.object({
       code: z.ZodIssueCode.custom, path: ['to_filter', 'instance'], message: 'reserved_instance'
     })
   }
-  if (e.all_sessions === true) {
+  if (e.all_sessions !== undefined) {
     const concreteHandle = e.to !== TEAM_BROADCAST_HANDLE && !e.to.startsWith('@')
     if (e.kind !== 'chat' || !concreteHandle || e.fleet_wide === true) {
       ctx.addIssue({

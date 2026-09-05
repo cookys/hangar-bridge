@@ -286,10 +286,28 @@ describe('OutboundMessageSchema all_sessions / thread_root (§6.1, §7)', () => 
       to: 'bob', kind: 'task_dispatch', content: 'x', all_sessions: true
     })).toThrow(/all_sessions/)
   })
-  it('all_sessions=false is a no-op and does not trigger the audience check', () => {
+  // The audience-restriction rule applies whenever all_sessions is explicitly
+  // set — true OR false — since the field is only meaningful for chat to one
+  // concrete handle; there is no "false is a harmless no-op" carve-out.
+  it('accepts all_sessions=false on chat to a concrete handle', () => {
     expect(OutboundMessageSchema.parse({
-      to: '@team', kind: 'chat', content: 'x', all_sessions: false
+      to: 'bob', kind: 'chat', content: 'x', all_sessions: false
     })).toBeDefined()
+  })
+  it('rejects all_sessions=false on @team (must be a concrete handle)', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: '@team', kind: 'chat', content: 'x', all_sessions: false
+    })).toThrow(/all_sessions/)
+  })
+  it('rejects all_sessions=false on a non-chat kind', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'task_dispatch', content: 'x', all_sessions: false
+    })).toThrow(/all_sessions/)
+  })
+  it('rejects all_sessions=false together with fleet_wide', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', all_sessions: false, fleet_wide: true
+    })).toThrow(/all_sessions/)
   })
 })
 
