@@ -221,6 +221,44 @@ describe('OutboundMessageSchema subject', () => {
   })
 })
 
+describe('OutboundMessageSchema all_sessions / thread_root (§6.1, §7)', () => {
+  it('accepts all_sessions=true on chat to a concrete handle', () => {
+    const m = OutboundMessageSchema.parse({ to: 'bob', kind: 'chat', content: 'x', all_sessions: true })
+    expect(m.all_sessions).toBe(true)
+  })
+  it('accepts thread_root as a valid message id', () => {
+    const m = OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', thread_root: 'msg_01HRK7Y0000000000000000001'
+    })
+    expect(m.thread_root).toBe('msg_01HRK7Y0000000000000000001')
+  })
+  it('rejects thread_root that is not a valid message id', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', thread_root: 'not-a-msg-id'
+    })).toThrow()
+  })
+  it('rejects all_sessions on @team (must be a concrete handle)', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: '@team', kind: 'chat', content: 'x', all_sessions: true
+    })).toThrow(/all_sessions/)
+  })
+  it('rejects all_sessions together with fleet_wide', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'chat', content: 'x', all_sessions: true, fleet_wide: true
+    })).toThrow(/all_sessions/)
+  })
+  it('rejects all_sessions on a non-chat kind', () => {
+    expect(() => OutboundMessageSchema.parse({
+      to: 'bob', kind: 'task_dispatch', content: 'x', all_sessions: true
+    })).toThrow(/all_sessions/)
+  })
+  it('all_sessions=false is a no-op and does not trigger the audience check', () => {
+    expect(OutboundMessageSchema.parse({
+      to: '@team', kind: 'chat', content: 'x', all_sessions: false
+    })).toBeDefined()
+  })
+})
+
 describe('to_filter (presence-narrowed addressing)', () => {
   const base = { to: 'bob', kind: 'chat' as const, content: 'x' }
 

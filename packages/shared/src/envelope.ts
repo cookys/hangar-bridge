@@ -166,9 +166,29 @@ export const OutboundMessageSchema = z.object({
   // the field before any sender uses it — the schema is .strict(), so a peer
   // that sends it to a relay which does not know it gets a 400 and goes quiet.
   // Upgrade order is therefore relay first, senders second.
-  fleet_wide: z.boolean().optional()
+  fleet_wide: z.boolean().optional(),
+  // Acknowledgement (not a selector, §6.1) that a bare-handle chat really is
+  // meant for every session on that host, now and later — a durable row
+  // fetchSince hands to every sibling that connects after. Chat-only, one
+  // concrete handle only (never @team, never with fleet_wide); the relay
+  // validates shape/authorization here, liveness is out of scope.
+  all_sessions: z.boolean().optional(),
+  // Thread continuation (§7, not a reply): names the route the caller sent or
+  // holds a grant on. Format-only here — reuses the message-id validator so
+  // there is one definition of "a message id" in this file; the relay
+  // resolves it to a route and canonicalises to the effective root.
+  thread_root: MessageIdSchema.optional()
 }).strict().superRefine((e, ctx) => {
   refineToFilter(e, ctx)
+  if (e.all_sessions === true) {
+    const concreteHandle = e.to !== TEAM_BROADCAST_HANDLE && !e.to.startsWith('@')
+    if (e.kind !== 'chat' || !concreteHandle || e.fleet_wide === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom, path: ['all_sessions'],
+        message: 'all_sessions is only allowed for chat to a concrete handle, without fleet_wide'
+      })
+    }
+  }
   // Same @team-subject + ack-channel invariants as EnvelopeSchema, with nullish
   // guards (B2): outbound subject is optional, so `!= null` would misfire on
   // every omitted-subject send (acks, null-subject @team broadcasts) → 400.
