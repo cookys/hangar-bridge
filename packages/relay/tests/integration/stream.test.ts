@@ -141,5 +141,36 @@ describe('GET /v1/stream', () => {
       const events = await readNEvents(streamRes.body!, 1)
       expect(events.some(e => e.includes(other.id))).toBe(true)
     })
+
+    it('replaying the same ?since= cursor twice writes exactly one grant row (idempotent)', async () => {
+      const sent = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${tok.alice}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ to: 'bob', kind: 'chat', content: 'hello' }),
+      })
+      const body = await sent.json() as { id: string }
+
+      // First replay: by the time the subscriber's receive path (the SSE
+      // read below) observes the event, the grant is already committed —
+      // same invariant as the send-transaction snapshot (§3.2).
+      const first = await app.request('/v1/stream?since=msg_00000000000000000000000000', {
+        headers: { authorization: `Bearer ${tok.bob}`, 'x-hangar-instance': INST },
+      })
+      const firstEvents = await readNEvents(first.body!, 1)
+      expect(firstEvents.some(e => e.includes(body.id))).toBe(true)
+      expect(store.hasGrant(body.id, 'bob', INST)).toBe(true)
+
+      // Second replay from the SAME cursor: the grant write is idempotent
+      // (INSERT OR IGNORE) — no duplicate row.
+      const second = await app.request('/v1/stream?since=msg_00000000000000000000000000', {
+        headers: { authorization: `Bearer ${tok.bob}`, 'x-hangar-instance': INST },
+      })
+      await readNEvents(second.body!, 1)
+
+      const count = db.prepare(
+        'SELECT COUNT(*) AS c FROM reply_grant WHERE msg_id=? AND handle=? AND instance=?'
+      ).get(body.id, 'bob', INST) as { c: number }
+      expect(count.c).toBe(1)
+    })
   })
 })

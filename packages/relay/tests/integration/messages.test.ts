@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { openDatabase, type Db } from '../../src/db/db.ts'
 import { MessageStore } from '../../src/messages/store.ts'
 import { Fanout } from '../../src/fanout.ts'
@@ -175,6 +175,41 @@ describe('POST /v1/messages', () => {
       expect(store.getRoute(body.id)).toBeNull()
       const row = db.prepare('SELECT id FROM message WHERE id=?').get(body.id)
       expect(row).toBeTruthy()
+    })
+
+    it('a route-insert failure is fatal: 500 internal_error, no delivery, no message row, no route', async () => {
+      let delivered = false
+      const fanout = new Fanout()
+      fanout.subscribe({
+        handle: 'bob', team_id: 'hangar', instance: '01HRK7Y0000000000000000099',
+        deliver: () => { delivered = true },
+      })
+      const app2 = buildApp({
+        db, store, fanout, presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date(),
+      })
+      const spy = vi.spyOn(store, 'writeRouteAndMessage').mockImplementation(() => {
+        throw new Error('simulated route-insert failure')
+      })
+      try {
+        const res = await app2.request('/v1/messages', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${aliceToken}`, 'content-type': 'application/json',
+            'x-hangar-instance': '01HRK7Y0000000000000000000',
+          },
+          body: JSON.stringify({ to: 'bob', kind: 'chat', content: 'x' }),
+        })
+        expect(res.status).toBe(500)
+        const body = await res.json() as { error: string }
+        expect(body.error).toBe('internal_error')
+      } finally {
+        spy.mockRestore()
+      }
+      expect(delivered).toBe(false)
+      const messageCount = db.prepare('SELECT COUNT(*) AS c FROM message').get() as { c: number }
+      expect(messageCount.c).toBe(0)
+      const routeCount = db.prepare('SELECT COUNT(*) AS c FROM reply_route').get() as { c: number }
+      expect(routeCount.c).toBe(0)
     })
 
     it('route + grant are already committed when a live subscriber\'s deliver callback fires', async () => {
