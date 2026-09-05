@@ -88,7 +88,7 @@ sleep 5400; echo DEADLINE_HIT                                                   
    ```bash
    AUTOPILOT_LEVEL=l5 AUTOPILOT_PARENT_RUN_ID=$RUN AUTOPILOT_ROOT_RUN_ID=$RUN AUTOPILOT_DISPATCH_DEPTH=1 \
    node ~/projects/autopilot/bin/autopilot.js engine implement-review \
-     --campaign-contract <Dk.json> --campaign-seal <Dk.seal.json> --campaign-ledger "$LEDGER" \
+     --campaign-contract <Dk.json> --campaign-seal <Dk.seal.json> \
      --campaign-disposition-policy acceptance-bound \
      --prompt-file <Dk.prompt.md> --branch hetero/reply-routing-Dk --base <完整 SHA> \
      --cwd <foreman worktree 或主 checkout> --max-rounds 5 --require-qualified-reviewer \
