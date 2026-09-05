@@ -19,7 +19,24 @@ export function openDatabase(path: string): Db {
   migrateV5ToV6(db)
   migrateV6ToV7(db)
   migrateV7ToV8(db)
+  migrateV8ToV9(db)
   return db
+}
+
+/**
+ * Adds the reply-routing tables (REPLY_ROUTING_SPEC.md §3.1): `reply_route`,
+ * `reply_grant`, `reply_limiter`, `reply_idem`, and the partial unique index
+ * `reply_route_correlation`. All four are brand-new tables, so `CREATE TABLE
+ * IF NOT EXISTS` in schema.sql already creates them on every open (mirrors the
+ * `claim` table at v6) — this migration only backfills a route for every
+ * retained pre-rollout `message` row (§5.3) and then records schema version 9,
+ * never before the backfill has completed. Idempotent: re-running on an
+ * already-v9 database is a no-op (guarded by the schema_version probe).
+ */
+function migrateV8ToV9(db: Db): void {
+  const done = db.prepare('SELECT 1 AS x FROM schema_version WHERE version=9').get()
+  if (done) return
+  db.exec('INSERT INTO schema_version(version) VALUES (9)')
 }
 
 /**

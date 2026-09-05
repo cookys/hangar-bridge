@@ -10,7 +10,7 @@ describe('openDatabase', () => {
   beforeEach(() => { db = openDatabase(':memory:') })
 
   it('applies schema and reports latest version', () => {
-    expect(getSchemaVersion(db)).toBe(8)
+    expect(getSchemaVersion(db)).toBe(9)
   })
 
   it('human table has last_active_at column (v2)', () => {
@@ -36,6 +36,7 @@ describe('openDatabase', () => {
     ).all().map((r: any) => r.name)
     expect(names).toEqual(expect.arrayContaining([
       'audit_log', 'claim', 'human', 'idempotency_key', 'message',
+      'reply_grant', 'reply_idem', 'reply_limiter', 'reply_route',
       'schema_version', 'team', 'token'
     ]))
   })
@@ -110,7 +111,7 @@ describe('migrateV3ToV4 (rebuild path)', () => {
 
   it('rebuilds message table to accept new kinds and preserves existing rows', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(8)
+    expect(getSchemaVersion(upgraded)).toBe(9)
     const legacy = upgraded.prepare("SELECT content FROM message WHERE id='msg_legacy_chat'").get() as { content: string } | undefined
     expect(legacy?.content).toBe('pre-migration')
     expect(() =>
@@ -124,9 +125,9 @@ describe('migrateV3ToV4 (rebuild path)', () => {
   it('is idempotent: second open does not rebuild again', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(8)
+    expect(getSchemaVersion(second)).toBe(9)
     const versions = second.prepare("SELECT version FROM schema_version ORDER BY version").all() as Array<{ version: number }>
-    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
     second.close()
   })
 })
@@ -159,7 +160,7 @@ describe('migrateV5ToV6 (claim table)', () => {
 
   it('adds the claim table to an existing v5 DB and records version 6', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(8)
+    expect(getSchemaVersion(upgraded)).toBe(9)
     const has = upgraded.prepare(
       "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='claim'"
     ).get()
@@ -176,7 +177,7 @@ describe('migrateV5ToV6 (claim table)', () => {
   it('is idempotent: re-open keeps version 6 and one claim table', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(8)
+    expect(getSchemaVersion(second)).toBe(9)
     second.close()
   })
 })
@@ -218,7 +219,7 @@ describe('migrateV6ToV7 (legacy attribution scrub)', () => {
 
   it('removes newly reserved routing meta before recording v7', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(8)
+    expect(getSchemaVersion(upgraded)).toBe(9)
     const row = upgraded.prepare(
       "SELECT meta_json FROM message WHERE id='msg_legacy_attribution'"
     ).get() as { meta_json: string }
@@ -230,5 +231,85 @@ describe('migrateV6ToV7 (legacy attribution scrub)', () => {
       "SELECT meta_json FROM message WHERE id='msg_legacy_attribution'"
     ).get() as { meta_json: string }).meta_json)).toEqual({ keep: 'yes' })
     reopened.close()
+  })
+})
+
+describe('migrateV8ToV9 (reply routing tables, REPLY_ROUTING_SPEC §3.1)', () => {
+  it('a fresh DB ends at version 9 with all four tables + the correlation index', () => {
+    const db = openDatabase(':memory:')
+    expect(getSchemaVersion(db)).toBe(9)
+    const names = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'reply_%' ORDER BY name"
+    ).all().map((r: any) => r.name)
+    expect(names).toEqual(['reply_grant', 'reply_idem', 'reply_limiter', 'reply_route'])
+    const idx = db.prepare(
+      "SELECT 1 AS x FROM sqlite_master WHERE type='index' AND name='reply_route_correlation'"
+    ).get()
+    expect(idx).toBeTruthy()
+  })
+
+  it('reply_route columns match §3.1 exactly', () => {
+    const db = openDatabase(':memory:')
+    const cols = (db.pragma('table_info(reply_route)') as Array<{ name: string; notnull: number }>)
+      .map(c => c.name)
+    expect(cols).toEqual([
+      'msg_id', 'team_id', 'from_handle', 'sender_instance', 'return_selector',
+      'to_handle', 'to_filter_json', 'thread_root', 'legacy_width',
+      'correlation_id', 'created_at', 'expires_at', 'unaddressable_at',
+    ])
+  })
+
+  it('reply_grant has a composite PK and cascades on reply_route delete', () => {
+    const db = openDatabase(':memory:')
+    db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES ('t1','t1',7,'2026-01-01T00:00:00Z')").run()
+    db.prepare(`
+      INSERT INTO reply_route(msg_id,team_id,from_handle,to_handle,thread_root,created_at)
+      VALUES ('msg_a','t1','alice','bob','msg_a','2026-01-01T00:00:00Z')
+    `).run()
+    db.prepare(
+      "INSERT INTO reply_grant(msg_id,handle,instance,selector) VALUES ('msg_a','bob','inst-1','')"
+    ).run()
+    // duplicate grant key is a no-op error path exercised via INSERT OR IGNORE by the store (item 3);
+    // here we just prove the PK rejects a raw duplicate insert.
+    expect(() => db.prepare(
+      "INSERT INTO reply_grant(msg_id,handle,instance,selector) VALUES ('msg_a','bob','inst-1','')"
+    ).run()).toThrow()
+    db.prepare("DELETE FROM reply_route WHERE msg_id='msg_a'").run()
+    const remaining = db.prepare("SELECT COUNT(*) AS n FROM reply_grant WHERE msg_id='msg_a'").get() as { n: number }
+    expect(remaining.n).toBe(0)
+  })
+
+  it('reply_route_correlation is a partial unique index (NULLs do not collide)', () => {
+    const db = openDatabase(':memory:')
+    db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES ('t1','t1',7,'2026-01-01T00:00:00Z')").run()
+    const ins = db.prepare(`
+      INSERT INTO reply_route(msg_id,team_id,from_handle,to_handle,thread_root,correlation_id,created_at)
+      VALUES (?,?,?,?,?,?,?)
+    `)
+    ins.run('msg_a', 't1', 'alice', 'bob', 'msg_a', null, '2026-01-01T00:00:00Z')
+    ins.run('msg_b', 't1', 'alice', 'bob', 'msg_b', null, '2026-01-01T00:00:00Z')
+    expect(() => ins.run('msg_c', 't1', 'alice', 'bob', 'msg_c', 'corr-1', '2026-01-01T00:00:00Z')).not.toThrow()
+    expect(() => ins.run('msg_d', 't1', 'alice', 'bob', 'msg_d', 'corr-1', '2026-01-01T00:00:00Z')).toThrow()
+  })
+
+  it('is idempotent: opening a v9 DB twice does not duplicate tables or the index', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v9-'))
+    const dbPath = join(tmpDir, 'v9.db')
+    try {
+      openDatabase(dbPath).close()
+      const second = openDatabase(dbPath)
+      expect(getSchemaVersion(second)).toBe(9)
+      const tableCount = second.prepare(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='reply_route'"
+      ).get() as { n: number }
+      expect(tableCount.n).toBe(1)
+      const idxCount = second.prepare(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='index' AND name='reply_route_correlation'"
+      ).get() as { n: number }
+      expect(idxCount.n).toBe(1)
+      second.close()
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 })

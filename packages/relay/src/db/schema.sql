@@ -103,6 +103,57 @@ CREATE TABLE IF NOT EXISTS claim (
 );
 CREATE INDEX IF NOT EXISTS idx_claim_expires ON claim(team_id, expires_at);
 
+-- Reply routing (REPLY_ROUTING_SPEC.md §3.1, schema v9). A route is stamped for
+-- every accepted user-authored message so a later reply can resolve who may
+-- answer it and where. Never deleted while the message row it belongs to can
+-- still be presented; expired/legacy routes are swept by the purge sweep.
+CREATE TABLE IF NOT EXISTS reply_route (
+  msg_id           TEXT PRIMARY KEY,   -- == the envelope id the receiver sees
+  team_id          TEXT NOT NULL,
+  from_handle      TEXT NOT NULL,
+  sender_instance  TEXT,               -- relay-stamped; NULL only on pre-rollout rows
+  return_selector  TEXT,               -- from x-hangar-return-selector header; courier panes only
+  to_handle        TEXT NOT NULL,      -- '@team', a handle, or '@mailbox:<handle>'
+  to_filter_json   TEXT,
+  thread_root      TEXT NOT NULL,      -- effective root, never NULL (§3.3)
+  legacy_width     TEXT,               -- NULL | 'handle' | 'team-not-sender' | 'unreplyable' (§5.3)
+  correlation_id   TEXT,               -- alias key for ephemeral chat (existing meta.correlation_id)
+  created_at       TEXT NOT NULL,
+  expires_at       TEXT,               -- NULL = follows the message row; set for ephemeral + legacy
+  unaddressable_at TEXT                -- tombstone (§5.4): set, never deleted, so later grants still insert
+);
+CREATE UNIQUE INDEX IF NOT EXISTS reply_route_correlation ON reply_route(correlation_id) WHERE correlation_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS reply_grant (
+  msg_id TEXT NOT NULL REFERENCES reply_route(msg_id) ON DELETE CASCADE,
+  handle TEXT NOT NULL,
+  instance TEXT NOT NULL,              -- '~cli' for the operator mailbox
+  selector TEXT NOT NULL DEFAULT '',   -- '<name>@<generation>' when the courier pasted into a pane; '' otherwise (§5.2)
+  PRIMARY KEY (msg_id, handle, instance, selector)
+);
+
+-- Relay-side reply limiter (§9): fixed 10-minute window per (thread_root, handle).
+-- Rows older than 2 windows are swept by the purge loop (purgeReplyState).
+CREATE TABLE IF NOT EXISTS reply_limiter (
+  thread_root TEXT NOT NULL, handle TEXT NOT NULL,
+  window_start TEXT NOT NULL,          -- fixed window, floor(now / window) as ISO
+  count INTEGER NOT NULL,
+  PRIMARY KEY (thread_root, handle, window_start)
+);
+
+-- Idempotency ledger for /v1/replies (§3.1, §5.1). Scoped to (team, handle) via
+-- key_hash so two handles never see each other's results.
+CREATE TABLE IF NOT EXISTS reply_idem (
+  key_hash BLOB PRIMARY KEY,            -- sha256 of length-prefixed (team_id, handle, key): len‖bytes for each
+  request_digest BLOB NOT NULL,         -- sha256 of RFC 8785 (JCS) canonical JSON of {in_reply_to, content, meta}
+  state TEXT NOT NULL CHECK(state IN ('pending','committed','final','error')),
+  lease TEXT NOT NULL,                  -- ULID; changes on every takeover (fencing token)
+  reserved_at TEXT NOT NULL,            -- refreshed on every takeover
+  result_status INTEGER,                -- HTTP status to replay
+  result_json TEXT,                     -- body to replay: at 'committed' (before fanout), 'final', or 'error'
+  error_until TEXT                      -- for 'error' rows that may be re-executed (reply_storm): retry_after
+);
+
 INSERT OR IGNORE INTO schema_version(version) VALUES (1);
 INSERT OR IGNORE INTO schema_version(version) VALUES (2);
 INSERT OR IGNORE INTO schema_version(version) VALUES (3);
