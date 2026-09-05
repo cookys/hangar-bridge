@@ -8,6 +8,7 @@ import { metricsRoute } from './routes/metrics.ts'
 import { permissionRoute } from './routes/permission.ts'
 import { claimsRoute } from './routes/claims.ts'
 import { healthRoute } from './routes/health.ts'
+import { repliesRoute } from './routes/replies.ts'
 import { accessLog } from './middleware/access-log.ts'
 
 export function buildApp(deps: Deps) {
@@ -27,5 +28,7 @@ export function buildApp(deps: Deps) {
   // the same sub-app is mounted at both paths so GET works on either.
   app.route('/v1/claim', claimsRoute(deps))
   app.route('/v1/claims', claimsRoute(deps))
+  // REPLY_ROUTING_SPEC.md §5.1: the reply verb.
+  app.route('/v1/replies', repliesRoute(deps))
   return app
 }
