@@ -250,6 +250,31 @@ export class MessageStore {
     for (const g of grants) stmt.run(msg_id, g.handle, g.instance, g.selector ?? '')
   }
 
+  /**
+   * §3.2 write order, the load-bearing part: insert the route, insert one
+   * grant per snapshot entry, and insert the `message` row where the caller's
+   * kind/branch calls for it — all inside ONE transaction, so a route-insert
+   * failure aborts the whole send (nothing persisted, nothing delivered) and
+   * a fast recipient can never observe a message row without its route+grants
+   * already committed. `route: null` is a protocol kind (task_result,
+   * permission_*, presence_update) — no route, no grants, message row only.
+   */
+  writeRouteAndMessage(input: {
+    route: ReplyRouteInput | null
+    grants: ReplyGrantInput[]
+    envelope: Envelope
+    persistMessage: boolean
+    deliveredAt?: string | null
+  }): void {
+    this.db.transaction((): void => {
+      if (input.route) {
+        this.insertRoute(input.route)
+        this.insertGrants(input.route.msg_id, input.grants)
+      }
+      if (input.persistMessage) this.persist(input.envelope, input.deliveredAt)
+    })()
+  }
+
   getRoute(msg_id: string): ReplyRoute | null {
     const row = this.db.prepare('SELECT * FROM reply_route WHERE msg_id=?').get(msg_id) as ReplyRoute | undefined
     return row ?? null

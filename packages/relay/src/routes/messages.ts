@@ -5,6 +5,7 @@ import {
   RESERVED_META_KEYS,
   newMessageId,
   TEAM_BROADCAST_HANDLE,
+  EPHEMERAL_ROUTE_TTL_MS,
   type Envelope,
 } from '@hangar-bridge/shared'
 import { loadOwnedSet, ownsNamespace } from '../acl.ts'
@@ -14,6 +15,25 @@ import { hashToken } from '../auth/hash.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
 import { parseInstanceHeader } from '../presence/label.ts'
 import type { Deps } from '../deps.ts'
+import type { ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
+import type { SnapshotDetail } from '../fanout.ts'
+
+/** chat, task_dispatch — the only kinds §3.1/§3.2 give a reply_route. */
+function isUserAuthoredKind(kind: Envelope['kind']): kind is 'chat' | 'task_dispatch' {
+  return kind === 'chat' || kind === 'task_dispatch'
+}
+
+/**
+ * One grant per snapshot entry that actually carries an instance (§3.2 step
+ * 3 / §4). A legacy match (no instance — the subscriber predates
+ * x-hangar-instance) cannot be granted: `reply_grant.instance` is NOT NULL,
+ * and there is no address to positively route a reply to anyway.
+ */
+function grantsFromSnapshot(snap: SnapshotDetail): ReplyGrantInput[] {
+  return snap.matched
+    .filter((m): m is { handle: string; instance: string } => m.instance !== undefined)
+    .map(m => ({ handle: m.handle, instance: m.instance, selector: '' }))
+}
 
 const DEFAULT_INBOX_LIMIT = 100
 const MAX_INBOX_LIMIT = 1000
@@ -111,10 +131,17 @@ export function messagesRoute(deps: Deps) {
     // of sender-declared message meta, and client-supplied values are dropped first —
     // same chokepoint treatment as B1. A handle's bearer authenticates the HANDLE,
     // not an individual process: sibling processes sharing that bearer are mutually
-    // trusted for the instance header. Therefore instance is observability and
-    // negative self-exclusion only; it is never authorization or positive routing.
-    // `instance` identifies the sending PROCESS; it is what fanout uses to keep a
-    // direct message from echoing back into the session that sent it.
+    // trusted for the instance header. `instance` identifies the sending PROCESS;
+    // fanout uses it for negative self-exclusion (keeping a direct message from
+    // echoing back into the session that sent it) — that part is unchanged.
+    // REPLY_ROUTING_SPEC.md §3.2/§10 additionally stamps the sender's instance and
+    // return selector onto this send's `reply_route` row, and the grants recorded
+    // from the delivery snapshot steer where an automatic reply/continuation lands:
+    // that IS positive routing for replies, under same-bearer mutual trust; never
+    // authorization — the grant check (§5.2/§7) keeps a different handle's bearer
+    // out of a thread it was never a party to, but a same-handle sibling can already
+    // subscribe or send under any of its own instance ids, so it can already steer
+    // its own siblings' replies. Nothing here widens what a bearer can reach.
     // A peer's own Claude session id cannot be verified by the relay at all, so it may
     // only travel under a name that says so (`peer_session_claim`), never as `session_id`.
     const stampedInstance = parseInstanceHeader(c.req.header('x-hangar-instance'))
@@ -159,6 +186,26 @@ export function messagesRoute(deps: Deps) {
       }, 400)
     }
     const returnSelector = returnSelectorParse.value
+
+    // §7 thread continuation (not a reply, NOT flag-controlled): `thread_root`
+    // names a route the caller SENT or holds a GRANT on; on success the send
+    // canonicalises to that route's effective root. This is the only
+    // sanctioned path to a wider audience inside a thread.
+    let continuationRoot: string | null = null
+    if (data.thread_root !== undefined) {
+      const resolved = resolveThreadContinuation(
+        deps, data.thread_root, peer.handle, stampedInstance.instance, returnSelector
+      )
+      if (!resolved.ok) {
+        return c.json({
+          error: 'not_in_thread',
+          message: 'thread_root names a route you neither sent nor were granted; '
+            + 'it must be a message you sent or one you received',
+          retryable: false,
+        }, 403)
+      }
+      continuationRoot = resolved.canonicalRoot
+    }
 
     // Fail-closed namespace ACL — gate on SUBJECT PRESENCE, not a kind allow-list.
     // A non-null subject is only meaningful on a command-carrying kind; a subjected
@@ -284,20 +331,57 @@ export function messagesRoute(deps: Deps) {
       } catch (err) {
         return c.json({ error: 'invalid_message', message: err instanceof Error ? err.message : '' }, 400)
       }
-      const { matched } = deps.fanout.deliverDetailed(built)
+      // §7: a validated thread continuation overrides the wire envelope's
+      // thread_root with the canonical root, same as a reply's already does.
+      if (continuationRoot !== null) built = { ...built, thread_root: continuationRoot }
+
+      // §3.2 write order: snapshot the live match BEFORE anything is
+      // committed, so the transaction below (route + grants + message row)
+      // binds to the exact set fanout will deliver to, and a session that
+      // subscribes in between is not delivered to live (no grant — a durable
+      // row grants it on drain instead, §4/item 7).
+      const snap = deps.fanout.snapshotDetailed(built)
+      const matched = snap.matched
       let deliveredAt: string | null = null
+      // Only task_dispatch is persisted (with delivered_at stamped so it never
+      // becomes a pending row); directed chat is delivered live and never stored.
+      let persistMessage = false
       if (matched.length > 0) {
         deliveredAt = deps.now().toISOString()
-        // Only task_dispatch is persisted (with delivered_at stamped so it never
-        // becomes a pending row); directed chat is delivered live and never stored.
-        if (built.kind === 'task_dispatch') deps.store.persist(built, deliveredAt)
+        if (built.kind === 'task_dispatch') persistMessage = true
       }
       // Project chat persists whether or not anyone was connected — matched:0 is
       // precisely the case durability exists for, and it leaves a pending row the
       // drain delivers when a project member reconnects. Unlike task_dispatch a
       // stored chat cannot cause a double execution, so there is no zombie-replay
       // reason to withhold it.
-      if (isProjectChat) deps.store.persist(built, deliveredAt)
+      if (isProjectChat) persistMessage = true
+
+      // §3.2/item 2: a directed task_dispatch matching nobody gets no route,
+      // same as today's no-row rule. Directed chat always gets a route (even
+      // 0 matches) since the relay already minted+advertised a
+      // correlation_id above for the receiver to reply with.
+      const getsRoute = built.kind === 'chat' || (built.kind === 'task_dispatch' && matched.length > 0)
+      const route: ReplyRouteInput | null = getsRoute ? {
+        msg_id: built.id, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
+        sender_instance: stampedInstance.instance ?? null, return_selector: returnSelector,
+        to_handle: built.to, to_filter_json: built.to_filter ? JSON.stringify(built.to_filter) : null,
+        thread_root: continuationRoot ?? built.thread_root ?? built.id,
+        correlation_id: built.meta['correlation_id'] ?? null,
+        created_at: deps.now().toISOString(),
+        expires_at: persistMessage ? null : new Date(deps.now().getTime() + EPHEMERAL_ROUTE_TTL_MS).toISOString(),
+      } : null
+      let routeInsertFailed = false
+      try {
+        deps.store.writeRouteAndMessage({
+          route, grants: route ? grantsFromSnapshot(snap) : [], envelope: built, persistMessage, deliveredAt,
+        })
+      } catch {
+        routeInsertFailed = true
+      }
+      if (routeInsertFailed) return c.json({ error: 'internal_error', message: 'route insert failed' }, 500)
+
+      deps.fanout.deliverDetailed(built, snap)
       auditEvent(deps, peer.id, 'message.to_filter_routed', {
         kind: built.kind,
         to: built.to,
@@ -309,6 +393,8 @@ export function messagesRoute(deps: Deps) {
         delivered_at: deliveredAt,
         matched: matched.length,
         matched_sessions: matched,
+        live: matched.map(m => `${m.handle}#${m.instance ?? ''}`),
+        durable: durableReport(built, persistMessage, data.to_filter?.repo),
         ...(selfTargeted ? { note: 'self_target: to_filter.instance is your own session' } : {}),
       })
       if (idemKey) {
@@ -322,15 +408,51 @@ export function messagesRoute(deps: Deps) {
 
     // Layer 2 (sender-stamp anti-spoof): `from` is the bearer-authenticated
     // peer handle from middleware. Client-supplied `from` (if any) is ignored.
-    let envelope: Envelope
+    let built: Envelope
     try {
-      envelope = deps.store.insert(HANGAR_TEAM_ID, peer.handle, data)
+      built = deps.store.buildEnvelope(HANGAR_TEAM_ID, peer.handle, data)
     } catch (err) {
       const message = err instanceof Error ? err.message : ''
       return c.json({ error: 'invalid_message', message }, 400)
     }
+    // §7: a validated thread continuation overrides the wire envelope's
+    // thread_root with the canonical root, same as a reply's already does.
+    if (continuationRoot !== null) built = { ...built, thread_root: continuationRoot }
 
-    deps.fanout.deliver(envelope)
+    // §3.2 write order: snapshot (read-only) BEFORE the transaction, then
+    // deliver from that FROZEN snapshot (not a fresh live match) — see the
+    // to_filter branch above for the full rationale. Taking the snapshot for
+    // every kind (not only chat/task_dispatch) is behaviour-preserving for
+    // protocol kinds too: nothing can subscribe/unsubscribe between this
+    // synchronous snapshot and the deliverDetailed call below, so the matched
+    // set is identical to what a live `deliver()` would have computed — it
+    // only adds the §11 audience-report numbers, unchanged from today's
+    // delivery outcome.
+    const snap = deps.fanout.snapshotDetailed(built)
+    // Protocol kinds (task_result, permission_*, presence_update) get NO
+    // route (§6.4) — they are request-id/correlation_id keyed and never
+    // reply parents.
+    const route: ReplyRouteInput | null = isUserAuthoredKind(built.kind) ? {
+      msg_id: built.id, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
+      sender_instance: stampedInstance.instance ?? null, return_selector: returnSelector,
+      to_handle: built.to, to_filter_json: built.to_filter ? JSON.stringify(built.to_filter) : null,
+      thread_root: continuationRoot ?? built.thread_root ?? built.id,
+      correlation_id: built.meta['correlation_id'] ?? null,
+      created_at: deps.now().toISOString(),
+      expires_at: null, // this branch always persists a durable message row
+    } : null
+    let routeInsertFailed = false
+    try {
+      deps.store.writeRouteAndMessage({
+        route, grants: route ? grantsFromSnapshot(snap) : [], envelope: built, persistMessage: true,
+      })
+    } catch {
+      routeInsertFailed = true
+    }
+    if (routeInsertFailed) return c.json({ error: 'internal_error', message: 'route insert failed' }, 500)
+
+    let envelope: Envelope = built
+    deps.fanout.deliverDetailed(built, snap)
     // Delivered-tracking (B4/R4): for SUBJECTED messages the stream write loop is
     // the sole authority (marks delivered_at only AFTER a successful writeSSE), so
     // do NOT stamp on enqueue here — else a stream abort between enqueue and write
@@ -352,7 +474,12 @@ export function messagesRoute(deps: Deps) {
       }
     }
 
-    const responseJson = JSON.stringify(envelope)
+    const responseJson = JSON.stringify({
+      ...envelope,
+      live: snap.matched.map(m => `${m.handle}#${m.instance ?? ''}`),
+      durable: durableReport(envelope, true, undefined),
+      matched: snap.matched.length,
+    })
     if (idemKey) {
       deps.db.prepare(`
         INSERT OR IGNORE INTO idempotency_key(key_hash, token_id, response_json, created_at)
@@ -363,6 +490,56 @@ export function messagesRoute(deps: Deps) {
   })
 
   return app
+}
+
+/**
+ * §7 thread continuation predicate: "sent OR granted". `sent` is
+ * `route.from_handle = caller handle AND route.sender_instance = caller
+ * instance AND (return_selector IS NULL OR IN ('', '~none') OR = caller
+ * selector)`; a legacy route (`legacy_width` not NULL) counts as sent on the
+ * handle alone. `granted` is a `reply_grant` row for `(msg_id, handle,
+ * instance)` with selector `''` or the caller's selector. On success,
+ * canonicalises to the route's OWN `thread_root` (never recomputed).
+ */
+function resolveThreadContinuation(
+  deps: Deps,
+  threadRootId: string,
+  callerHandle: string,
+  callerInstance: string | undefined,
+  callerSelector: string | null
+): { ok: true; canonicalRoot: string } | { ok: false } {
+  const route = deps.store.getRoute(threadRootId) ?? deps.store.getRouteByCorrelation(threadRootId)
+  if (!route) return { ok: false }
+
+  const sent = route.legacy_width != null
+    ? route.from_handle === callerHandle
+    : route.from_handle === callerHandle
+      && route.sender_instance === callerInstance
+      && (
+        route.return_selector == null
+        || route.return_selector === ''
+        || route.return_selector === '~none'
+        || route.return_selector === callerSelector
+      )
+
+  const granted = callerInstance !== undefined && (
+    deps.store.hasGrant(route.msg_id, callerHandle, callerInstance, '')
+    || (callerSelector !== null && deps.store.hasGrant(route.msg_id, callerHandle, callerInstance, callerSelector))
+  )
+
+  if (!sent && !granted) return { ok: false }
+  return { ok: true, canonicalRoot: route.thread_root }
+}
+
+/**
+ * §11 audience report `durable` field: `[]` when the send has/will have no
+ * durable `message` row; `['team']` for an unfiltered `@team`; `['repo:<name>']`
+ * for a project-chat `to_filter{repo}`; `['<handle>']` otherwise.
+ */
+function durableReport(built: Envelope, persisted: boolean, repo: string | undefined): string[] {
+  if (!persisted) return []
+  if (built.to === TEAM_BROADCAST_HANDLE) return repo !== undefined ? [`repo:${repo}`] : ['team']
+  return [built.to]
 }
 
 /** Record a subject-ACL denial (not silent — the authoritative denial trail). */

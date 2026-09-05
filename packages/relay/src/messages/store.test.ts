@@ -218,6 +218,83 @@ describe('MessageStore reply routing (REPLY_ROUTING_SPEC.md §3.1, §8.1, §8.2)
     })
   })
 
+  describe('writeRouteAndMessage (§3.2 write order: route + grants + message, one transaction)', () => {
+    it('writes the route, grants, and the message row all inside one transaction', () => {
+      const built = store.insert('t1', 'alice', { to: 'bob', kind: 'chat', content: 'placeholder' })
+      // Simulate the route handler's flow: build the envelope first (above,
+      // just to get a real id shape), then call the atomic write with a
+      // FRESH id so we can assert route+grant+message all land together.
+      const msgId = 'msg_atomic1'
+      store.writeRouteAndMessage({
+        route: {
+          msg_id: msgId, team_id: 't1', from_handle: 'alice', sender_instance: 'inst-a',
+          to_handle: 'bob', thread_root: msgId, created_at: '2026-01-01T00:00:00.000Z',
+        },
+        grants: [{ handle: 'bob', instance: 'inst-b', selector: '' }],
+        envelope: { ...built, id: msgId },
+        persistMessage: true,
+      })
+      expect(store.getRoute(msgId)).not.toBeNull()
+      expect(store.hasGrant(msgId, 'bob', 'inst-b')).toBe(true)
+      const row = db.prepare('SELECT id FROM message WHERE id=?').get(msgId)
+      expect(row).toBeTruthy()
+    })
+
+    it('skips the message insert when persistMessage is false (ephemeral directed chat)', () => {
+      const built = store.insert('t1', 'alice', { to: 'bob', kind: 'chat', content: 'placeholder' })
+      const msgId = 'msg_ephemeral1'
+      store.writeRouteAndMessage({
+        route: {
+          msg_id: msgId, team_id: 't1', from_handle: 'alice', to_handle: 'bob',
+          thread_root: msgId, created_at: '2026-01-01T00:00:00.000Z',
+          expires_at: '2026-01-08T00:00:00.000Z',
+        },
+        grants: [],
+        envelope: { ...built, id: msgId },
+        persistMessage: false,
+      })
+      expect(store.getRoute(msgId)).not.toBeNull()
+      const row = db.prepare('SELECT id FROM message WHERE id=?').get(msgId)
+      expect(row).toBeUndefined()
+    })
+
+    it('skips the route entirely when `route` is null (protocol kinds)', () => {
+      const built = store.insert('t1', 'alice', { to: 'bob', kind: 'chat', content: 'placeholder' })
+      const msgId = 'msg_noroute1'
+      store.writeRouteAndMessage({
+        route: null,
+        grants: [],
+        envelope: { ...built, id: msgId, kind: 'presence_update' },
+        persistMessage: true,
+      })
+      expect(store.getRoute(msgId)).toBeNull()
+      const row = db.prepare('SELECT id FROM message WHERE id=?').get(msgId)
+      expect(row).toBeTruthy()
+    })
+
+    it('rolls back the message insert if the route insert fails (atomicity)', () => {
+      const built = store.insert('t1', 'alice', { to: 'bob', kind: 'chat', content: 'placeholder' })
+      const msgId = 'msg_atomic_fail1'
+      // A duplicate msg_id on the route (PK violation) forces the route
+      // insert to throw; the message row must not survive it.
+      store.insertRoute({
+        msg_id: msgId, team_id: 't1', from_handle: 'alice', to_handle: 'bob',
+        thread_root: msgId, created_at: '2026-01-01T00:00:00.000Z',
+      })
+      expect(() => store.writeRouteAndMessage({
+        route: {
+          msg_id: msgId, team_id: 't1', from_handle: 'alice', to_handle: 'bob',
+          thread_root: msgId, created_at: '2026-01-01T00:00:00.000Z',
+        },
+        grants: [],
+        envelope: { ...built, id: msgId },
+        persistMessage: true,
+      })).toThrow()
+      const row = db.prepare('SELECT id FROM message WHERE id=?').get(msgId)
+      expect(row).toBeUndefined()
+    })
+  })
+
   it('fetchMailboxSince returns only that handle\'s mailbox rows, ascending, without marking delivered', () => {
     const now = new Date().toISOString()
     const insMsg = db.prepare(`
