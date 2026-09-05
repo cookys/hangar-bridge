@@ -70,6 +70,7 @@ function backfillReplyRoutes(db: Db): BackfillResult {
   const rows = db.prepare(`
     SELECT id, team_id, from_handle, to_handle, to_filter_json, thread_root, meta_json, sent_at
     FROM message WHERE kind IN ('chat','task_dispatch')
+    ORDER BY id ASC
   `).all() as Array<{
     id: string
     team_id: string
@@ -88,6 +89,14 @@ function backfillReplyRoutes(db: Db): BackfillResult {
   `)
   let routes = 0
   let nullSenderInstance = 0
+  // reply_route_correlation is a UNIQUE index: two legacy rows that happen to
+  // share one meta.correlation_id can't both keep the alias. Rows are visited
+  // in id order (query ORDER BY above) so "first seen" is deterministic; the
+  // first occurrence keeps the alias, every later collision is backfilled
+  // with correlation_id NULL instead — every eligible row still gets EXACTLY
+  // one route (the load-bearing invariant), it just isn't reachable by the
+  // stale alias.
+  const seenCorrelationIds = new Set<string>()
   db.transaction(() => {
     for (const row of rows) {
       let meta: Record<string, unknown> = {}
@@ -96,7 +105,14 @@ function backfillReplyRoutes(db: Db): BackfillResult {
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) meta = parsed as Record<string, unknown>
       } catch { /* corrupt legacy meta becomes an empty, safe object */ }
       const senderInstance = typeof meta['sender_instance'] === 'string' ? (meta['sender_instance'] as string) : null
-      const correlationId = typeof meta['correlation_id'] === 'string' ? (meta['correlation_id'] as string) : null
+      let correlationId = typeof meta['correlation_id'] === 'string' ? (meta['correlation_id'] as string) : null
+      if (correlationId !== null) {
+        if (seenCorrelationIds.has(correlationId)) {
+          correlationId = null
+        } else {
+          seenCorrelationIds.add(correlationId)
+        }
+      }
       if (senderInstance === null) nullSenderInstance++
       const legacyWidth = classifyLegacyWidth(row.to_handle, row.to_filter_json)
       const threadRoot = row.thread_root ?? row.id

@@ -466,3 +466,67 @@ describe('migrateV8ToV9 backfill (REPLY_ROUTING_SPEC.md §5.3)', () => {
     reopened.close()
   })
 })
+
+describe('migrateV8ToV9 backfill — legacy correlation_id collisions (REPLY_ROUTING_SPEC.md §5.3, reply_route_correlation)', () => {
+  let tmpDir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v9-corr-collision-'))
+    dbPath = join(tmpDir, 'v8.db')
+    const raw = new Database(dbPath)
+    raw.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+      CREATE TABLE team(id TEXT PRIMARY KEY, name TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 7, created_at TEXT NOT NULL);
+      CREATE TABLE human(id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id), handle TEXT NOT NULL, display_name TEXT NOT NULL, public_key BLOB, created_at TEXT NOT NULL, disabled_at TEXT, last_active_at TEXT, subjects TEXT, UNIQUE(team_id, handle));
+      CREATE TABLE token(id TEXT PRIMARY KEY, human_id TEXT NOT NULL REFERENCES human(id), token_hash BLOB NOT NULL UNIQUE, label TEXT NOT NULL, tier TEXT NOT NULL CHECK(tier IN ('human','admin')), created_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE TABLE message(id TEXT PRIMARY KEY, v INTEGER NOT NULL, team_id TEXT NOT NULL REFERENCES team(id), from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, in_reply_to TEXT, thread_root TEXT, kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')), content TEXT NOT NULL, meta_json TEXT NOT NULL DEFAULT '{}', sent_at TEXT NOT NULL, delivered_at TEXT, subject TEXT, to_filter_json TEXT);
+      CREATE TABLE idempotency_key(key_hash BLOB PRIMARY KEY, token_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL REFERENCES team(id), at TEXT NOT NULL, actor_human_id TEXT, event TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
+      CREATE TABLE claim(team_id TEXT NOT NULL REFERENCES team(id), claim_key TEXT NOT NULL, owner_handle TEXT NOT NULL, owner_label TEXT, note TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(team_id, claim_key));
+      INSERT INTO schema_version(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8);
+      INSERT INTO team(id,name,retention_days,created_at) VALUES ('hangar','hangar',7,'2026-05-17T00:00:00Z');
+    `)
+    const insMsg = raw.prepare(`
+      INSERT INTO message(id,v,team_id,from_handle,to_handle,thread_root,kind,content,meta_json,sent_at,to_filter_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `)
+    // Two DISTINCT chat rows sharing the same legacy meta.correlation_id — the
+    // reply_route_correlation unique index would reject the second row's alias
+    // outright; the backfill must still give it a route, just without the alias.
+    insMsg.run('msg_c1', 2, 'hangar', 'alice', 'bob', null, 'chat', 'first',
+      JSON.stringify({ sender_instance: 'inst-alice', correlation_id: 'corr-shared' }), '2026-05-17T00:00:00Z', null)
+    insMsg.run('msg_c2', 2, 'hangar', 'alice', 'bob', null, 'chat', 'second',
+      JSON.stringify({ sender_instance: 'inst-alice', correlation_id: 'corr-shared' }), '2026-05-17T00:00:01Z', null)
+    raw.close()
+  })
+
+  afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }) })
+
+  it('both rows get a route; exactly one carries the colliding correlation_id', () => {
+    const upgraded = openDatabase(dbPath)
+    const routes = upgraded.prepare(
+      'SELECT msg_id, correlation_id FROM reply_route WHERE msg_id IN (?,?) ORDER BY msg_id'
+    ).all('msg_c1', 'msg_c2') as Array<{ msg_id: string; correlation_id: string | null }>
+    expect(routes).toHaveLength(2)
+    const withCorrelation = routes.filter(r => r.correlation_id === 'corr-shared')
+    const withoutCorrelation = routes.filter(r => r.correlation_id === null)
+    expect(withCorrelation).toHaveLength(1)
+    expect(withoutCorrelation).toHaveLength(1)
+    // First-seen (by id order) keeps the alias.
+    expect(withCorrelation[0]!.msg_id).toBe('msg_c1')
+    expect(withoutCorrelation[0]!.msg_id).toBe('msg_c2')
+    upgraded.close()
+  })
+
+  it('stays idempotent across a second open', () => {
+    openDatabase(dbPath).close()
+    const second = openDatabase(dbPath)
+    const count = second.prepare(
+      "SELECT COUNT(*) AS n FROM reply_route WHERE msg_id IN ('msg_c1','msg_c2')"
+    ).get() as { n: number }
+    expect(count.n).toBe(2)
+    second.close()
+  })
+})
