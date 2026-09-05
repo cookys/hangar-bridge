@@ -7,16 +7,19 @@ import {
   PRESENCE_TTL_MS, newInstanceId,
 } from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
-import { loadConfig, loadToken, assertTokenNotInRepo, assertSecretFilePrivate } from './config.ts'
+import {
+  loadConfig, saveConfig, loadToken, assertTokenNotInRepo, assertSecretFilePrivate,
+  defaultConfigPath, type HangarConfig,
+} from './config.ts'
 import { readTokenFile } from './cli/token-file.ts'
 import { loadRoster } from './subject-acl.ts'
-import { RelayClient, type ClaimClient, type InboxClient, type PeerTransport } from './outbound.ts'
+import { RelayClient, type ClaimClient, type InboxClient, type PeerTransport, type ReplyClient } from './outbound.ts'
 import { NatsTransport } from './nats-transport.ts'
 import { createNatsAuditWriter } from './audit-log.ts'
 import {
-  registerTools, resolveInboxClient, buildPresenceBody, peerCaps,
+  registerTools, resolveInboxClient, resolveReplyClient, buildPresenceBody, peerCaps,
   TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS, TOOL_DESCRIPTOR_RESPOND,
-  TOOL_DESCRIPTOR_POLL_INBOX, dispatchToolDescriptor,
+  TOOL_DESCRIPTOR_POLL_INBOX, TOOL_DESCRIPTOR_REPLY, dispatchToolDescriptor,
 } from './tools.ts'
 import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
@@ -27,7 +30,7 @@ import {
 } from './health-state.ts'
 import { createPresenceTracker } from './presence-tracker.ts'
 import { StreamClient } from './stream.ts'
-import { Switchboard } from './switchboard.ts'
+import { Switchboard, findPaneRegistration } from './switchboard.ts'
 import { PermissionTracker, PermissionOutboundTracker } from './permission.ts'
 import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
@@ -42,8 +45,28 @@ import { pathToFileURL } from 'node:url'
 import { logJson } from './logger.ts'
 import { deliverViaAgentCall } from './agent-call-ingress.ts'
 
+/**
+ * §8.1: "the courier persists [its instance id] ... so a restart keeps
+ * every route valid". Only a switchboard courier gets this treatment —
+ * every other peer-agent still mints a fresh per-process instance id
+ * (unchanged). A persist failure (unwritable config dir) is best-effort:
+ * the courier still starts, it just mints a fresh instance every restart,
+ * same as before this feature existed.
+ */
+function resolveCourierInstance(cfg: HangarConfig, configPath: string): string {
+  if (cfg.instance) return cfg.instance
+  const minted = newInstanceId()
+  try {
+    saveConfig(configPath, { instance: minted })
+  } catch (err) {
+    logJson('warn', 'peer.courier.instance_persist_failed', describeError(err))
+  }
+  return minted
+}
+
 async function main(): Promise<void> {
-  const cfg = loadConfig()
+  const configPath = defaultConfigPath()
+  const cfg = loadConfig(configPath)
   let token: string | undefined
   let claimClient: ClaimClient | undefined
 
@@ -75,15 +98,21 @@ async function main(): Promise<void> {
 
   // Switchboard courier: one process per Unix user delivering into every local
   // agent-call registration, publishing their projects as presence `repos`.
-  const switchboard = cfg.final_mile.kind === 'agent-call' && cfg.final_mile.switchboard
-    ? new Switchboard({ bin: cfg.final_mile.bin, defaultTarget: cfg.final_mile.target })
-    : undefined
+  // Constructed here without finalizeGrant (unknown yet — it needs the relay
+  // client, built below); wired for real once `client` exists.
+  let switchboard: Switchboard | undefined
+  if (cfg.final_mile.kind === 'agent-call' && cfg.final_mile.switchboard) {
+    switchboard = new Switchboard({ bin: cfg.final_mile.bin, defaultTarget: cfg.final_mile.target })
+  }
+  const isCourier = switchboard !== undefined
 
   // ONE instance id for the whole process (P2 §2.1). Generated here — not per
   // connection — so the relay's per-(label, instance) connection refcount can
   // aggregate every SSE reconnect this process makes. It is presence/observability
   // only: nothing addresses a peer by instance (no `to_instance`).
-  const instanceId = newInstanceId()
+  // §8.1: a switchboard courier PERSISTS this across restarts instead — every
+  // other peer-agent still mints fresh, unchanged.
+  const instanceId = isCourier ? resolveCourierInstance(cfg, configPath) : newInstanceId()
   const healthStatePath = defaultHealthStatePath(
     process.env.CLAUDE_CODE_SESSION_ID ?? instanceId,
   )
@@ -313,6 +342,20 @@ async function main(): Promise<void> {
     })
   }
 
+  // §8.1: wire the switchboard's grant-finalize dependency now that `client`
+  // exists. Only a RelayClient (SSE) can reach POST /v1/grants/finalize at
+  // all; on NATS a selector-bearing reply fails closed as finalize_failed
+  // (no relay endpoint to call), which is the honest outcome, not a bug.
+  if (switchboard && client instanceof RelayClient && cfg.final_mile.kind === 'agent-call') {
+    const relayClient = client
+    const finalMile = cfg.final_mile
+    switchboard = new Switchboard({
+      bin: finalMile.bin,
+      ...(finalMile.target !== undefined ? { defaultTarget: finalMile.target } : {}),
+      finalizeGrant: async (msgId, selector) => (await relayClient.finalizeGrant(msgId, selector)).ok,
+    })
+  }
+
   const originalSend = client.send.bind(client)
   client.send = async (msg, opts) => {
     if (msg.kind === 'chat' && typeof msg.to === 'string' && msg.to !== '@team') {
@@ -329,8 +372,24 @@ async function main(): Promise<void> {
   // actually serve it.
   const inboxClient = resolveInboxClient(client, claimClient as unknown as InboxClient | undefined)
   inboxAvailable = Boolean(inboxClient)
+  // §5.1: reply_to_peer, available wherever the transport can reach
+  // POST /v1/replies (SSE today; NATS has no reply-verb endpoint yet).
+  const replyClient: ReplyClient | undefined = resolveReplyClient(client)
+  // §8.1: "when $TMUX_PANE is set, the peer-agent reads the pane's current
+  // registration (name@generation) from the local registry at call time" —
+  // this is true for ANY bridge session in a pane, not only a switchboard
+  // courier, so it is gated on the env var alone, not on final_mile.kind.
+  const acBin = cfg.final_mile.kind === 'agent-call' ? cfg.final_mile.bin : undefined
+  const tmuxPane = process.env.TMUX_PANE
+  const getPaneSelector = tmuxPane
+    ? async (): Promise<string | undefined> => {
+        const reg = await findPaneRegistration(tmuxPane, acBin)
+        return reg?.generation ? `${reg.name}@${reg.generation}` : undefined
+      }
+    : undefined
   const { callTool } = registerTools(
     client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient, inboxClient,
+    replyClient, getPaneSelector,
   )
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -338,6 +397,7 @@ async function main(): Promise<void> {
       ...(inboxClient ? [TOOL_DESCRIPTOR_POLL_INBOX] : []),
       ...(claimClient ? TOOL_DESCRIPTORS_CLAIMS : []),
       ...(permissionRelayEnabled ? [TOOL_DESCRIPTOR_RESPOND] : []),
+      ...(replyClient ? [TOOL_DESCRIPTOR_REPLY] : []),
       dispatchToolDescriptor(client),
     ],
   }))
