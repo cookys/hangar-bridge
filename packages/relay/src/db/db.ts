@@ -40,7 +40,6 @@ function migrateV8ToV9(db: Db): void {
   if (done) return
   const result = backfillReplyRoutes(db)
   logJson('info', 'migrate.v8_to_v9', { routes: result.routes, null_sender_instance: result.null_sender_instance })
-  db.exec('INSERT INTO schema_version(version) VALUES (9)')
 }
 
 interface BackfillResult {
@@ -52,9 +51,18 @@ interface BackfillResult {
  * REPLY_ROUTING_SPEC.md §5.3. Backfills a `reply_route` for every retained
  * `message` row of kind `chat` or `task_dispatch` (protocol kinds stay
  * non-parents, §6.4). `legacy_width` is derived from the row's own shape —
- * it is data recorded once at migration time, never recomputed. Runs inside
- * one transaction so a crash mid-backfill leaves nothing partially inserted
- * (mirrors migrateV6ToV7's atomicity).
+ * it is data recorded once at migration time, never recomputed.
+ *
+ * The row inserts AND the `schema_version=9` stamp run inside ONE
+ * transaction (mirrors migrateV6ToV7's atomicity): a crash before commit
+ * leaves nothing — no partial routes, no version 9 — so the next open
+ * starts clean and retries from scratch; a crash after commit leaves both
+ * together, so `migrateV8ToV9`'s guard sees version 9 and never re-enters.
+ * `INSERT OR IGNORE` on the row insert is defence in depth for a database
+ * that somehow already carries a route for one of these ids (e.g. hand
+ * repair, or an upgrade from an even older two-statement build of this
+ * migration): a retry converges instead of throwing on `reply_route`'s
+ * PRIMARY KEY or its `correlation_id` unique index.
  */
 function backfillReplyRoutes(db: Db): BackfillResult {
   const migratedAt = new Date()
@@ -73,7 +81,7 @@ function backfillReplyRoutes(db: Db): BackfillResult {
     sent_at: string
   }>
   const insert = db.prepare(`
-    INSERT INTO reply_route(
+    INSERT OR IGNORE INTO reply_route(
       msg_id, team_id, from_handle, sender_instance, return_selector, to_handle,
       to_filter_json, thread_root, legacy_width, correlation_id, created_at, expires_at, unaddressable_at
     ) VALUES (?,?,?,?,NULL,?,?,?,?,?,?,?,NULL)
@@ -92,12 +100,13 @@ function backfillReplyRoutes(db: Db): BackfillResult {
       if (senderInstance === null) nullSenderInstance++
       const legacyWidth = classifyLegacyWidth(row.to_handle, row.to_filter_json)
       const threadRoot = row.thread_root ?? row.id
-      insert.run(
+      const info = insert.run(
         row.id, row.team_id, row.from_handle, senderInstance, row.to_handle,
         row.to_filter_json, threadRoot, legacyWidth, correlationId, row.sent_at, expiresAt
       )
-      routes++
+      if (info.changes > 0) routes++
     }
+    db.exec('INSERT INTO schema_version(version) VALUES (9)')
   })()
   return { routes, null_sender_instance: nullSenderInstance }
 }

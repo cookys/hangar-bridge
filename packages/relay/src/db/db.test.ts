@@ -436,4 +436,33 @@ describe('migrateV8ToV9 backfill (REPLY_ROUTING_SPEC.md §5.3)', () => {
     expect(count.n).toBe(5)
     second.close()
   })
+
+  it('writes the backfill and schema_version=9 atomically: routes and the version stamp always land together', () => {
+    const upgraded = openDatabase(dbPath)
+    const version = upgraded.prepare('SELECT 1 AS x FROM schema_version WHERE version=9').get()
+    const routeCount = upgraded.prepare('SELECT COUNT(*) AS n FROM reply_route').get() as { n: number }
+    expect(version).toBeTruthy()
+    expect(routeCount.n).toBe(5)
+    upgraded.close()
+  })
+
+  it('recovers from a partial state (routes already present, version stuck at 8) without crashing', () => {
+    // Simulates a crash between the backfill commit and the schema_version
+    // stamp under the OLD two-statement migration: reply_route rows already
+    // exist for the qualifying messages, but schema_version=9 was never
+    // recorded, so the next open would retry the backfill and violate
+    // reply_route's PRIMARY KEY. Manufacture exactly that state by hand.
+    openDatabase(dbPath).close()
+    const raw = new Database(dbPath)
+    raw.prepare('DELETE FROM schema_version WHERE version=9').run()
+    raw.close()
+
+    expect(() => openDatabase(dbPath)).not.toThrow()
+
+    const reopened = openDatabase(dbPath)
+    expect(getSchemaVersion(reopened)).toBe(9)
+    const count = reopened.prepare('SELECT COUNT(*) AS n FROM reply_route').get() as { n: number }
+    expect(count.n).toBe(5)
+    reopened.close()
+  })
 })
