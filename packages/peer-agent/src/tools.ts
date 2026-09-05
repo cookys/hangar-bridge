@@ -331,6 +331,41 @@ function renderInboxBody(content: string): string {
     .join('\n')
 }
 
+/**
+ * §11 audience report: the relay's `{ live, durable, matched, sender_state?,
+ * legacy_parent? }` rendered as the two-part text the model sees. `live` is
+ * the live-subscription snapshot (never the complete audience — a session
+ * mid-reconnect is missing); `durable` says which handle/repo/mailbox may
+ * drain the row later. Shared by send_to_peer, dispatch_task and
+ * reply_to_peer so the three surfaces read identically (item 6).
+ */
+export interface AudienceReport {
+  live: string[]
+  durable: string[]
+  matched: number
+  sender_state?: 'live' | 'offline'
+  legacy_parent?: true
+}
+
+export function renderAudienceReport(report: AudienceReport): string {
+  const live = report.live.length > 0 ? report.live.join(', ') : '[]'
+  const durable = report.durable.length > 0 ? report.durable.join(', ') : '[]'
+  const lines = [`live: ${live}`, `durable: ${durable}`, `matched: ${report.matched}`]
+  if (report.sender_state !== undefined) lines.push(`sender_state: ${report.sender_state}`)
+  if (report.legacy_parent) lines.push('legacy_parent: true')
+  return lines.join('\n')
+}
+
+/**
+ * A SendResult carries the §11 report only once the relay side actually
+ * computes it (D2-D4). Feature-detect rather than assume, so a mock/older
+ * relay response (bare `matched`/`matched_sessions`, no `live`/`durable`)
+ * still gets SOME report instead of a crash on missing fields.
+ */
+function hasAudienceReport(env: { live?: unknown; durable?: unknown }): env is { live: string[]; durable: string[] } {
+  return Array.isArray(env.live) && Array.isArray(env.durable)
+}
+
 function renderInboxMessage(m: Envelope): string {
   const header = `[${m.id}] from=${m.from} to=${m.to} kind=${m.kind}`
     + `${m.subject ? ` subject=${m.subject}` : ''}`
@@ -416,6 +451,18 @@ export function registerTools(
       const env = await client.send(payload)
       if (replyLimiter && typeof resolved.to === 'string' && resolved.to !== TEAM_BROADCAST_HANDLE) {
         replyLimiter.recordOutbound(resolved.to)
+      }
+      // §11: every /v1/messages response now carries the two-part audience
+      // report (item 6) — render it. Feature-detected so a mock/legacy
+      // response missing live/durable still gets the pre-D5 text instead of
+      // silently dropping the delivery-count signal.
+      if (hasAudienceReport(env)) {
+        const report = renderAudienceReport({
+          live: env.live, durable: env.durable, matched: env.matched ?? 0,
+          ...(env.sender_state !== undefined ? { sender_state: env.sender_state } : {}),
+          ...(env.legacy_parent !== undefined ? { legacy_parent: env.legacy_parent } : {}),
+        })
+        return { content: [{ type: 'text', text: `sent ${env.id}\n${report}` }] }
       }
       // For a to_filter (presence-narrowed) send, report how many live sessions it
       // reached. matched:0 means NOTHING received it (target session gone / repo
@@ -541,7 +588,16 @@ export function registerTools(
       }
       const env = await client.send(payload, { idempotency_key: correlation_id })
       dispatchTracker.recordOutgoing(correlation_id, env.id, input.to)
-      return { content: [{ type: 'text', text: `dispatched ${env.id} correlation_id=${correlation_id}` }] }
+      const dispatchText = `dispatched ${env.id} correlation_id=${correlation_id}`
+      if (hasAudienceReport(env)) {
+        const report = renderAudienceReport({
+          live: env.live, durable: env.durable, matched: env.matched ?? 0,
+          ...(env.sender_state !== undefined ? { sender_state: env.sender_state } : {}),
+          ...(env.legacy_parent !== undefined ? { legacy_parent: env.legacy_parent } : {}),
+        })
+        return { content: [{ type: 'text', text: `${dispatchText}\n${report}` }] }
+      }
+      return { content: [{ type: 'text', text: dispatchText }] }
     }
     if (name === 'respond_to_permission') {
       if (!permissionTracker) throw new Error('permission relay disabled')

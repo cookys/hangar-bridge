@@ -11,6 +11,16 @@ export type SendResult = Envelope & {
   matched?: number
   matched_sessions?: Array<{ handle: string; instance?: string }>
   note?: string
+  /**
+   * §11 audience report (D2-D4): the live-subscription snapshot and the
+   * durable-drain description, always present together once the relay
+   * computes them. Optional here so a mock/legacy response missing both
+   * still type-checks (see tools.ts hasAudienceReport feature-detection).
+   */
+  live?: string[]
+  durable?: string[]
+  sender_state?: 'live' | 'offline'
+  legacy_parent?: true
 }
 
 export interface RelayClientOpts {

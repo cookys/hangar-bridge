@@ -3,6 +3,7 @@ import {
   registerTools,
   buildPresenceBody,
   dispatchToolDescriptor,
+  renderAudienceReport,
   TOOL_DESCRIPTORS,
   TOOL_DESCRIPTORS_CLAIMS,
   TOOL_DESCRIPTOR_DISPATCH,
@@ -11,6 +12,50 @@ import {
 import { DispatchTracker } from './correlation.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import type { RelayClient } from './outbound.ts'
+
+/**
+ * D5 item 6 (§11): the relay's audience report is TWO separate lists — a
+ * live subscription snapshot and a durable-drain description — never
+ * flattened into one. `renderAudienceReport` is the one place send_to_peer,
+ * dispatch_task and reply_to_peer turn that shape into model-facing text.
+ */
+describe('renderAudienceReport', () => {
+  it('renders live + durable + matched', () => {
+    const text = renderAudienceReport({ live: ['bob#01A', 'carol#01B'], durable: ['bob'], matched: 2 })
+    expect(text).toBe('live: bob#01A, carol#01B\ndurable: bob\nmatched: 2')
+  })
+
+  it('renders an empty live/durable list as []', () => {
+    const text = renderAudienceReport({ live: [], durable: [], matched: 0 })
+    expect(text).toBe('live: []\ndurable: []\nmatched: 0')
+  })
+
+  it('renders durable: team for an unfiltered @team chat', () => {
+    expect(renderAudienceReport({ live: [], durable: ['team'], matched: 0 }))
+      .toContain('durable: team')
+  })
+
+  it('renders durable: repo:<name> for a project-scoped send', () => {
+    expect(renderAudienceReport({ live: [], durable: ['repo:hangar-bridge'], matched: 0 }))
+      .toContain('durable: repo:hangar-bridge')
+  })
+
+  it('appends sender_state when present', () => {
+    const text = renderAudienceReport({ live: [], durable: ['alice'], matched: 0, sender_state: 'offline' })
+    expect(text).toBe('live: []\ndurable: alice\nmatched: 0\nsender_state: offline')
+  })
+
+  it('appends legacy_parent when present', () => {
+    const text = renderAudienceReport({ live: ['alice#01A'], durable: ['alice'], matched: 1, legacy_parent: true })
+    expect(text.split('\n')).toContain('legacy_parent: true')
+  })
+
+  it('omits sender_state/legacy_parent lines when absent', () => {
+    const text = renderAudienceReport({ live: [], durable: [], matched: 0 })
+    expect(text).not.toContain('sender_state')
+    expect(text).not.toContain('legacy_parent')
+  })
+})
 
 describe('registerTools', () => {
   it('send_to_peer calls RelayClient.send', async () => {
