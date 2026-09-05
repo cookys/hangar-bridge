@@ -1,8 +1,37 @@
 import type { Db } from './db/db.ts'
 import { logJson } from './logger.ts'
+import { REPLY_LIMITER_DEFAULTS } from './reply-limiter.ts'
 
 export interface PurgeResult {
   handles: string[]
+}
+
+export interface ReplyStatePurgeResult {
+  limiterRows: number
+  routes: number
+}
+
+/**
+ * REPLY_ROUTING_SPEC.md §9 / §12 — sweeps reply-routing state that has aged
+ * out: `reply_limiter` rows older than two fixed windows (a window boundary
+ * already resets the count; nothing needs a row past that), and
+ * `reply_route` rows whose `expires_at` has passed (ephemeral + legacy
+ * routes, §3.4) — their grants cascade via `ON DELETE CASCADE`. A route
+ * with `expires_at IS NULL` (a durable message row) is never swept here.
+ */
+export function purgeReplyState(
+  db: Db,
+  nowMs: number,
+  opts: { windowMs?: number } = {}
+): ReplyStatePurgeResult {
+  const windowMs = opts.windowMs ?? REPLY_LIMITER_DEFAULTS.windowMs
+  const limiterCutoff = new Date(nowMs - 2 * windowMs).toISOString()
+  const nowIso = new Date(nowMs).toISOString()
+  const limiterInfo = db.prepare('DELETE FROM reply_limiter WHERE window_start < ?').run(limiterCutoff)
+  const routeInfo = db.prepare(
+    'DELETE FROM reply_route WHERE expires_at IS NOT NULL AND expires_at < ?'
+  ).run(nowIso)
+  return { limiterRows: limiterInfo.changes, routes: routeInfo.changes }
 }
 
 /**
@@ -70,6 +99,12 @@ export function startInactivitySweeper(
         if (r.handles.length > 0) {
           logJson('info', 'purge.sweep', { team_id: t.id, count: r.handles.length, handles: r.handles.join(','), days: opts.days })
         }
+      }
+      // Reply-routing state (§9/§12) isn't per-team scoped like the human
+      // sweep above; one sweep per tick over the whole relay db is enough.
+      const replyResult = purgeReplyState(db, nowDate.getTime())
+      if (replyResult.limiterRows > 0 || replyResult.routes > 0) {
+        logJson('info', 'purge.reply_state', { limiter_rows: replyResult.limiterRows, routes: replyResult.routes })
       }
     } catch (err) {
       logJson('warn', 'purge.sweep_error', { err: String(err instanceof Error ? err.message : err) })
