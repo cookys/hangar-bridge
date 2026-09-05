@@ -33,6 +33,20 @@ export interface MatchedSub {
   instance?: string | undefined
 }
 
+/**
+ * `snapshotDetailed`'s return shape: the matched set plus whether the only
+ * thing excluded from it was the sender's own instance (§3.2 step 2 needs
+ * this preserved through to the frozen delivery — see `deliverDetailed`).
+ */
+export interface SnapshotDetail {
+  matched: MatchedSub[]
+  selfExcluded: boolean
+}
+
+function isSnapshotDetail(v: MatchedSub[] | SnapshotDetail): v is SnapshotDetail {
+  return !Array.isArray(v)
+}
+
 /** The same subscriber set minus one instance — used to self-exclude the
  *  sending session from its own narrowed broadcast without excluding the
  *  siblings that share its handle. */
@@ -112,9 +126,14 @@ export class Fanout {
    */
   deliverDetailed(
     e: Envelope,
-    snapshot?: MatchedSub[]
+    snapshot?: MatchedSub[] | SnapshotDetail
   ): { delivered: boolean; selfExcluded: boolean; matched: MatchedSub[] } {
-    if (snapshot) return this.deliverFromSnapshot(e, snapshot)
+    if (snapshot) {
+      const { matched, selfExcluded } = isSnapshotDetail(snapshot)
+        ? snapshot
+        : { matched: snapshot, selfExcluded: false }
+      return this.deliverFromSnapshot(e, matched, selfExcluded)
+    }
     const { matched, selfExcluded } = this.resolveMatches(e, true)
     return { delivered: matched.length > 0, selfExcluded, matched }
   }
@@ -125,11 +144,23 @@ export class Fanout {
    * transaction commits routes/grants against before fanout ever runs.
    */
   snapshot(e: Envelope): MatchedSub[] {
-    return this.resolveMatches(e, false).matched
+    return this.snapshotDetailed(e).matched
+  }
+
+  /**
+   * Same as `snapshot`, plus the self-exclusion outcome at snapshot time:
+   * a send whose only live match was its own instance (a narrowed @team, or
+   * a direct self-send) must carry `selfExcluded: true` through to the
+   * frozen delivery, exactly as a live `deliverDetailed(e)` would — otherwise
+   * "everyone who could receive it was the sender" and "nobody was
+   * listening" become indistinguishable once the snapshot is taken.
+   */
+  snapshotDetailed(e: Envelope): SnapshotDetail {
+    return this.resolveMatches(e, false)
   }
 
   /** Shared matching logic for both a live delivery and a snapshot-only read. */
-  private resolveMatches(e: Envelope, deliver: boolean): { matched: MatchedSub[]; selfExcluded: boolean } {
+  private resolveMatches(e: Envelope, deliver: boolean): SnapshotDetail {
     const byHandle = this.subs.get(e.team)
     const matched: MatchedSub[] = []
     if (!byHandle) return { matched, selfExcluded: false }
@@ -188,7 +219,8 @@ export class Fanout {
    */
   private deliverFromSnapshot(
     e: Envelope,
-    snapshot: MatchedSub[]
+    snapshot: MatchedSub[],
+    selfExcluded: boolean
   ): { delivered: boolean; selfExcluded: boolean; matched: MatchedSub[] } {
     const allowed = new Set(snapshot.map(m => snapshotKey(m.handle, m.instance)))
     const byHandle = this.subs.get(e.team)
@@ -202,7 +234,7 @@ export class Fanout {
         }
       }
     }
-    return { delivered: matched.length > 0, selfExcluded: false, matched }
+    return { delivered: matched.length > 0, selfExcluded, matched }
   }
 
   /**

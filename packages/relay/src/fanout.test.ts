@@ -256,6 +256,50 @@ describe('Fanout — frozen snapshot delivery', () => {
     expect(f.snapshot(e)).toEqual([])
   })
 
+  it('snapshotDetailed() reports selfExcluded=true when a narrowed @team send only matched the sender itself', () => {
+    // §3.2 step 2: the send transaction takes the snapshot before commit, so it
+    // must be able to see "the only live match was me" the same way a live
+    // deliverDetailed(e) would — that distinguishes "nobody was listening" from
+    // "everyone who could receive it was the sender" for the audience report.
+    const cuda = { handle: 'cuda', team_id: 't1', instance: 'inst-A', deliver: () => {} }
+    f.subscribe(cuda)
+    const e: Envelope = {
+      ...env('A', '@team', 'cuda'),
+      meta: { sender_instance: 'inst-A' },
+      to_filter: { repo: 'hangar' },
+    }
+    expect(f.snapshotDetailed(e)).toEqual({ matched: [], selfExcluded: true })
+  })
+
+  it('snapshot() stays equal to snapshotDetailed().matched', () => {
+    const bob = collectingSub('bob')
+    f.subscribe(bob)
+    const e = env('A', 'bob')
+    expect(f.snapshot(e)).toEqual(f.snapshotDetailed(e).matched)
+  })
+
+  it('a frozen delivery given the detailed snapshot object carries snapshot-time selfExcluded', () => {
+    const cuda = { handle: 'cuda', team_id: 't1', instance: 'inst-A', deliver: () => {} }
+    f.subscribe(cuda)
+    const e: Envelope = {
+      ...env('A', '@team', 'cuda'),
+      meta: { sender_instance: 'inst-A' },
+      to_filter: { repo: 'hangar' },
+    }
+    const detailed = f.snapshotDetailed(e)
+    const result = f.deliverDetailed(e, detailed)
+    expect(result).toEqual({ delivered: false, selfExcluded: true, matched: [] })
+  })
+
+  it('a frozen delivery given a bare MatchedSub[] keeps the old contract (selfExcluded=false)', () => {
+    const bob = collectingSub('bob')
+    f.subscribe(bob)
+    const e = env('A', 'bob')
+    const snap = f.snapshot(e)
+    const result = f.deliverDetailed(e, snap)
+    expect(result).toEqual({ delivered: true, selfExcluded: false, matched: [{ handle: 'bob', instance: undefined }] })
+  })
+
   it('deliverDetailed(e, snapshot) delivers to a subscriber present in the snapshot', () => {
     const bob = collectingSub('bob')
     f.subscribe(bob)
