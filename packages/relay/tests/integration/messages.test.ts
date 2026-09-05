@@ -205,4 +205,36 @@ describe('POST /v1/messages', () => {
       expect(sawRouteAndGrant).toBe(true)
     })
   })
+
+  // §11 audience report must appear on the to_filter (directed) response too,
+  // not only the plain-branch response — including the idempotency-cached replay.
+  describe('§11 audience report on the to_filter response', () => {
+    it('a directed task_dispatch response carries live[]/durable/matched, and the idempotent replay matches', async () => {
+      const fanout = new Fanout()
+      fanout.subscribe({ handle: 'bob', team_id: 'hangar', instance: '01HRK7Y0000000000000000099', deliver: () => {} })
+      const app2 = buildApp({
+        db, store, fanout, presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date(),
+      })
+      const key = 'idem-audience-1'
+      const headers = {
+        authorization: `Bearer ${aliceToken}`, 'content-type': 'application/json',
+        'x-hangar-instance': '01HRK7Y0000000000000000000', 'idempotency-key': key,
+      }
+      const body = {
+        to: 'bob', kind: 'task_dispatch', content: 'run',
+        to_filter: { instance: '01HRK7Y0000000000000000099' },
+      }
+      const first = await app2.request('/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) })
+      expect(first.status).toBe(201)
+      const firstBody = await first.json() as { live: string[]; durable: string[]; matched: number }
+      expect(firstBody.live).toEqual(['bob#01HRK7Y0000000000000000099'])
+      expect(firstBody.durable).toEqual(['bob'])
+      expect(firstBody.matched).toBe(1)
+
+      const second = await app2.request('/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) })
+      expect(second.status).toBe(201)
+      const secondBody = await second.json() as { live: string[]; durable: string[]; matched: number }
+      expect(secondBody).toEqual(firstBody)
+    })
+  })
 })
