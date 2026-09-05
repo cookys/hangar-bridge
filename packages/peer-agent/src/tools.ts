@@ -7,11 +7,12 @@ import {
   escapeChannelBody, escapeChannelAttr, ToFilterSchema,
   type OutboundMessage, type MessageId, type Envelope,
 } from '@hangar-bridge/shared'
-import type { ClaimClient, InboxClient, PeerTransport } from './outbound.ts'
+import type { ClaimClient, InboxClient, PeerTransport, ReplyClient } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
 import { detectWorkingContext } from './roots.ts'
+import { logJson } from './logger.ts'
 
 const AddressSchema = z.union([
   z.string().regex(HANDLE_REGEX),
@@ -29,6 +30,15 @@ const SendInput = z.object({
   in_reply_to: z.string().optional(),
   meta: z.record(z.string()).optional(),
   to_filter: ToFilterSchema.optional(),
+  // §7 thread continuation (not a reply): names a route the caller sent or
+  // holds a grant on, for continuing that thread with a DIFFERENT audience.
+  // Format-only here; the relay resolves it to a route and canonicalises.
+  thread_root: z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/).optional(),
+  // §6.1: acknowledges that a bare-handle chat really is meant for every
+  // session on that host, now and later. Forwarded as-is; the relay is the
+  // authority on shape/authorization (handle_needs_all_sessions when absent
+  // and the rollout flag is on).
+  all_sessions: z.boolean().optional(),
 })
 const ListInput = z.object({}).strict()
 const SummaryInput = z.object({ summary: z.string().max(200) })
@@ -50,6 +60,12 @@ const MESSAGE_ID_INPUT = z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/)
 const PollInboxInput = z.object({
   since: MESSAGE_ID_INPUT.optional(),
   limit: z.number().int().min(1).max(1000).optional(),
+}).strict()
+// §5.1: strictly {in_reply_to, content, meta?} — no to/to_filter/subject/fleet_wide.
+const ReplyInput = z.object({
+  in_reply_to: MESSAGE_ID_INPUT,
+  content: z.string(),
+  meta: z.record(z.string()).optional(),
 }).strict()
 const ULID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/i
 const DispatchInput = z.object({
@@ -74,7 +90,9 @@ export const TOOL_DESCRIPTORS = [
         fleet_wide: { type: 'boolean', description: 'Send to every session on every host. Interrupts the whole fleet; ask the user first. Cannot be combined with `to`.' },
         content: { type: 'string' },
         subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); publisher must own the namespace. Allowed on @team only for chat, where receivers are filtered by ownership + interest' },
-        in_reply_to: { type: 'string', description: 'msg_id being replied to (optional)' },
+        in_reply_to: { type: 'string', description: 'DEPRECATED for answering one specific message — use reply_to_peer instead, which needs no address. This still works for continuing a route you own, but the relay may refuse it with use_reply_verb once the reply-routing rollout reaches that stage.' },
+        thread_root: { type: 'string', description: 'Continue a thread for a DIFFERENT audience than its previous messages reached (not a reply): the msg_id of a route you sent or were granted on. The relay canonicalises to that thread\'s root and widens/narrows delivery to THIS call\'s `to`/`to_filter`, not the parent\'s.' },
+        all_sessions: { type: 'boolean', description: 'Chat-only acknowledgement for a bare `to` handle (no to_filter): confirms this really is meant for every session on that host, now and later — not just the one that happens to be live. Required by the relay for a bare-handle chat once the rollout flag is on.' },
         to_filter: {
           type: 'object',
           properties: {
@@ -153,6 +171,27 @@ export const TOOL_DESCRIPTORS_CLAIMS = [
     },
   },
 ] as const
+
+/**
+ * D5 item 1 (§5.1, §8.3): answers ONE specific message by its id. A reply
+ * names a message id, never a handle — the relay already knows the
+ * audience from the parent's route/grants, so this tool takes no address at
+ * all. Advertised only when a reply client resolves (relay-backed SSE
+ * today; NATS has no /v1/replies endpoint yet).
+ */
+export const TOOL_DESCRIPTOR_REPLY = {
+  name: 'reply_to_peer',
+  description: 'Answer ONE specific message by its id — this is how you reply, not send_to_peer. A reply names a message id (in_reply_to), never a handle: the relay already knows who may see it from the parent message\'s own audience. To reach a DIFFERENT or WIDER audience than the parent reached, send a NEW message with send_to_peer and thread_root instead of replying.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      in_reply_to: { type: 'string', description: 'msg_id of the message you are answering' },
+      content: { type: 'string' },
+      meta: { type: 'object', additionalProperties: { type: 'string' }, description: 'free-form string map, informational' },
+    },
+    required: ['in_reply_to', 'content'],
+  },
+} as const
 
 export const TOOL_DESCRIPTOR_RESPOND = {
   name: 'respond_to_permission',
@@ -299,6 +338,21 @@ export function resolveInboxClient(
   return typeof candidate.pollInbox === 'function' ? candidate as InboxClient : undefined
 }
 
+/**
+ * Resolve who can serve reply_to_peer (POST /v1/replies): an explicitly
+ * supplied client wins, otherwise the transport itself if it implements
+ * `.reply`. Returns undefined on a transport with no reply-verb endpoint
+ * (NATS today) — same not-advertised-at-all pattern as resolveInboxClient.
+ */
+export function resolveReplyClient(
+  client: PeerTransport,
+  replyClient?: ReplyClient,
+): ReplyClient | undefined {
+  if (replyClient) return replyClient
+  const candidate = client as PeerTransport & Partial<ReplyClient>
+  return typeof candidate.reply === 'function' ? candidate as ReplyClient : undefined
+}
+
 // FIX6 — compact, whitelisted meta rendered in the AUTHENTICATED framing
 // region (never inside the untrusted body). Only these keys are ever shown,
 // so an unrelated/forged meta key on the envelope cannot inject extra lines
@@ -331,6 +385,58 @@ function renderInboxBody(content: string): string {
     .join('\n')
 }
 
+/**
+ * §11 audience report: the relay's `{ live, durable, matched, sender_state?,
+ * legacy_parent? }` rendered as the two-part text the model sees. `live` is
+ * the live-subscription snapshot (never the complete audience — a session
+ * mid-reconnect is missing); `durable` says which handle/repo/mailbox may
+ * drain the row later. Shared by send_to_peer, dispatch_task and
+ * reply_to_peer so the three surfaces read identically (item 6).
+ */
+export interface AudienceReport {
+  live: string[]
+  durable: string[]
+  matched: number
+  sender_state?: 'live' | 'offline'
+  legacy_parent?: true
+}
+
+export function renderAudienceReport(report: AudienceReport): string {
+  const live = report.live.length > 0 ? report.live.join(', ') : '[]'
+  const durable = report.durable.length > 0 ? report.durable.join(', ') : '[]'
+  const lines = [`live: ${live}`, `durable: ${durable}`, `matched: ${report.matched}`]
+  if (report.sender_state !== undefined) lines.push(`sender_state: ${report.sender_state}`)
+  if (report.legacy_parent) lines.push('legacy_parent: true')
+  return lines.join('\n')
+}
+
+/**
+ * A SendResult carries the §11 report only once the relay side actually
+ * computes it (D2-D4). Feature-detect rather than assume, so a mock/older
+ * relay response (bare `matched`/`matched_sessions`, no `live`/`durable`)
+ * still gets SOME report instead of a crash on missing fields.
+ */
+function hasAudienceReport(env: { live?: unknown; durable?: unknown }): env is { live: string[]; durable: string[] } {
+  return Array.isArray(env.live) && Array.isArray(env.durable)
+}
+
+/**
+ * Repair round item 4: RelayClient.reply THROWS only on a transport-level
+ * failure — a rejected fetch (network error, timeout, DNS) never reaches
+ * the relay at all, versus a response that DID come back but wasn't
+ * parseable JSON (RelayClient.reply's own `reply failed: <status> <text>`
+ * message, e.g. a reverse proxy's HTML error page on a 5xx). Both are
+ * distinct from a business refusal, which reply.reply returns as
+ * `{ok:false, ...}` and never throws. Classified into the §13 response
+ * shape so the model gets a structured, retryable failure instead of a
+ * bare thrown-error string.
+ */
+function classifyReplyTransportError(err: unknown): { error: 'relay_unreachable' | 'relay_error'; message: string } {
+  const message = err instanceof Error ? err.message : String(err)
+  const reachedRelay = /^reply failed: \d+/.test(message)
+  return { error: reachedRelay ? 'relay_error' : 'relay_unreachable', message }
+}
+
 function renderInboxMessage(m: Envelope): string {
   const header = `[${m.id}] from=${m.from} to=${m.to} kind=${m.kind}`
     + `${m.subject ? ` subject=${m.subject}` : ''}`
@@ -347,8 +453,21 @@ export function registerTools(
   dispatchTracker?: DispatchTracker,
   claimClient?: ClaimClient,
   inboxClient?: InboxClient,
+  replyClient?: ReplyClient,
+  /**
+   * §8.1: "when $TMUX_PANE is set, the peer-agent reads the pane's current
+   * registration (name@generation) from the local registry at call time".
+   * Injected so tests never shell out; index.ts wires the real
+   * findPaneRegistration(process.env.TMUX_PANE) read here. Returning
+   * undefined (no registration found) means "send no selector at all" —
+   * reply_to_peer never falls back to the literal `~none` the way the CLI
+   * does (item 5), because the CLI always needs SOME value on that header
+   * and reply_to_peer does not.
+   */
+  getPaneSelector?: () => Promise<string | undefined>,
 ) {
   const inbox = resolveInboxClient(client, inboxClient)
+  const reply = resolveReplyClient(client, replyClient)
   const candidate = client as PeerTransport & Partial<ClaimClient>
   const claims = claimClient ?? (
     typeof candidate.claim === 'function'
@@ -411,11 +530,25 @@ export function registerTools(
         meta: input.meta ?? {},
       }
       if (input.in_reply_to !== undefined) payload.in_reply_to = input.in_reply_to as MessageId
+      if (input.thread_root !== undefined) payload.thread_root = input.thread_root as MessageId
+      if (input.all_sessions !== undefined) payload.all_sessions = input.all_sessions
       const effectiveFilter = resolved.to_filter ?? input.to_filter
       if (effectiveFilter !== undefined) payload.to_filter = effectiveFilter
       const env = await client.send(payload)
       if (replyLimiter && typeof resolved.to === 'string' && resolved.to !== TEAM_BROADCAST_HANDLE) {
         replyLimiter.recordOutbound(resolved.to)
+      }
+      // §11: every /v1/messages response now carries the two-part audience
+      // report (item 6) — render it. Feature-detected so a mock/legacy
+      // response missing live/durable still gets the pre-D5 text instead of
+      // silently dropping the delivery-count signal.
+      if (hasAudienceReport(env)) {
+        const report = renderAudienceReport({
+          live: env.live, durable: env.durable, matched: env.matched ?? 0,
+          ...(env.sender_state !== undefined ? { sender_state: env.sender_state } : {}),
+          ...(env.legacy_parent !== undefined ? { legacy_parent: env.legacy_parent } : {}),
+        })
+        return { content: [{ type: 'text', text: `sent ${env.id}\n${report}` }] }
       }
       // For a to_filter (presence-narrowed) send, report how many live sessions it
       // reached. matched:0 means NOTHING received it (target session gone / repo
@@ -541,7 +674,84 @@ export function registerTools(
       }
       const env = await client.send(payload, { idempotency_key: correlation_id })
       dispatchTracker.recordOutgoing(correlation_id, env.id, input.to)
-      return { content: [{ type: 'text', text: `dispatched ${env.id} correlation_id=${correlation_id}` }] }
+      const dispatchText = `dispatched ${env.id} correlation_id=${correlation_id}`
+      if (hasAudienceReport(env)) {
+        const report = renderAudienceReport({
+          live: env.live, durable: env.durable, matched: env.matched ?? 0,
+          ...(env.sender_state !== undefined ? { sender_state: env.sender_state } : {}),
+          ...(env.legacy_parent !== undefined ? { legacy_parent: env.legacy_parent } : {}),
+        })
+        return { content: [{ type: 'text', text: `${dispatchText}\n${report}` }] }
+      }
+      return { content: [{ type: 'text', text: dispatchText }] }
+    }
+    if (name === 'reply_to_peer') {
+      if (!reply) throw new Error('reply_to_peer unavailable: this transport has no relay reply-verb endpoint')
+      const input = ReplyInput.parse(args)
+      // One ULID per CALL, reused across any retry of this same logical call
+      // (§5.1 step 1) — minted here, not left to RelayClient.reply to default
+      // one per HTTP attempt the way send()/dispatch_task's ulid() defaulting
+      // does, because a reply that retries under a NEW key would mint a
+      // second route/grant/limiter-increment for the same answer.
+      const idempotencyKey = ulid().toLowerCase()
+      // §8.1: "not registered" already means "send no selector" — a
+      // registry READ failure (agent-call missing, ENOENT, a malformed JSON
+      // blip) is the same kind of "cannot tell" and must not fail the
+      // reply itself; the reply is the thing that matters, the selector is
+      // an optimisation on top of it.
+      let returnSelector: string | undefined
+      if (getPaneSelector) {
+        try {
+          returnSelector = await getPaneSelector()
+        } catch (err) {
+          logJson('warn', 'peer.reply_to_peer.pane_selector_read_failed', {
+            err: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      const body: { in_reply_to: string; content: string; meta?: Record<string, string> } = {
+        in_reply_to: input.in_reply_to, content: input.content,
+      }
+      if (input.meta !== undefined) body.meta = input.meta
+      const replyOpts = { idempotencyKey, ...(returnSelector !== undefined ? { returnSelector } : {}) }
+      let outcome: Awaited<ReturnType<ReplyClient['reply']>>
+      try {
+        outcome = await reply.reply(body, replyOpts)
+      } catch {
+        // §5.1: retry ONCE, under the SAME idempotency key/selector — never
+        // a fresh one. A retry that minted a new key would risk a second
+        // route/grant/limiter-increment for an answer that may have already
+        // landed on the relay's side and only the RESPONSE was lost.
+        try {
+          outcome = await reply.reply(body, replyOpts)
+        } catch (secondErr) {
+          const classified = classifyReplyTransportError(secondErr)
+          return { content: [{ type: 'text', text: JSON.stringify({ ...classified, retryable: true }) }] }
+        }
+      }
+      if (!outcome.ok) {
+        // §13: the relay's own {error, message, retryable, ...detail} is the
+        // hint — no local pre-check duplicates its rules, so this is always
+        // whatever the relay actually decided, verbatim.
+        return { content: [{ type: 'text', text: JSON.stringify(outcome.body) }] }
+      }
+      const b = outcome.body as Record<string, unknown>
+      const lines = [`replied ${String(b['id'])}`]
+      const live = b['live']
+      const durable = b['durable']
+      // Not reusing hasAudienceReport (typed for SendResult, an Envelope
+      // subtype) — this is a raw relay JSON body, so check inline.
+      if (Array.isArray(live) && Array.isArray(durable)) {
+        const matched = b['matched']
+        const senderState = b['sender_state']
+        const legacyParent = b['legacy_parent']
+        lines.push(renderAudienceReport({
+          live: live as string[], durable: durable as string[], matched: typeof matched === 'number' ? matched : 0,
+          ...(senderState !== undefined ? { sender_state: senderState as 'live' | 'offline' } : {}),
+          ...(legacyParent !== undefined ? { legacy_parent: legacyParent as true } : {}),
+        }))
+      }
+      return { content: [{ type: 'text', text: lines.join('\n') }] }
     }
     if (name === 'respond_to_permission') {
       if (!permissionTracker) throw new Error('permission relay disabled')

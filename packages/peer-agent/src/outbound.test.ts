@@ -129,6 +129,88 @@ describe('RelayClient', () => {
  * socket until garbage collection — a courier daemon that barely allocates was
  * found holding 110 connections to the relay (crosshair8-hero, 2026-09-02).
  */
+/**
+ * D5 item 1 (§5.1): the MCP reply_to_peer tool posts here. The client itself
+ * does no local refusal logic — it hands back whatever status + body the
+ * relay returns, success or refusal, so tools.ts can surface a relay
+ * refusal verbatim (acceptance: "relay refusals surface verbatim").
+ */
+describe('RelayClient.reply — POST /v1/replies', () => {
+  it('sends idempotency-key, x-hangar-instance and x-hangar-return-selector', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const fakeFetch = vi.fn(async (url: string | URL, init: RequestInit) => {
+      calls.push({ url: String(url), init })
+      return new Response(JSON.stringify({
+        id: 'msg_01HRK7Y000000000000000000C', v: 2, team: 't1', from: 'a', to: 'bob',
+        in_reply_to: 'msg_01HRK7Y000000000000000000A', thread_root: 'msg_01HRK7Y000000000000000000A',
+        kind: 'chat', content: 'ack', meta: {}, sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+        live: ['bob#01A'], durable: ['bob'], matched: 1, sender_state: 'live',
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok', instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, { fetch: fakeFetch as any })
+    const r = await c.reply(
+      { in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' },
+      { idempotencyKey: 'idem-key-1', returnSelector: 'pane@01GEN0000000000000000000A' },
+    )
+    expect(calls[0]!.url).toBe('https://x/v1/replies')
+    const headers = calls[0]!.init.headers as Record<string, string>
+    expect(headers['idempotency-key']).toBe('idem-key-1')
+    expect(headers['x-hangar-instance']).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
+    expect(headers['x-hangar-return-selector']).toBe('pane@01GEN0000000000000000000A')
+    expect(r.ok).toBe(true)
+    expect(r.status).toBe(200)
+    expect((r.body as any).id).toBe('msg_01HRK7Y000000000000000000C')
+  })
+
+  it('omits x-hangar-return-selector when none is given', async () => {
+    const calls: { init: RequestInit }[] = []
+    const fakeFetch = vi.fn(async (_url: string | URL, init: RequestInit) => {
+      calls.push({ init })
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    await c.reply({ in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' }, { idempotencyKey: 'k' })
+    const headers = calls[0]!.init.headers as Record<string, string>
+    expect(headers['x-hangar-return-selector']).toBeUndefined()
+  })
+
+  it('returns a relay refusal (non-200) as a structured outcome, never throwing', async () => {
+    const fakeFetch = vi.fn(async () => new Response(JSON.stringify({
+      error: 'not_a_recipient', message: 'you are not in this route\'s grants', retryable: false,
+    }), { status: 403 }))
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    const r = await c.reply({ in_reply_to: 'msg_01HRK7Y000000000000000000A', content: 'ack' }, { idempotencyKey: 'k' })
+    expect(r.ok).toBe(false)
+    expect(r.status).toBe(403)
+    expect(r.body).toEqual({ error: 'not_a_recipient', message: 'you are not in this route\'s grants', retryable: false })
+  })
+})
+
+describe('RelayClient.finalizeGrant — POST /v1/grants/finalize', () => {
+  it('sends x-hangar-instance and returns ok:true on 200', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const fakeFetch = vi.fn(async (url: string | URL, init: RequestInit) => {
+      calls.push({ url: String(url), init })
+      return new Response(JSON.stringify({ msg_id: 'msg_01HRK7Y000000000000000000A', selector: 'pane@01GEN0000000000000000000A', outcome: 'replaced' }), { status: 200 })
+    })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok', instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, { fetch: fakeFetch as any })
+    const r = await c.finalizeGrant('msg_01HRK7Y000000000000000000A', 'pane@01GEN0000000000000000000A')
+    expect(calls[0]!.url).toBe('https://x/v1/grants/finalize')
+    const headers = calls[0]!.init.headers as Record<string, string>
+    expect(headers['x-hangar-instance']).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ msg_id: 'msg_01HRK7Y000000000000000000A', selector: 'pane@01GEN0000000000000000000A' })
+    expect(r.ok).toBe(true)
+  })
+
+  it('returns ok:false on 404 grant_not_found', async () => {
+    const fakeFetch = vi.fn(async () => new Response(JSON.stringify({ error: 'grant_not_found' }), { status: 404 }))
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok', instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, { fetch: fakeFetch as any })
+    const r = await c.finalizeGrant('msg_01HRK7Y000000000000000000A', 'pane@01GEN0000000000000000000A')
+    expect(r.ok).toBe(false)
+    expect(r.status).toBe(404)
+  })
+})
+
 describe('RelayClient — response bodies are always consumed', () => {
   it('setPresence drains the body of a 200', async () => {
     let res: Response | undefined
