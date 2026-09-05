@@ -81,4 +81,40 @@ describe('POST /v1/messages', () => {
     const res = await post({ to: 'bob', kind: 'chat', content: big })
     expect([400, 413]).toContain(res.status)
   })
+
+  // §8.1 return-selector grammar (item 3): parsed and syntax-checked at the
+  // send chokepoint, regardless of the addressRules flag.
+  describe('x-hangar-return-selector (§8.1)', () => {
+    it('400 invalid_return_selector on a malformed header', async () => {
+      const res = await post(
+        { to: 'bob', kind: 'chat', content: 'x' },
+        { 'x-hangar-return-selector': 'not-a-selector' }
+      )
+      expect(res.status).toBe(400)
+      const body = await res.json() as { error: string; retryable: boolean }
+      expect(body.error).toBe('invalid_return_selector')
+      expect(body.retryable).toBe(false)
+    })
+
+    it('accepts the literal ~none', async () => {
+      const res = await post(
+        { to: 'bob', kind: 'chat', content: 'x' },
+        { 'x-hangar-return-selector': '~none' }
+      )
+      expect(res.status).toBe(201)
+    })
+
+    it('accepts a well-formed <name>@<ULID>', async () => {
+      const res = await post(
+        { to: 'bob', kind: 'chat', content: 'x' },
+        { 'x-hangar-return-selector': 'agy@01HRK7Y0000000000000000000' }
+      )
+      expect(res.status).toBe(201)
+    })
+
+    it('absent header is accepted (no selector)', async () => {
+      const res = await post({ to: 'bob', kind: 'chat', content: 'x' })
+      expect(res.status).toBe(201)
+    })
+  })
 })

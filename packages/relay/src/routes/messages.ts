@@ -8,7 +8,7 @@ import {
   type Envelope,
 } from '@hangar-bridge/shared'
 import { loadOwnedSet, ownsNamespace } from '../acl.ts'
-import { isValidMessageId } from '@hangar-bridge/shared'
+import { isValidMessageId, isValidInstanceId } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { hashToken } from '../auth/hash.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
@@ -17,6 +17,31 @@ import type { Deps } from '../deps.ts'
 
 const DEFAULT_INBOX_LIMIT = 100
 const MAX_INBOX_LIMIT = 1000
+
+// §8.1 return-selector grammar: `<name>@<ULID>` or the literal `~none`.
+const RETURN_SELECTOR_NAME_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+export type ReturnSelectorParse = { ok: true; value: string | null } | { ok: false }
+
+/**
+ * Parse + syntax-check `x-hangar-return-selector` (§8.1): grammar
+ * `<name>@<ULID>` (a courier's pasted-into pane) or the literal `~none`.
+ * Absent/empty -> ok, null (no selector — the overwhelming common case: an
+ * ordinary bridge session or a `~cli` caller). Malformed -> ok:false, which
+ * the caller maps to 400 `invalid_return_selector` (not in the §13 table,
+ * so it reuses the §13 response shape rather than a §13 code).
+ */
+export function parseReturnSelectorHeader(raw: string | null | undefined): ReturnSelectorParse {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: null }
+  if (raw === '~none') return { ok: true, value: raw }
+  const at = raw.indexOf('@')
+  if (at <= 0) return { ok: false }
+  const name = raw.slice(0, at)
+  const ulid = raw.slice(at + 1)
+  if (!RETURN_SELECTOR_NAME_REGEX.test(name)) return { ok: false }
+  if (!isValidInstanceId(ulid)) return { ok: false }
+  return { ok: true, value: raw }
+}
 
 export function messagesRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
@@ -122,6 +147,18 @@ export function messagesRoute(deps: Deps) {
         : 'stamped'
     }
     if (Object.keys(meta).length > 0) data.meta = meta
+
+    // §8.1 return-selector: parsed here (relay chokepoint) so it can be
+    // stored verbatim on the route this send creates (item 2/4, below).
+    const returnSelectorParse = parseReturnSelectorHeader(c.req.header('x-hangar-return-selector'))
+    if (!returnSelectorParse.ok) {
+      return c.json({
+        error: 'invalid_return_selector',
+        message: "x-hangar-return-selector must be '<name>@<ULID>' or the literal '~none'",
+        retryable: false,
+      }, 400)
+    }
+    const returnSelector = returnSelectorParse.value
 
     // Fail-closed namespace ACL — gate on SUBJECT PRESENCE, not a kind allow-list.
     // A non-null subject is only meaningful on a command-carrying kind; a subjected
