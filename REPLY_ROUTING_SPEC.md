@@ -793,7 +793,7 @@ the machine-readable extra named in the last column.
 | `unknown_parent` | `/v1/replies` | 404 | no | no route (never existed, expired, zero-match dispatch) |
 | `not_a_recipient` | `/v1/replies` | 403 | no | replier not in the route's grants |
 | `legacy_unreplyable` | `/v1/replies` | 403 | no | backfilled row that carried a `to_filter` |
-| `parent_unaddressable` | `/v1/replies` | 410 | no | route has no `sender_instance`, has `return_selector = '~none'`, or `from_handle` disabled/removed; the route row is deleted on this response |
+| `parent_unaddressable` | `/v1/replies` | 410 | no | route has no `sender_instance`, has `return_selector = '~none'`, or `from_handle` disabled/removed; the route is tombstoned (`unaddressable_at` set, never deleted) on this response |
 | `reply_storm` | `/v1/replies` | 429 | after `retry_after_s` | §9; detail `retry_after_s` |
 | `sender_instance_required` | `/v1/messages`, `/v1/replies` (flag on) | 400 | no | no `x-hangar-instance` on a user-authored kind |
 | `handle_needs_all_sessions` | `/v1/messages` (flag on) | 400 | no | bare handle without `all_sessions`; detail `live_instances[]` |
