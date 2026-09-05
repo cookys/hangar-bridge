@@ -80,9 +80,27 @@ export function purgeInactive(
   return { handles: candidates.map(c => c.handle) }
 }
 
+/** Runs purgeInactive once per team. Team-scoped by construction — never call this per-tick more than once. */
+function sweepInactiveHumans(db: Db, cutoffIso: string, nowIso: string, days: number): void {
+  const teams = db.prepare("SELECT id FROM team").all() as Array<{ id: string }>
+  for (const t of teams) {
+    const r = purgeInactive(db, t.id, cutoffIso, null, nowIso)
+    if (r.handles.length > 0) {
+      logJson('info', 'purge.sweep', { team_id: t.id, count: r.handles.length, handles: r.handles.join(','), days })
+    }
+  }
+}
+
 /**
  * Starts a recurring background sweep. Returns the interval handle so the
  * caller can clear it at shutdown.
+ *
+ * Two independent sweeps run per tick: `sweepInactiveHumans` is team-scoped
+ * (one purgeInactive call per team, by design — inactivity is a per-team
+ * concept). `purgeReplyState` (REPLY_ROUTING_SPEC.md §9/§12) is NOT
+ * team-scoped — reply_limiter/reply_route rows are swept relay-wide by
+ * `expires_at`/`window_start` alone — so it is called exactly once here,
+ * outside and after the per-team loop, never inside it.
  */
 export function startInactivitySweeper(
   db: Db,
@@ -93,15 +111,9 @@ export function startInactivitySweeper(
       const nowDate = opts.now()
       const nowIso = nowDate.toISOString()
       const cutoff = new Date(nowDate.getTime() - opts.days * 24 * 60 * 60 * 1000).toISOString()
-      const teams = db.prepare("SELECT id FROM team").all() as Array<{ id: string }>
-      for (const t of teams) {
-        const r = purgeInactive(db, t.id, cutoff, null, nowIso)
-        if (r.handles.length > 0) {
-          logJson('info', 'purge.sweep', { team_id: t.id, count: r.handles.length, handles: r.handles.join(','), days: opts.days })
-        }
-      }
-      // Reply-routing state (§9/§12) isn't per-team scoped like the human
-      // sweep above; one sweep per tick over the whole relay db is enough.
+
+      sweepInactiveHumans(db, cutoff, nowIso, opts.days)
+
       const replyResult = purgeReplyState(db, nowDate.getTime())
       if (replyResult.limiterRows > 0 || replyResult.routes > 0) {
         logJson('info', 'purge.reply_state', { limiter_rows: replyResult.limiterRows, routes: replyResult.routes })

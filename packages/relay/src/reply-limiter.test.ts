@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { openDatabase, type Db } from './db/db.ts'
 import { ReplyLimiter, REPLY_LIMITER_DEFAULTS } from './reply-limiter.ts'
-import { purgeReplyState } from './purge.ts'
+import { purgeReplyState, startInactivitySweeper } from './purge.ts'
 
 describe('ReplyLimiter (REPLY_ROUTING_SPEC.md §9)', () => {
   let db: Db
@@ -133,5 +133,45 @@ describe('purgeReplyState (REPLY_ROUTING_SPEC.md §12)', () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM reply_grant WHERE msg_id='msg_durable'").get()).toEqual({ n: 1 })
     expect(db.prepare("SELECT COUNT(*) AS n FROM reply_grant WHERE msg_id='msg_not_yet'").get()).toEqual({ n: 1 })
     expect(result.routes).toBe(1)
+  })
+})
+
+describe('startInactivitySweeper — purgeReplyState runs once per tick, not once per team', () => {
+  // purgeReplyState (§9/§12) has no team_id filter — it sweeps reply_limiter
+  // and reply_route relay-wide by window_start/expires_at alone — so calling
+  // it inside the per-team purgeInactive loop would be pure wasted work on
+  // every team beyond the first (each subsequent DELETE matches nothing,
+  // since the first already removed everything stale). Pin the call count
+  // directly: same-module function calls aren't interceptable with
+  // vi.spyOn under this Vitest/Vite transform (verified), so intercept at
+  // db.prepare() instead and count how many times the DELETE statement text
+  // is actually prepared.
+  it('prepares the reply_limiter DELETE exactly once per tick regardless of team count', () => {
+    vi.useFakeTimers()
+    try {
+      const db = openDatabase(':memory:')
+      db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES ('t2','t2',7,'2026-01-01T00:00:00Z')").run()
+      db.prepare("INSERT INTO team(id,name,retention_days,created_at) VALUES ('t3','t3',7,'2026-01-01T00:00:00Z')").run()
+
+      const originalPrepare = db.prepare.bind(db)
+      const preparedSql: string[] = []
+      db.prepare = ((sql: string) => {
+        preparedSql.push(sql)
+        return originalPrepare(sql)
+      }) as typeof db.prepare
+
+      const handle = startInactivitySweeper(db, {
+        intervalMs: 1000, days: 9999, now: () => new Date('2026-06-01T00:00:00.000Z'),
+      })
+      vi.advanceTimersByTime(1000)
+      clearInterval(handle)
+
+      const limiterDeleteCalls = preparedSql.filter(sql => sql.includes('DELETE FROM reply_limiter'))
+      const routeDeleteCalls = preparedSql.filter(sql => sql.includes('DELETE FROM reply_route'))
+      expect(limiterDeleteCalls).toHaveLength(1)
+      expect(routeDeleteCalls).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
