@@ -128,14 +128,18 @@ async function main(): Promise<void> {
   if (cfg.final_mile.kind === 'agent-call' && cfg.final_mile.switchboard) {
     switchboard = new Switchboard({ bin: cfg.final_mile.bin, defaultTarget: cfg.final_mile.target })
   }
-  const isCourier = switchboard !== undefined
+  // Persist the instance id for a switchboard courier (§8.1) AND for a
+  // poll-only courier (inbox.spool): replies route to the instance that sent
+  // the parent message, so a harness that re-mints on every restart loses
+  // every reply to anything it said before the restart (matched:0, dropped).
+  const isCourier = switchboard !== undefined || cfg.inbox.spool
 
   // ONE instance id for the whole process (P2 §2.1). Generated here — not per
   // connection — so the relay's per-(label, instance) connection refcount can
   // aggregate every SSE reconnect this process makes. It is presence/observability
   // only: nothing addresses a peer by instance (no `to_instance`).
-  // §8.1: a switchboard courier PERSISTS this across restarts instead — every
-  // other peer-agent still mints fresh, unchanged.
+  // §8.1: a switchboard courier (and a poll-only inbox.spool courier) PERSISTS
+  // this across restarts instead — every other peer-agent still mints fresh.
   const instanceId = isCourier ? resolveCourierInstance(cfg, configPath) : newInstanceId()
   const healthStatePath = defaultHealthStatePath(
     process.env.CLAUDE_CODE_SESSION_ID ?? instanceId,
