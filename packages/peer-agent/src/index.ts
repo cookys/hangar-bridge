@@ -37,7 +37,8 @@ import { DispatchTracker } from './correlation.ts'
 import { ApprovalRouter, type RoutingPolicy } from './approval-routing.ts'
 import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
-import { defaultDispatchStatePath, defaultCursorStatePath, defaultHealthStatePath } from './paths.ts'
+import { defaultDispatchStatePath, defaultCursorStatePath, defaultHealthStatePath, defaultInboxSpoolPath } from './paths.ts'
+import { InboxSpool } from './inbox-spool.ts'
 import { CursorStore, cursorSink } from './cursor-store.ts'
 import { installLifecycleShutdown } from './lifecycle.ts'
 import { FileNatsInstanceGuard } from './nats-instance-lock.ts'
@@ -240,9 +241,17 @@ async function main(): Promise<void> {
   // the heartbeat instead of waking the MCP host. (NATS keeps its own tracker at
   // the wire layer.)
   const presenceTracker = createPresenceTracker(PRESENCE_TTL_MS)
+  // inbox.spool: keep a local copy of every envelope that reaches the final
+  // mile so poll_inbox can show live-only deliveries (replies, instance-
+  // narrowed sends) to a harness that renders no notifications.
+  const inboxSpool = cfg.inbox.spool
+    ? new InboxSpool({ path: defaultInboxSpoolPath(), max: cfg.inbox.spool_max })
+    : undefined
+  if (inboxSpool) logJson('info', 'peer.inbox.spool', { path: defaultInboxSpoolPath(), max: cfg.inbox.spool_max })
   const dispatcher = new InboundDispatcher({
     gate,
     emit: async (notification, envelope) => {
+      inboxSpool?.append(envelope)
       if (cfg.final_mile.kind === 'claude-channel') {
         await server.notification(notification as never)
         return
@@ -412,7 +421,7 @@ async function main(): Promise<void> {
     : undefined
   const { callTool } = registerTools(
     client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient, inboxClient,
-    replyClient, getPaneSelector,
+    replyClient, getPaneSelector, inboxSpool,
   )
   // Every tool this process could serve; `tools.allow` (config) may narrow it.
   const registeredTools = () => [

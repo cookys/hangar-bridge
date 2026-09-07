@@ -32,6 +32,10 @@ export function defaultAuditDir(): string {
  * Disk-backed store for the DispatchTracker's in-flight {correlation_id → dispatch}
  * correlations, so a peer-agent restart doesn't orphan a late task_result.
  */
+export function defaultInboxSpoolPath(): string {
+  return join(configDir(), 'inbox-spool.jsonl')
+}
+
 export function defaultDispatchStatePath(): string {
   return join(configDir(), 'dispatch-state.json')
 }

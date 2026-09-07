@@ -64,6 +64,13 @@ export const ConfigSchema = z.object({
   // callable — for a non-Claude MCP client behind a third-party tunnel (e.g.
   // ChatGPT) that must never answer a permission request or dispatch a task.
   // Unset = every tool, so existing deployments are unchanged.
+  // Local inbox spool for harnesses that can only pull (see inbox-spool.ts).
+  // Off by default: a Claude session receives live envelopes as channel
+  // notifications and needs no copy on disk.
+  inbox: z.object({
+    spool: z.boolean().default(false),
+    spool_max: z.number().int().min(10).max(10_000).default(500),
+  }).strict().default({ spool: false, spool_max: 500 }),
   tools: z.object({
     allow: z.array(z.string().regex(/^[a-z_]+$/)).min(1).optional(),
   }).strict().default({}),
