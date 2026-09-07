@@ -275,10 +275,21 @@ export class RelayClient implements PeerTransport, ClaimClient, InboxClient, Rep
     const url = new URL('/v1/messages', this.opts.relayUrl)
     if (opts.since) url.searchParams.set('since', opts.since)
     if (opts.limit !== undefined) url.searchParams.set('limit', String(opts.limit))
+    // x-hangar-instance: with HANGAR_RELAY_ADDRESS_RULES=on the relay refuses a
+    // poll it cannot grant or answer ("instance_required", 400). publish/reply
+    // already send it; the poll path had been left out because Claude sessions
+    // receive over SSE and never poll — a courier whose harness is the MCP client
+    // (itx-chatgpt) does nothing else.
     const res = await this.request(url, {
-      headers: { authorization: `Bearer ${this.opts.token}` },
+      headers: {
+        authorization: `Bearer ${this.opts.token}`,
+        ...(this.opts.instance ? { 'x-hangar-instance': this.opts.instance } : {}),
+      },
     })
-    if (res.status !== 200) throw new Error(`pollInbox failed: ${res.status}`)
+    if (res.status !== 200) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`pollInbox failed: ${res.status}${body ? ` ${body.slice(0, 200)}` : ''}`)
+    }
     return await res.json() as InboxPage
   }
 
