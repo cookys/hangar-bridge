@@ -136,6 +136,26 @@ describe('RelayClient', () => {
  * refusal verbatim (acceptance: "relay refusals surface verbatim").
  */
 describe('RelayClient.reply — POST /v1/replies', () => {
+  it('pollInbox sends x-hangar-instance and surfaces the relay error body', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const fakeFetch = vi.fn(async (url: string | URL, init: RequestInit) => {
+      calls.push({ url: String(url), init })
+      return new Response(JSON.stringify({ messages: [], next_cursor: null }),
+        { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok', instance: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }, { fetch: fakeFetch as any })
+    const page = await c.pollInbox({ limit: 5 })
+    expect(calls[0]!.url).toBe('https://x/v1/messages?limit=5')
+    const headers = calls[0]!.init.headers as Record<string, string>
+    expect(headers['x-hangar-instance']).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
+    expect(page.messages).toEqual([])
+
+    const denied = vi.fn(async () => new Response(
+      JSON.stringify({ error: 'instance_required' }), { status: 400 }))
+    const d = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: denied as any })
+    await expect(d.pollInbox()).rejects.toThrow(/pollInbox failed: 400 .*instance_required/)
+  })
+
   it('sends idempotency-key, x-hangar-instance and x-hangar-return-selector', async () => {
     const calls: { url: string; init: RequestInit }[] = []
     const fakeFetch = vi.fn(async (url: string | URL, init: RequestInit) => {
