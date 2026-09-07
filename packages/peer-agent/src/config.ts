@@ -60,6 +60,13 @@ export const ConfigSchema = z.object({
     auto_publish_repo: z.boolean().default(true)
   }).default({ auto_publish_cwd: true, auto_publish_branch: true, auto_publish_repo: true }),
   audit_log: z.string().default(() => defaultAuditDir()),
+  // Tool exposure allow-list. When set, only these MCP tools are listed and
+  // callable — for a non-Claude MCP client behind a third-party tunnel (e.g.
+  // ChatGPT) that must never answer a permission request or dispatch a task.
+  // Unset = every tool, so existing deployments are unchanged.
+  tools: z.object({
+    allow: z.array(z.string().regex(/^[a-z_]+$/)).min(1).optional(),
+  }).strict().default({}),
   // §8.1: a switchboard courier persists its process instance id here so a
   // restart reuses it (no grant migration needed — every blank/finalised
   // grant keyed to the old instance stays valid). Absent for every other

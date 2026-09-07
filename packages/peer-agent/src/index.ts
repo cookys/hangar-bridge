@@ -21,6 +21,7 @@ import {
   TOOL_DESCRIPTORS, TOOL_DESCRIPTORS_CLAIMS, TOOL_DESCRIPTOR_RESPOND,
   TOOL_DESCRIPTOR_POLL_INBOX, TOOL_DESCRIPTOR_REPLY, dispatchToolDescriptor,
 } from './tools.ts'
+import { createToolExposure } from './tool-exposure.ts'
 import { detectWorkingContext } from './roots.ts'
 import { SenderGate } from './gate.ts'
 import { InboundDispatcher } from './inbound.ts'
@@ -413,17 +414,29 @@ async function main(): Promise<void> {
     client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient, inboxClient,
     replyClient, getPaneSelector,
   )
+  // Every tool this process could serve; `tools.allow` (config) may narrow it.
+  const registeredTools = () => [
+    ...TOOL_DESCRIPTORS,
+    ...(inboxClient ? [TOOL_DESCRIPTOR_POLL_INBOX] : []),
+    ...(claimClient ? TOOL_DESCRIPTORS_CLAIMS : []),
+    ...(permissionRelayEnabled ? [TOOL_DESCRIPTOR_RESPOND] : []),
+    ...(replyClient ? [TOOL_DESCRIPTOR_REPLY] : []),
+    dispatchToolDescriptor(client),
+  ]
+  const exposure = createToolExposure(cfg.tools.allow)
+  if (cfg.tools.allow) {
+    const all = registeredTools()
+    logJson('info', 'peer.tools.exposure', {
+      allow: cfg.tools.allow, hidden: exposure.hidden(all), unknown: exposure.unknown(all),
+    })
+  }
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      ...TOOL_DESCRIPTORS,
-      ...(inboxClient ? [TOOL_DESCRIPTOR_POLL_INBOX] : []),
-      ...(claimClient ? TOOL_DESCRIPTORS_CLAIMS : []),
-      ...(permissionRelayEnabled ? [TOOL_DESCRIPTOR_RESPOND] : []),
-      ...(replyClient ? [TOOL_DESCRIPTOR_REPLY] : []),
-      dispatchToolDescriptor(client),
-    ],
+    tools: exposure.list(registeredTools()),
   }))
   server.setRequestHandler(CallToolRequestSchema, async req => {
+    if (!exposure.allows(req.params.name)) {
+      return { content: [{ type: 'text', text: `error: tool_not_exposed: ${req.params.name}` }], isError: true }
+    }
     try { return await callTool(req.params.name, req.params.arguments ?? {}) }
     catch (err) {
       const message = err instanceof Error ? err.message : String(err)
