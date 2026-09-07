@@ -356,6 +356,36 @@ peer cannot approve local permissions. Reverse cross-host replies remain separat
 hangar-bridge outbound traffic; this adapter is only the destination-host final mile and does not
 by itself make a remote round-trip available.
 
+### Optional: a poll-only courier (`tools.allow` + `inbox.spool`)
+
+Some MCP clients cannot render the channel notifications a Claude session
+receives — e.g. ChatGPT reaching a peer-agent through the OpenAI Secure MCP
+Tunnel. Two config keys make one identity safe and usable for such a client:
+
+```json
+{
+  "tools":  { "allow": ["list_peers", "send_to_peer", "reply_to_peer", "poll_inbox", "set_summary"] },
+  "inbox":  { "spool": true, "spool_max": 500 }
+}
+```
+
+- `tools.allow` — only the named tools are listed and callable; everything
+  else (notably `respond_to_permission`, `dispatch_task`, claims) answers
+  `tool_not_exposed`. Unset = every tool (unchanged for existing peers).
+  Startup logs `peer.tools.exposure` with the hidden and unknown names.
+- `inbox.spool` — replies and instance-narrowed sends are delivered live only
+  and never enter the relay's durable buffer, so a client that can only
+  `poll_inbox` would never see them. With the spool on, every envelope that
+  reaches the final mile is appended to `<config dir>/inbox-spool.jsonl`
+  (idempotent on id, compacted at 2×`spool_max`) and `poll_inbox` merges it
+  with the relay page — union by id, msg-ULID order, `since`/`limit`
+  honoured, `next_cursor` advanced. A spool identity also persists its
+  instance id across restarts (§8.1), so replies to its earlier messages keep
+  routing. Default off.
+
+The operator-side procedure (tunnel-client profile, roster, verification) is in
+hangar `runbooks/hangar-bridge-fleet-deployment.md` § Enrolling a poll-only courier.
+
 ## NATS setup (opt-in, pre-cutover)
 
 Do not flip a production fleet from this README alone. Follow the version-pinned provisioning guide
