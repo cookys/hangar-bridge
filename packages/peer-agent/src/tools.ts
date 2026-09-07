@@ -13,6 +13,7 @@ import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
 import { detectWorkingContext } from './roots.ts'
 import { logJson } from './logger.ts'
+import { mergeInboxPage, type InboxSpool } from './inbox-spool.ts'
 
 const AddressSchema = z.union([
   z.string().regex(HANDLE_REGEX),
@@ -465,6 +466,8 @@ export function registerTools(
    * and reply_to_peer does not.
    */
   getPaneSelector?: () => Promise<string | undefined>,
+  /** inbox.spool: local copy of live-delivered envelopes, merged into poll_inbox. */
+  spool?: InboxSpool,
 ) {
   const inbox = resolveInboxClient(client, inboxClient)
   const reply = resolveReplyClient(client, replyClient)
@@ -582,7 +585,8 @@ export function registerTools(
       const opts: { since?: string; limit?: number } = {}
       if (input.since !== undefined) opts.since = input.since
       if (input.limit !== undefined) opts.limit = input.limit
-      const page = await inbox.pollInbox(opts)
+      const relayPage = await inbox.pollInbox(opts)
+      const page = spool ? mergeInboxPage(relayPage, spool.after(opts.since), opts) : relayPage
       if (page.messages.length === 0) {
         // FIX1: the relay advances next_cursor over EVERY row it reads, gated
         // or not (messages.ts), so a page that comes back empty after ACL
