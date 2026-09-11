@@ -16,7 +16,7 @@ import {
 } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
-import { parseInstanceHeader } from '../presence/label.ts'
+import { parseCallerInstanceHeader } from '../presence/label.ts'
 import type { Deps } from '../deps.ts'
 import type { Db } from '../db/db.ts'
 import type { ReplyRoute, ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
@@ -291,12 +291,6 @@ function checkAudience(
   return 'not_a_recipient'
 }
 
-/** `x-hangar-instance` on `/v1/replies` additionally accepts the literal `~cli` (§6.5). */
-function parseReplyInstanceHeader(raw: string | null | undefined): { ok: true; instance: string | undefined } | { ok: false } {
-  if (raw === RESERVED_CLI_INSTANCE) return { ok: true, instance: RESERVED_CLI_INSTANCE }
-  return parseInstanceHeader(raw)
-}
-
 function audienceReport(matched: Array<{ handle: string; instance?: string | undefined }>, durable: string[]) {
   return {
     live: matched.map(m => `${m.handle}#${m.instance ?? ''}`),
@@ -324,7 +318,7 @@ export function repliesRoute(deps: Deps) {
       return c.json(errorBody('idempotency_key_invalid', 'Idempotency-Key must be 1-64 chars of [A-Za-z0-9_-]'), asStatus(REPLY_ERROR_HTTP_STATUS.idempotency_key_invalid!))
     }
 
-    const parsedInstance = parseReplyInstanceHeader(c.req.header('x-hangar-instance'))
+    const parsedInstance = parseCallerInstanceHeader(c.req.header('x-hangar-instance'))
     if (!parsedInstance.ok) return c.json({ error: 'invalid_instance_header' }, 400)
     const declaredInstance = parsedInstance.instance
 
