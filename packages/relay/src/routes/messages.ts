@@ -13,7 +13,7 @@ import { isValidMessageId, isValidInstanceId } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { hashToken } from '../auth/hash.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
-import { parseInstanceHeader } from '../presence/label.ts'
+import { parseCallerInstanceHeader } from '../presence/label.ts'
 import type { Deps } from '../deps.ts'
 import type { ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
 import type { SnapshotDetail } from '../fanout.ts'
@@ -91,7 +91,7 @@ export function messagesRoute(deps: Deps) {
 
     // §4/item 7: the poller's declared instance is what this peek's grant
     // (below) and the D2 self-exclusion in fetchInboxSince key on.
-    const parsedInstance = parseInstanceHeader(c.req.header('x-hangar-instance'))
+    const parsedInstance = parseCallerInstanceHeader(c.req.header('x-hangar-instance'))
     if (!parsedInstance.ok) return c.json({ error: 'invalid_instance_header' }, 400)
     const pollerInstance = parsedInstance.instance
     if (pollerInstance === undefined && (deps.addressRules ?? 'off') === 'on') {
@@ -176,7 +176,7 @@ export function messagesRoute(deps: Deps) {
     // its own siblings' replies. Nothing here widens what a bearer can reach.
     // A peer's own Claude session id cannot be verified by the relay at all, so it may
     // only travel under a name that says so (`peer_session_claim`), never as `session_id`.
-    const stampedInstance = parseInstanceHeader(c.req.header('x-hangar-instance'))
+    const stampedInstance = parseCallerInstanceHeader(c.req.header('x-hangar-instance'))
     if (!stampedInstance.ok) {
       return c.json({ error: 'invalid_instance_header' }, 400)
     }

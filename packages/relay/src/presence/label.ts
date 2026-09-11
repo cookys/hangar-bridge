@@ -1,4 +1,4 @@
-import { isValidInstanceId } from '@hangar-bridge/shared'
+import { isValidInstanceId, RESERVED_CLI_INSTANCE } from '@hangar-bridge/shared'
 
 /**
  * The SINGLE label resolver (plan §2.1 / rubric R5).
@@ -29,4 +29,20 @@ export function parseInstanceHeader(raw: string | null | undefined): InstancePar
   if (raw === undefined || raw === null || raw === '') return { ok: true, instance: undefined }
   if (!isValidInstanceId(raw)) return { ok: false }
   return { ok: true, instance: raw }
+}
+
+/**
+ * `x-hangar-instance` as a CALLER identity on `/v1/messages` (send + poll) and
+ * `/v1/replies`: the same grammar as `parseInstanceHeader` plus the literal
+ * `~cli`, the operator-mailbox identity of a shell outside any pane
+ * (REPLY_ROUTING_SPEC.md §6.5 / §8.2). `~cli` is accepted ONLY here — never
+ * on `/v1/stream` or `/v1/presence`, where it would become a row key, and
+ * never inside a `to_filter` (the shared schema refines that separately).
+ * A send stamped `~cli` gets a `reply_route` whose `sender_instance` is
+ * `~cli`, which is what routes every reply into the mailbox branch instead
+ * of a fanout to an instance that was never subscribed.
+ */
+export function parseCallerInstanceHeader(raw: string | null | undefined): InstanceParse {
+  if (raw === RESERVED_CLI_INSTANCE) return { ok: true, instance: RESERVED_CLI_INSTANCE }
+  return parseInstanceHeader(raw)
 }
