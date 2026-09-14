@@ -40,8 +40,9 @@ function isPendingBacklog(v: unknown): v is PendingBacklog {
 }
 
 /** Two batches become one reminder: earliest since, latest newest, counts summed. */
-export function mergeBacklog(existing: PendingBacklog | undefined, next: PendingBacklog): PendingBacklog {
-  if (!existing) return next
+export function mergeBacklog(existing: PendingBacklog | undefined, next: PendingBacklog | undefined): PendingBacklog {
+  if (!existing) return next!
+  if (!next) return existing
   return {
     count: existing.count + next.count,
     since: existing.since <= next.since ? existing.since : next.since,
@@ -165,12 +166,17 @@ export class CursorStore {
             typeof onDisk === 'string' && isValidMessageId(onDisk)
             && this.cursor !== undefined && onDisk > this.cursor
           ) {
-            // A sibling is ahead: never rewind its cursor. The reminder is
-            // ours to keep, so re-write the file with THEIR cursor + our
-            // backlog instead of dropping the write on the floor.
+            // A sibling is ahead: never rewind its cursor, and never
+            // overwrite a reminder it persisted for a batch ours does not
+            // already cover — merge the two, then re-write the file with
+            // THEIR cursor instead of dropping the write on the floor.
+            const theirs = isPendingBacklog(raw?.backlog) ? raw.backlog : undefined
+            const covered = theirs && this.backlog
+              && theirs.since >= this.backlog.since && theirs.newest <= this.backlog.newest
+            const backlog = theirs && !covered ? mergeBacklog(theirs, this.backlog) : this.backlog
             writeFileSync(tmp, JSON.stringify({
               cursor: onDisk,
-              ...(this.backlog !== undefined ? { backlog: this.backlog } : {}),
+              ...(backlog !== undefined ? { backlog } : {}),
             }), { mode: 0o600 })
           }
         } catch { /* unreadable/corrupt on-disk file: fall through and write ours */ }

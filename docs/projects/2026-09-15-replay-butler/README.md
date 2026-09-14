@@ -69,3 +69,15 @@ User-stated requirements ledger: (a) "一上線就全塞" must stop above a thre
   share one review + one merge; peer-agent is independently revertible.
 - `pending` counts the stream population (what SSE would have pushed), not the poll count; poll returns
   a superset and the summary says so (plan §2.1, gen-2 adjudication).
+
+## L-5.1 Final goal review (2026-09-15)
+
+| # | Success criterion | Evidence | Verdict |
+|---|---|---|---|
+| 1 | relay: `replay_max=N`, chat backlog > N ⇒ exactly one `backlog`, zero chat `message` from the backlog, every non-chat row, then `backlog_end`; absent ⇒ byte-identical | `packages/relay/tests/integration/replay-butler.test.ts` T1 (50 rows, no `backlog`), T3 (`['backlog','backlog_end']`, rows unstamped/ungranted), T14 (`['backlog','message','message','backlog_end']`), T13 watermark; 17/17 green, RED 15/17 on base | PASS |
+| 2 | peer-agent: one synthetic notification, cursor advanced only at `backlog_end`, reminder survives restart | `packages/peer-agent/src/replay-butler.test.ts` T8/T10 (event order → callbacks), T14b (drop before end ⇒ no cursor advance), T12 (persist + reload), T9 (no msg_id) ; 20/20 green | PASS |
+| 3 | `poll_inbox` reports `pending_after` through the spool merge | relay T7/T7b; peer-agent T18/T18b/T18c + tool-level header test | PASS |
+| 4 | typecheck + test:ci green per phase, thresholds intact | relay 406 passed / 94.85 % (≥85); peer-agent 520 passed / 92.85 % (≥80); shared 149 / 100 %; e2e 62 passed | PASS |
+| 5 | live: offline > 1 day handle reconnects, `fleet peers` shows `backlog:N`, one summary received | **DEFERRED to deploy** — needs the relay restarted via `install-relay.sh` (drops every fleet SSE for seconds; operator-gated per hangar destructive-op rule) and a peer-agent rebuilt on one host. Procedure: hangar runbook `hangar-bridge-fleet-deployment.md` step 8. | DEFERRED (named) |
+
+Requirements ledger: (a) stop the flood above a threshold → relay P2 (T3) ✔; (b) butler waits, emits one summary → P2 `backlog` + P4 synthetic notification (T8/T9) ✔; (c) control handed to agent/user → cursor advance + `poll_inbox` resume hint + `pending_after` (T7/T18/T20b) ✔.

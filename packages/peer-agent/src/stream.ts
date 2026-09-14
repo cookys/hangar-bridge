@@ -204,19 +204,30 @@ export class StreamClient {
   // presentation aid, never a delivery the replay must retry; the chat rows it
   // describes stay readable via poll_inbox regardless.
   private async consumeBacklogEvent(event: string, data: string): Promise<void> {
+    let parsed: BacklogEvent | BacklogEndEvent
     try {
       const raw: unknown = JSON.parse(data)
+      parsed = event === SSE_EVENT_BACKLOG ? BacklogEventSchema.parse(raw) : BacklogEndEventSchema.parse(raw)
+    } catch (err) {
+      logJson('warn', 'peer.stream.backlog_decode_error', {
+        event, err: String(err instanceof Error ? err.message : err),
+      })
+      return
+    }
+    // Delivery failures are logged under their own name: a final mile that
+    // refused the summary is an ops signal, not a wire-format problem.
+    try {
       if (event === SSE_EVENT_BACKLOG) {
-        const b = BacklogEventSchema.parse(raw)
+        const b = parsed as BacklogEvent
         logJson('info', 'peer.stream.backlog', { pending: b.pending, newest: b.newest, exempt: b.replayed_exempt })
         await this.opts.onBacklog?.(b)
       } else {
-        const b = BacklogEndEventSchema.parse(raw)
+        const b = parsed as BacklogEndEvent
         logJson('info', 'peer.stream.backlog_end', { newest: b.newest })
         await this.opts.onBacklogEnd?.(b)
       }
     } catch (err) {
-      logJson('warn', 'peer.stream.backlog_decode_error', {
+      logJson('warn', 'peer.stream.backlog_delivery_error', {
         event, err: String(err instanceof Error ? err.message : err),
       })
     }

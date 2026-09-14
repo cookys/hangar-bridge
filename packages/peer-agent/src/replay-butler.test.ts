@@ -171,6 +171,33 @@ describe('CursorStore — pendingBacklog persistence (T12, T20)', () => {
     expect((JSON.parse(readFileSync(path, 'utf8')) as { backlog?: unknown }).backlog).toBeUndefined()
   })
 
+  it('T12e equal cursor on disk: the reminder write is not skipped (the pre-fix early return)', () => {
+    const path = join(dir, 'cursor-state.json')
+    writeFileSync(path, JSON.stringify({ cursor: ID('5') }))
+    const s = new CursorStore({ persistPath: path })
+    s.advance(ID('5'))                                  // equal cursor
+    s.setBacklog({ count: 3, since: ID('4'), newest: ID('9'), at: 'ours' })
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as { cursor: string; backlog: PendingBacklog }
+    expect(raw.cursor).toBe(ID('5'))
+    expect(raw.backlog).toEqual({ count: 3, since: ID('4'), newest: ID('9'), at: 'ours' })
+  })
+
+  it('T12f sibling ahead on disk: their cursor is kept and both reminders merge', () => {
+    const path = join(dir, 'cursor-state.json')
+    const mine = new CursorStore({ persistPath: path })
+    mine.advance(ID('3'))
+    // A sibling process races ahead and persists its own reminder.
+    writeFileSync(path, JSON.stringify({ cursor: ID('8'), backlog: { count: 2, since: ID('2'), newest: ID('8'), at: 'sib' } }))
+    mine.setBacklog({ count: 5, since: ID('3'), newest: ID('6'), at: 'ours' })
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as { cursor: string; backlog: PendingBacklog }
+    expect(raw.cursor).toBe(ID('8'))                     // never rewound
+    expect(raw.backlog).toEqual({ count: 7, since: ID('2'), newest: ID('8'), at: 'ours' })
+    // A reminder ours already covers is not double-counted on a later write.
+    mine.setBacklog({ count: 7, since: ID('2'), newest: ID('9'), at: 'ours2' })
+    const again = JSON.parse(readFileSync(path, 'utf8')) as { backlog: PendingBacklog }
+    expect(again.backlog.count).toBe(7)
+  })
+
   it('T12b a malformed backlog on disk is dropped while the cursor still loads', () => {
     const path = join(dir, 'cursor-state.json')
     writeFileSync(path, JSON.stringify({ cursor: ID('5'), backlog: { count: 'x' } }))

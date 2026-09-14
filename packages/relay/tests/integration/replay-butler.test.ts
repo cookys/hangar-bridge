@@ -316,6 +316,30 @@ describe('GET /v1/messages pending_after — poll-side butler', () => {
     expect(body.pending_capped).toBe(false)
   })
 
+  // Reviewer (pre-merge): the cap must count rows AFTER the ownership filter,
+  // so a run of gated rows inside the first raw page cannot end the count early.
+  it('T7c gated (unowned-subject) rows never make pending_after read exact too early', async () => {
+    const insert = db.transaction(() => {
+      for (let i = 0; i < 1500; i++) {
+        const e = store.buildEnvelope(HANGAR_TEAM_ID, 'alice', {
+          to: 'bob', kind: 'chat', content: 'g', subject: 'other.ns.x',   // bob owns nothing → gated
+        })
+        store.persist(e)
+      }
+      for (let i = 0; i < 30; i++) store.insert(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'chat', content: `m${i}` })
+    })
+    insert()
+    const res = await app.request(`/v1/messages?since=${SINCE0}&limit=10`, {
+      headers: { authorization: `Bearer ${tok.bob}`, 'x-hangar-instance': INST },
+    })
+    const body = await res.json() as { messages: unknown[]; pending_after: number; pending_capped: boolean; next_cursor: string }
+    // The page itself: the relay advances next_cursor over gated rows too (FIX1), so
+    // this page may be empty; what matters is the tail count past next_cursor.
+    const visibleOnPage = body.messages.length
+    expect(body.pending_after + visibleOnPage).toBe(30)
+    expect(body.pending_capped).toBe(false)
+  })
+
   it('T7b pending_after is 0 on the last page', async () => {
     for (let i = 0; i < 3; i++) store.insert(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'chat', content: `m${i}` })
     const res = await app.request(`/v1/messages?since=${SINCE0}&limit=10`, {

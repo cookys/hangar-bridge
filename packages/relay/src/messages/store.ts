@@ -215,18 +215,17 @@ export class MessageStore {
   }
 
   /**
-   * Replay butler (§2.5): the pollable rows strictly after `after_id`, in the
-   * same shape `fetchInboxSince` selects (the route applies ownsNamespace on
-   * top). Reads at most `cap + 1` rows so the caller can report an exact count
-   * up to the cap and a `capped` flag beyond it, without paging the buffer.
+   * Replay butler (§2.5): one page of `{id, subject}` for the pollable rows
+   * strictly after `after_id`, in the same shape `fetchInboxSince` selects;
+   * the route applies ownsNamespace on top and pages until its cap.
    */
-  fetchInboxIdsAfter(team_id: string, to_handle: string, after_id: string, cap: number, pollerInstance?: string): Array<{ id: string; subject: string | null }> {
+  fetchInboxIdsAfter(team_id: string, to_handle: string, after_id: string, limit: number, pollerInstance?: string): Array<{ id: string; subject: string | null }> {
     const directClause = pollerInstance === undefined
       ? 'to_handle=?'
       : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
     const params = pollerInstance === undefined
-      ? [team_id, after_id, to_handle, to_handle, cap + 1]
-      : [team_id, after_id, to_handle, pollerInstance, to_handle, cap + 1]
+      ? [team_id, after_id, to_handle, to_handle, limit]
+      : [team_id, after_id, to_handle, pollerInstance, to_handle, limit]
     return this.db.prepare(`
       SELECT id, subject FROM message
       WHERE team_id=? AND id > ?
