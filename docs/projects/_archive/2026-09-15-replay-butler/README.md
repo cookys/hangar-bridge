@@ -19,7 +19,7 @@
 - Plan: [replay butler r3](../../plans/2026-09-15-replay-butler.md) — hetero plan loop 2 generations,
   receipts exit 0 (see plan §7)
 - Base: `65585b6` (develop) · Branch: `feat/replay-butler` · Merge target: `develop`
-- Status: phases complete — awaiting finish-flow (merge to develop) and relay-first deploy
+- Status: **merged to develop `c094b52`** (2026-09-15); pre-merge review 2 rounds (`272e673`, `9da906b`); doc-sync L-5.4 one STALE wording fixed (`41cf643`). Deploy (relay first) is operator-gated — see hangar runbook step 8; success criterion 5 stays deferred until then.
 - Verification contract: `corepack pnpm -r typecheck && corepack pnpm -r test:ci`, each phase RED first
   (new vitest cases fail on base, pass on head); risk = medium (wire format additive, cursor semantics)
   → hetero review stays gating per phase.
@@ -81,3 +81,20 @@ User-stated requirements ledger: (a) "一上線就全塞" must stop above a thre
 | 5 | live: offline > 1 day handle reconnects, `fleet peers` shows `backlog:N`, one summary received | **DEFERRED to deploy** — needs the relay restarted via `install-relay.sh` (drops every fleet SSE for seconds; operator-gated per hangar destructive-op rule) and a peer-agent rebuilt on one host. Procedure: hangar runbook `hangar-bridge-fleet-deployment.md` step 8. | DEFERRED (named) |
 
 Requirements ledger: (a) stop the flood above a threshold → relay P2 (T3) ✔; (b) butler waits, emits one summary → P2 `backlog` + P4 synthetic notification (T8/T9) ✔; (c) control handed to agent/user → cursor advance + `poll_inbox` resume hint + `pending_after` (T7/T18/T20b) ✔.
+
+## L-5.2–L-5.4 record
+
+- Quality gate: completeness-scan clean (36 files), secret-scan clean, error-path-scan 0/0/0,
+  test-integrity L0 ok (L1 collection unavailable to the tool — runner_missing — test counts rose
+  389→408 relay / 500→524 peer-agent / 145→149 shared, none deleted or skipped).
+- Review round 1 (autopilot:reviewer, sonnet, full range): 1 Major (pending_after cap-before-filter
+  undercount) → fixed + T7c; 2 Minor (CAS-ahead reminder clobber; missing CAS tests) → fixed + T12e/T12f;
+  2 Suggestions (log label split → fixed; double drain ≤ threshold → BACKLOG).
+- Round 2 (scoped delta, blind-checked prompt): SHIP-AS-IS, 0 Major; cut list: overlap reconcile
+  (→ `reconcileBacklog`, T12h), T12g, T7d, raw-scan ceiling (→ BACKLOG), pre-existing flake (already
+  in BACKLOG).
+- Merge `c094b52` carries `QC-Verdict: PASS (reviewer autopilot:reviewer/sonnet, 2026-09-15)`.
+- Post-merge: grep confirms replay_max / scanBacklog / reconcileBacklog / replay_threshold / §4 section on
+  develop; doc-sync scoped: Layer 1 gate failures are pre-existing (`.claude/review-loop-config.md`
+  autopilot-relative links, ignored `.codeforge/` store) — none in the touched docs; Layer 2: one STALE
+  wording (architecture "at most 10 000 rows") fixed.
