@@ -6,6 +6,7 @@ import {
   newMessageId,
   TEAM_BROADCAST_HANDLE,
   EPHEMERAL_ROUTE_TTL_MS,
+  BACKLOG_SCAN_CAP,
   type Envelope,
 } from '@hangar-bridge/shared'
 import { loadOwnedSet, ownsNamespace } from '../acl.ts'
@@ -35,6 +36,8 @@ export function grantsFromSnapshot(snap: SnapshotDetail): ReplyGrantInput[] {
     .map(m => ({ handle: m.handle, instance: m.instance, selector: '' }))
 }
 
+// Page size for the pending_after tail count (raw rows per SQL round-trip).
+const TAIL_PAGE = 1000
 const DEFAULT_INBOX_LIMIT = 100
 const MAX_INBOX_LIMIT = 1000
 
@@ -119,6 +122,26 @@ export function messagesRoute(deps: Deps) {
     // The cursor advances over EVERY row read, not only the deliverable ones, so
     // a page full of gated rows can never wedge the caller below the live edge.
     const next_cursor = rows.length > 0 ? rows[rows.length - 1]!.id : (since ?? null)
+    // Replay butler (§2.5): how much is still waiting past this page, so a
+    // poll-only harness (no SSE, so no `backlog` event) gets the same butler.
+    // Same predicate as this page — the SQL clause plus ownsNamespace — and,
+    // like the stream's scanBacklog, the cap counts rows AFTER the filter:
+    // paging until BACKLOG_SCAN_CAP+1 pollable rows or the buffer ends, so a
+    // run of gated rows can never make the count read "exact" too early.
+    let pending_after = 0
+    let pending_capped = false
+    let tailCursor = next_cursor ?? ''
+    for (;;) {
+      const page = deps.store.fetchInboxIdsAfter(HANGAR_TEAM_ID, handle, tailCursor, TAIL_PAGE, pollerInstance)
+      if (page.length === 0) break
+      for (const r of page) {
+        if (r.subject !== null && !ownsNamespace(r.subject, owned)) continue
+        if (pending_after >= BACKLOG_SCAN_CAP) { pending_capped = true; break }
+        pending_after += 1
+      }
+      if (pending_capped || page.length < TAIL_PAGE) break
+      tailCursor = page[page.length - 1]!.id
+    }
     // Flag off + no instance: this poll's OWN inability to grant is reported
     // at the RESPONSE level, not stamped onto each envelope's meta —
     // `meta.attribution_status` is the SENDER-stamped field (set only via
@@ -126,7 +149,7 @@ export function messagesRoute(deps: Deps) {
     // overwrite it; the two describe different things (who sent it vs.
     // whether THIS presentation could be granted).
     return c.json({
-      messages, next_cursor,
+      messages, next_cursor, pending_after, pending_capped,
       ...(pollerInstance === undefined ? { attribution_status: 'unverifiable' } : {}),
     })
   })

@@ -4,7 +4,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import {
   PERMISSION_REQUEST_TTL_MS, DISPATCH_REQUEST_TIMEOUT_MS, PRESENCE_HEARTBEAT_MS,
-  PRESENCE_TTL_MS, newInstanceId,
+  PRESENCE_TTL_MS, newInstanceId, type BacklogEvent,
 } from '@hangar-bridge/shared'
 import { createMcpServer } from './mcp-server.ts'
 import {
@@ -39,7 +39,10 @@ import { registerOutboundPermissionRelay } from './permission-relay.ts'
 import { ReplyLimiter } from './reply-limiter.ts'
 import { defaultDispatchStatePath, defaultCursorStatePath, defaultHealthStatePath, defaultInboxSpoolPath } from './paths.ts'
 import { InboxSpool } from './inbox-spool.ts'
-import { CursorStore, cursorSink } from './cursor-store.ts'
+import { CursorStore, cursorSink, mergeBacklog } from './cursor-store.ts'
+import {
+  backlogToChannelNotification, backlogToSyntheticEnvelope, backlogToPending,
+} from './backlog-butler.ts'
 import { installLifecycleShutdown } from './lifecycle.ts'
 import { FileNatsInstanceGuard } from './nats-instance-lock.ts'
 import { verifyClaimCompatibility } from './claims-compat.ts'
@@ -235,6 +238,8 @@ async function main(): Promise<void> {
   // drain — the relay stamps delivered_at at socket-write time, so a relay
   // killed mid-drain would otherwise silently strand rows for this client.
   const cursorStore = new CursorStore({ persistPath: defaultCursorStatePath() })
+  // Replay butler: a reminder persisted by an earlier process is still unread.
+  if (cursorStore.getBacklog()) health.setBacklog(cursorStore.getBacklog()!.count)
   // FIX2: the durable cursor file is SSE-only (see cursor-store.ts doc on
   // cursorSink). Deriving the sink from cfg.transport HERE — before the
   // transport-specific block below constructs the actual client/stream —
@@ -285,6 +290,8 @@ async function main(): Promise<void> {
 
   let client: PeerTransport
   let stream: { start: () => Promise<void>; stop: () => void | Promise<void> }
+  // Set by the SSE branch: re-stamps presence after the butler reminder changes.
+  let relayClientPresenceRefresh: (() => Promise<void>) | undefined
 
   if (cfg.transport === 'nats') {
     if (!selfHandle) throw new Error('self is required when transport is nats')
@@ -345,6 +352,7 @@ async function main(): Promise<void> {
       }
       return originalSetPresence(decorated)
     }
+    relayClientPresenceRefresh = async () => { await reportPresence() }
     const reportPresence = async () => {
       try {
         const ctx = { ...detectWorkingContext(), ...(switchboard ? { repos: switchboard.repos() } : {}) }
@@ -356,10 +364,35 @@ async function main(): Promise<void> {
       }
     }
 
+    // Replay butler (plan §2.4): the summary is not an envelope — it skips
+    // the dispatcher's gate/dedupe and becomes exactly one notification (or
+    // one locally minted envelope for a courier), the reminder is persisted
+    // BEFORE anything else happens, and the cursor moves only at backlog_end.
+    const deliverBacklogSummary = async (b: BacklogEvent) => {
+      const reminder = mergeBacklog(cursorStore.getBacklog(), backlogToPending(b))
+      cursorStore.setBacklog(reminder)
+      health.setBacklog(reminder.count)
+      if (cfg.final_mile.kind === 'claude-channel') {
+        await server.notification(backlogToChannelNotification(b) as never)
+      } else {
+        const synthetic = backlogToSyntheticEnvelope(b, selfHandle || 'courier')
+        if (switchboard) {
+          await switchboard.deliver(synthetic)
+        } else {
+          const target = cfg.final_mile.target!
+          await deliverViaAgentCall(synthetic, { target, bin: cfg.final_mile.bin })
+        }
+      }
+      logJson('info', 'peer.inbound.backlog_summarized', { pending: b.pending, newest: b.newest, total: reminder.count })
+      void reportPresence()
+    }
     stream = new StreamClient({
       relayUrl: cfg.relay_url,
       token,
       sinceCursor: () => cursorStore.get(),
+      replayMax: cfg.inbox.replay_threshold,
+      onBacklog: deliverBacklogSummary,
+      onBacklogEnd: b => { cursorSink(cfg.transport, cursorStore)(b.newest) },
       subjects: cfg.subjects.interest,
       onEnvelope: async e => { await dispatcher.handle(e) },
       onAuthError,
@@ -426,6 +459,10 @@ async function main(): Promise<void> {
   const { callTool } = registerTools(
     client, cfg.presence, permissionTracker, replyLimiter, dispatchTracker, claimClient, inboxClient,
     replyClient, getPaneSelector, inboxSpool,
+    {
+      getBacklog: () => cursorStore.getBacklog(),
+      clearBacklog: () => { cursorStore.clearBacklog(); health.setBacklog(0); void relayClientPresenceRefresh?.() },
+    },
   )
   // Every tool this process could serve; `tools.allow` (config) may narrow it.
   const registeredTools = () => [

@@ -298,6 +298,12 @@ and a live SSE stream are different facts and every layer above used to conflate
   typically an `agent-call` registration whose pane pid has exited). The envelopes
   stay in the relay's durable buffer for `poll_inbox`; what ends is the replay
   that was blocking every message behind them.
+- a ` [backlog:N]` summary suffix — the relay summarized `N` chat messages this
+  session missed while offline instead of replaying them (replay butler,
+  `inbox.replay_threshold`, default 10); the session received one
+  `[hangar-bridge] backlog summary` notification and clears the marker once it
+  has `poll_inbox`-ed past the batch. Non-chat messages (dispatch, result,
+  permission) are always replayed in full.
 
 If you started a session with the wrong key (or no flag at all), you do not lose the conversation:
 re-launch with the correct flag plus `--resume <name>` to continue the same session with channel
@@ -382,6 +388,12 @@ Tunnel. Two config keys make one identity safe and usable for such a client:
   honoured, `next_cursor` advanced. A spool identity also persists its
   instance id across restarts (§8.1), so replies to its earlier messages keep
   routing. Default off.
+- `inbox.replay_threshold` — how many missed chat messages a reconnect may
+  replay one by one before the relay sends a single summary instead (default
+  `10`, `0` = replay everything as before, max `1000`). A poll-only courier
+  has no stream to summarize, but `poll_inbox` shows the same information as
+  `N more waiting after next_cursor` on every page (the relay's
+  `pending_after`, plus whatever the spool merge had to cut).
 
 The operator-side procedure (tunnel-client profile, roster, verification) is in
 hangar `runbooks/hangar-bridge-fleet-deployment.md` § Enrolling a poll-only courier.

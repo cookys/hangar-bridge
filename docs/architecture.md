@@ -141,6 +141,27 @@ The peer-agent uses a 43-character secret as a bearer token for `POST /v1/messag
 `GET /v1/stream`, presence/peer/permission routes, and the claim API. The relay maps the hash to a
 roster handle, stamps identity, persists messages in SQLite, and sends live/backlog events over SSE.
 
+#### Replay butler (SSE only)
+
+A reconnecting session — or a freshly enrolled handle — used to receive every backlog row
+one `message` event at a time, into one turn of context. A peer-agent that sends
+`GET /v1/stream?replay_max=N` (`inbox.replay_threshold`, default 10, `0` = off) instead gets, when
+more than N **chat** rows are waiting, one `backlog` event, then every non-chat row of the same
+population as ordinary `message` events (a dispatch, result or permission is never folded into a
+summary — its receiver's tracker would wait forever), then `backlog_end`. The chat rows stay in the
+durable buffer, unstamped and ungranted, for `poll_inbox`; the summary names them (`pending`,
+`oldest`/`newest`, `by_sender`, `resume_since`) and says it is not a message. Absent `replay_max`
+the drain is unchanged, which is why the relay is rolled out first. The relay counts the population
+the drain would have delivered (same pages, same gate, at most 10 000 rows; `pending_capped` is
+exact) and afterwards drops any live envelope with id ≤ `newest` — the connect-window race. The
+peer-agent persists the reminder beside its cursor before emitting anything, advances the cursor
+only at `backlog_end` (a drop in between resumes from the last exempt row), stamps
+`[backlog:N]` on its presence summary until a `poll_inbox` that started at or before the batch's
+`resume_since` reaches `newest`, and for a courier mints a self-addressed local envelope with
+`meta.reply=none` because the agent-call final mile only accepts envelopes. Poll-only harnesses get
+the same butler as `pending_after`/`pending_capped` on `GET /v1/messages`, passed through the
+spool merge. Design and adjudicated review: `docs/plans/2026-09-15-replay-butler.md`.
+
 ### 4.2 NATS/opt-in path (P0–P4 implemented)
 
 The peer-agent authenticates with a per-handle NKey. NATS publish permissions constrain each peer to

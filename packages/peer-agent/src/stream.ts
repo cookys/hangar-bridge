@@ -1,5 +1,8 @@
 import { fetch } from 'undici'
-import { EnvelopeSchema, type Envelope } from '@hangar-bridge/shared'
+import {
+  EnvelopeSchema, BacklogEventSchema, BacklogEndEventSchema, SSE_EVENT_BACKLOG, SSE_EVENT_BACKLOG_END,
+  type Envelope, type BacklogEvent, type BacklogEndEvent,
+} from '@hangar-bridge/shared'
 import { logJson } from './logger.ts'
 
 export interface SseEvent { event: string; data: string }
@@ -39,6 +42,17 @@ export interface StreamClientOpts {
   // so the relay narrows delivery to these. Empty ⇒ all owned + null-subject.
   subjects?: string[]
   onEnvelope: (e: Envelope) => void | Promise<void>
+  /**
+   * Replay butler (plan §2.2/§2.4). `replayMax` > 0 asks the relay for ONE
+   * `backlog` summary instead of a chat backlog larger than it; omitted or 0
+   * ⇒ the pre-butler full replay (no query param sent). `onBacklog` receives
+   * the summary (before the exempt rows), `onBacklogEnd` the closing event —
+   * the cursor advances only there, so a stream that drops in between
+   * resumes from the last exempt row and never skips one.
+   */
+  replayMax?: number
+  onBacklog?: (b: BacklogEvent) => void | Promise<void>
+  onBacklogEnd?: (b: BacklogEndEvent) => void | Promise<void>
   onAuthError: () => void
   // Fired after each successful stream open (200) and then repeatedly on the heartbeat
   // interval while the stream is up. Used to auto-report presence on connect and keep it
@@ -107,6 +121,9 @@ export class StreamClient {
         const since = this.opts.sinceCursor()
         const url = new URL('/v1/stream', this.opts.relayUrl)
         if (since) url.searchParams.set('since', since)
+        if (this.opts.replayMax && this.opts.replayMax > 0) {
+          url.searchParams.set('replay_max', String(this.opts.replayMax))
+        }
         const headers: Record<string, string> = {
           authorization: `Bearer ${this.opts.token}`, accept: 'text/event-stream',
         }
@@ -183,6 +200,39 @@ export class StreamClient {
     }
   }
 
+  // A summary the harness cannot parse is logged and skipped — it is a
+  // presentation aid, never a delivery the replay must retry; the chat rows it
+  // describes stay readable via poll_inbox regardless.
+  private async consumeBacklogEvent(event: string, data: string): Promise<void> {
+    let parsed: BacklogEvent | BacklogEndEvent
+    try {
+      const raw: unknown = JSON.parse(data)
+      parsed = event === SSE_EVENT_BACKLOG ? BacklogEventSchema.parse(raw) : BacklogEndEventSchema.parse(raw)
+    } catch (err) {
+      logJson('warn', 'peer.stream.backlog_decode_error', {
+        event, err: String(err instanceof Error ? err.message : err),
+      })
+      return
+    }
+    // Delivery failures are logged under their own name: a final mile that
+    // refused the summary is an ops signal, not a wire-format problem.
+    try {
+      if (event === SSE_EVENT_BACKLOG) {
+        const b = parsed as BacklogEvent
+        logJson('info', 'peer.stream.backlog', { pending: b.pending, newest: b.newest, exempt: b.replayed_exempt })
+        await this.opts.onBacklog?.(b)
+      } else {
+        const b = parsed as BacklogEndEvent
+        logJson('info', 'peer.stream.backlog_end', { newest: b.newest })
+        await this.opts.onBacklogEnd?.(b)
+      }
+    } catch (err) {
+      logJson('warn', 'peer.stream.backlog_delivery_error', {
+        event, err: String(err instanceof Error ? err.message : err),
+      })
+    }
+  }
+
   private async consume(buf: string): Promise<string> {
     const parts = buf.split('\n\n')
     const rest = parts.pop() ?? ''
@@ -191,6 +241,10 @@ export class StreamClient {
       if (!ev) continue
       logJson('info', 'peer.stream.event', { event: ev.event })
       if (ev.event === 'ping') continue
+      if (ev.event === SSE_EVENT_BACKLOG || ev.event === SSE_EVENT_BACKLOG_END) {
+        await this.consumeBacklogEvent(ev.event, ev.data)
+        continue
+      }
       if (ev.event !== 'message') continue
       let envelope: Envelope
       try {

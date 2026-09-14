@@ -97,6 +97,9 @@ export type ClaimAcquireResult =
 export interface InboxPage {
   messages: Envelope[]
   next_cursor: string | null
+  /** Replay butler (§2.5): pollable rows past next_cursor; absent on an old relay. */
+  pending_after?: number
+  pending_capped?: boolean
 }
 
 /**

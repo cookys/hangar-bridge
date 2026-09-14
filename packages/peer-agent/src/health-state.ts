@@ -11,6 +11,7 @@ import type { DeafCheckResult } from './deaf-check.ts'
  */
 const DEAF_PREFIX = 'DEAF(inbound-dropped): '
 const GAVE_UP_RE = /^FINAL-MILE-FAILED\(\d+\): /
+const BACKLOG_RE = / \[backlog:\d+\]$/
 
 /**
  * The three-valued presence bit (P2 §2.6). `unverified` is the honest
@@ -60,6 +61,7 @@ export class HealthState {
   ) {}
 
   private gaveUp = 0
+  private backlogCount = 0
 
   isDeaf(): boolean {
     return this.check.state === 'deaf'
@@ -77,6 +79,15 @@ export class HealthState {
 
   finalMileGaveUp(): number {
     return this.gaveUp
+  }
+
+  /**
+   * Replay butler: chat rows a summary held back that the harness has not
+   * polled past yet. Stamped on the presence summary so `fleet peers` /
+   * list_peers shows a session sitting on an unread batch (plan §2.4).
+   */
+  setBacklog(count: number): void {
+    this.backlogCount = count
   }
 
   /**
@@ -101,6 +112,8 @@ export class HealthState {
     let out = summary
     if (out.startsWith(DEAF_PREFIX)) out = out.slice(DEAF_PREFIX.length)
     out = out.replace(GAVE_UP_RE, '')
+    out = out.replace(BACKLOG_RE, '')
+    if (this.backlogCount > 0) out = `${out} [backlog:${this.backlogCount}]`
     if (this.gaveUp > 0) out = `FINAL-MILE-FAILED(${this.gaveUp}): ${out}`
     if (this.isDeaf()) out = DEAF_PREFIX + out
     return out

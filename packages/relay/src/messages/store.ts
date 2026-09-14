@@ -214,6 +214,27 @@ export class MessageStore {
     return rows.map(envelopeFromRow)
   }
 
+  /**
+   * Replay butler (§2.5): one page of `{id, subject}` for the pollable rows
+   * strictly after `after_id`, in the same shape `fetchInboxSince` selects;
+   * the route applies ownsNamespace on top and pages until its cap.
+   */
+  fetchInboxIdsAfter(team_id: string, to_handle: string, after_id: string, limit: number, pollerInstance?: string): Array<{ id: string; subject: string | null }> {
+    const directClause = pollerInstance === undefined
+      ? 'to_handle=?'
+      : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
+    const params = pollerInstance === undefined
+      ? [team_id, after_id, to_handle, to_handle, limit]
+      : [team_id, after_id, to_handle, pollerInstance, to_handle, limit]
+    return this.db.prepare(`
+      SELECT id, subject FROM message
+      WHERE team_id=? AND id > ?
+        AND to_handle NOT LIKE '@mailbox:%'
+        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
+      ORDER BY id ASC LIMIT ?
+    `).all(...params) as Array<{ id: string; subject: string | null }>
+  }
+
   markDelivered(id: string): void {
     this.db.prepare(
       "UPDATE message SET delivered_at=COALESCE(delivered_at,?) WHERE id=?"
