@@ -87,10 +87,10 @@ export class InboxSpool {
  * is further along and nothing was cut).
  */
 export function mergeInboxPage<T extends { id: string }>(
-  page: { messages: T[]; next_cursor: string | null },
+  page: { messages: T[]; next_cursor: string | null; pending_after?: number; pending_capped?: boolean },
   spooled: T[],
   opts: { since?: string; limit?: number },
-): { messages: T[]; next_cursor: string | null; from_spool: number } {
+): { messages: T[]; next_cursor: string | null; from_spool: number; pending_after?: number; pending_capped?: boolean } {
   const byId = new Map<string, T>()
   for (const m of page.messages) byId.set(m.id, m)
   let fromSpool = 0
@@ -105,5 +105,14 @@ export function mergeInboxPage<T extends { id: string }>(
   const last = messages.length ? messages[messages.length - 1]!.id : null
   let next: string | null = last
   if (!cut && page.next_cursor && (!last || page.next_cursor > last)) next = page.next_cursor
-  return { messages, next_cursor: next, from_spool: fromSpool }
+  // Replay butler (§2.5): the relay's "still waiting past this page" count
+  // passes through; rows this merge cut off are still waiting too, so they
+  // are added. An old relay sends no count — leave it undefined, never NaN.
+  const cutCount = merged.length - messages.length
+  const pending_after = page.pending_after === undefined ? undefined : page.pending_after + cutCount
+  return {
+    messages, next_cursor: next, from_spool: fromSpool,
+    ...(pending_after !== undefined ? { pending_after } : {}),
+    ...(page.pending_capped !== undefined ? { pending_capped: page.pending_capped } : {}),
+  }
 }

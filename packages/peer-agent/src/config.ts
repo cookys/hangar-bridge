@@ -70,7 +70,12 @@ export const ConfigSchema = z.object({
   inbox: z.object({
     spool: z.boolean().default(false),
     spool_max: z.number().int().min(10).max(10_000).default(500),
-  }).strict().default({ spool: false, spool_max: 500 }),
+    // Replay butler (docs/plans/2026-09-15-replay-butler.md): when more than
+    // this many chat rows wait on reconnect, the relay sends one summary and
+    // the harness pulls the rest with poll_inbox. 0 = off (replay everything,
+    // the pre-butler behavior). Max 1000 = one relay backlog page.
+    replay_threshold: z.number().int().min(0).max(1000).default(10),
+  }).strict().default({ spool: false, spool_max: 500, replay_threshold: 10 }),
   tools: z.object({
     allow: z.array(z.string().regex(/^[a-z_]+$/)).min(1).optional(),
   }).strict().default({}),

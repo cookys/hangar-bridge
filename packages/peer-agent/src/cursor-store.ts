@@ -12,7 +12,43 @@ export interface CursorStoreOpts {
   persistPath?: string
 }
 
-interface CursorFile { cursor?: unknown }
+interface CursorFile { cursor?: unknown; backlog?: unknown }
+
+/**
+ * Replay butler (plan §2.4 step 3): the summary the relay sent instead of a
+ * chat backlog, kept until the harness has polled past it. Lives in the same
+ * file as the cursor so a restart cannot forget that a batch is still unread.
+ */
+export interface PendingBacklog {
+  /** Chat rows summarized away, summed across merged batches. */
+  count: number
+  /** The earliest `resume_since` of the merged batches ("" = from the start). */
+  since: string
+  /** The latest batch's `newest` — the cursor the summary advanced to. */
+  newest: string
+  /** ISO time of the latest batch. */
+  at: string
+}
+
+function isPendingBacklog(v: unknown): v is PendingBacklog {
+  if (!v || typeof v !== 'object') return false
+  const b = v as Record<string, unknown>
+  return Number.isInteger(b.count) && (b.count as number) >= 0
+    && typeof b.since === 'string' && (b.since === '' || isValidMessageId(b.since))
+    && typeof b.newest === 'string' && isValidMessageId(b.newest)
+    && typeof b.at === 'string'
+}
+
+/** Two batches become one reminder: earliest since, latest newest, counts summed. */
+export function mergeBacklog(existing: PendingBacklog | undefined, next: PendingBacklog): PendingBacklog {
+  if (!existing) return next
+  return {
+    count: existing.count + next.count,
+    since: existing.since <= next.since ? existing.since : next.since,
+    newest: existing.newest >= next.newest ? existing.newest : next.newest,
+    at: next.at,
+  }
+}
 
 /**
  * Durable SSE resume cursor (P3).
@@ -30,6 +66,7 @@ interface CursorFile { cursor?: unknown }
  */
 export class CursorStore {
   private cursor: string | undefined
+  private backlog: PendingBacklog | undefined
 
   constructor(private readonly opts: CursorStoreOpts) {
     if (opts.persistPath) this.load()
@@ -37,6 +74,22 @@ export class CursorStore {
 
   get(): string | undefined {
     return this.cursor
+  }
+
+  getBacklog(): PendingBacklog | undefined {
+    return this.backlog
+  }
+
+  /** Replace the reminder (callers merge first via mergeBacklog) and persist. */
+  setBacklog(b: PendingBacklog): void {
+    this.backlog = b
+    this.persist()
+  }
+
+  clearBacklog(): void {
+    if (this.backlog === undefined) return
+    this.backlog = undefined
+    this.persist()
   }
 
   /**
@@ -66,6 +119,12 @@ export class CursorStore {
       // crash the peer-agent and take the whole Claude Code session with it.
       if (typeof c === 'string' && isValidMessageId(c)) this.cursor = c
       else logJson('warn', 'peer.cursor.load_invalid', { path })
+      // The reminder is best-effort state: a malformed one is dropped, never
+      // allowed to take the cursor down with it.
+      if (raw?.backlog !== undefined) {
+        if (isPendingBacklog(raw.backlog)) this.backlog = raw.backlog
+        else logJson('warn', 'peer.cursor.backlog_load_invalid', { path })
+      }
     } catch (err) {
       logJson('warn', 'peer.cursor.load_error', {
         path, err: String(err instanceof Error ? err.message : err),
@@ -83,7 +142,10 @@ export class CursorStore {
     const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
     try {
       mkdirSync(dirname(path), { recursive: true })
-      writeFileSync(tmp, JSON.stringify({ cursor: this.cursor }), { mode: 0o600 })
+      writeFileSync(tmp, JSON.stringify({
+        cursor: this.cursor,
+        ...(this.backlog !== undefined ? { backlog: this.backlog } : {}),
+      }), { mode: 0o600 })
       // Best-effort CAS: this class does process-local monotonic checking only,
       // over ONE config-wide file. Two peer-agent processes sharing a config dir
       // (e.g. two Claude Code sessions in the same worktree) can each advance
@@ -101,10 +163,15 @@ export class CursorStore {
           const onDisk = raw?.cursor
           if (
             typeof onDisk === 'string' && isValidMessageId(onDisk)
-            && this.cursor !== undefined && onDisk >= this.cursor
+            && this.cursor !== undefined && onDisk > this.cursor
           ) {
-            try { unlinkSync(tmp) } catch { /* best-effort */ }
-            return
+            // A sibling is ahead: never rewind its cursor. The reminder is
+            // ours to keep, so re-write the file with THEIR cursor + our
+            // backlog instead of dropping the write on the floor.
+            writeFileSync(tmp, JSON.stringify({
+              cursor: onDisk,
+              ...(this.backlog !== undefined ? { backlog: this.backlog } : {}),
+            }), { mode: 0o600 })
           }
         } catch { /* unreadable/corrupt on-disk file: fall through and write ours */ }
       }
