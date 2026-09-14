@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import type { BacklogEvent, BacklogEndEvent, Envelope } from '@hangar-bridge/shared'
 import { StreamClient } from './stream.ts'
-import { CursorStore, mergeBacklog, type PendingBacklog } from './cursor-store.ts'
+import { CursorStore, mergeBacklog, reconcileBacklog, type PendingBacklog } from './cursor-store.ts'
 import { mergeInboxPage } from './inbox-spool.ts'
 import {
   backlogToChannelNotification, backlogToSyntheticEnvelope, renderBacklogSummary, shouldClearBacklog,
@@ -182,7 +182,7 @@ describe('CursorStore — pendingBacklog persistence (T12, T20)', () => {
     expect(raw.backlog).toEqual({ count: 3, since: ID('4'), newest: ID('9'), at: 'ours' })
   })
 
-  it('T12f sibling ahead on disk: their cursor is kept and both reminders merge', () => {
+  it('T12f sibling ahead on disk: their cursor is kept and the reminders reconcile (overlap → wider window, larger count)', () => {
     const path = join(dir, 'cursor-state.json')
     const mine = new CursorStore({ persistPath: path })
     mine.advance(ID('3'))
@@ -191,11 +191,31 @@ describe('CursorStore — pendingBacklog persistence (T12, T20)', () => {
     mine.setBacklog({ count: 5, since: ID('3'), newest: ID('6'), at: 'ours' })
     const raw = JSON.parse(readFileSync(path, 'utf8')) as { cursor: string; backlog: PendingBacklog }
     expect(raw.cursor).toBe(ID('8'))                     // never rewound
-    expect(raw.backlog).toEqual({ count: 7, since: ID('2'), newest: ID('8'), at: 'ours' })
+    // 2..8 (theirs) overlaps 3..6 (ours): same rows may be in both → not summed.
+    expect(raw.backlog).toEqual({ count: 5, since: ID('2'), newest: ID('8'), at: 'ours' })
     // A reminder ours already covers is not double-counted on a later write.
     mine.setBacklog({ count: 7, since: ID('2'), newest: ID('9'), at: 'ours2' })
     const again = JSON.parse(readFileSync(path, 'utf8')) as { backlog: PendingBacklog }
     expect(again.backlog.count).toBe(7)
+  })
+
+  it('T12g sibling ahead with a malformed reminder on disk: ours survives unmerged', () => {
+    const path = join(dir, 'cursor-state.json')
+    const mine = new CursorStore({ persistPath: path })
+    mine.advance(ID('3'))
+    writeFileSync(path, JSON.stringify({ cursor: ID('8'), backlog: { count: 'x' } }))
+    mine.setBacklog({ count: 5, since: ID('3'), newest: ID('6'), at: 'ours' })
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as { cursor: string; backlog: PendingBacklog }
+    expect(raw.cursor).toBe(ID('8'))
+    expect(raw.backlog).toEqual({ count: 5, since: ID('3'), newest: ID('6'), at: 'ours' })
+  })
+
+  it('T12h overlapping sibling window is reconciled (wider window, larger count), not summed', () => {
+    const theirs: PendingBacklog = { count: 6, since: ID('2'), newest: ID('7'), at: 'sib' }
+    const ours: PendingBacklog = { count: 4, since: ID('5'), newest: ID('9'), at: 'ours' }
+    expect(reconcileBacklog(theirs, ours)).toEqual({ count: 6, since: ID('2'), newest: ID('9'), at: 'ours' })
+    // Disjoint windows are two batches.
+    expect(reconcileBacklog({ count: 2, since: ID('1'), newest: ID('2'), at: 's' }, ours).count).toBe(6)
   })
 
   it('T12b a malformed backlog on disk is dropped while the cursor still loads', () => {

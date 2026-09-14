@@ -39,6 +39,24 @@ function isPendingBacklog(v: unknown): v is PendingBacklog {
     && typeof b.at === 'string'
 }
 
+/**
+ * A sibling's on-disk reminder against ours. Disjoint windows are two
+ * batches (counts add); a window nested in the other, or overlapping it, is
+ * the same rows seen twice — take the wider window and the larger count
+ * rather than summing what may be the same messages.
+ */
+export function reconcileBacklog(theirs: PendingBacklog, ours: PendingBacklog | undefined): PendingBacklog {
+  if (!ours) return theirs
+  const overlap = (theirs.since <= ours.newest) && (ours.since <= theirs.newest)
+  if (!overlap) return mergeBacklog(theirs, ours)
+  return {
+    count: Math.max(theirs.count, ours.count),
+    since: theirs.since <= ours.since ? theirs.since : ours.since,
+    newest: theirs.newest >= ours.newest ? theirs.newest : ours.newest,
+    at: ours.at,
+  }
+}
+
 /** Two batches become one reminder: earliest since, latest newest, counts summed. */
 export function mergeBacklog(existing: PendingBacklog | undefined, next: PendingBacklog | undefined): PendingBacklog {
   if (!existing) return next!
@@ -171,9 +189,7 @@ export class CursorStore {
             // already cover — merge the two, then re-write the file with
             // THEIR cursor instead of dropping the write on the floor.
             const theirs = isPendingBacklog(raw?.backlog) ? raw.backlog : undefined
-            const covered = theirs && this.backlog
-              && theirs.since >= this.backlog.since && theirs.newest <= this.backlog.newest
-            const backlog = theirs && !covered ? mergeBacklog(theirs, this.backlog) : this.backlog
+            const backlog = theirs ? reconcileBacklog(theirs, this.backlog) : this.backlog
             writeFileSync(tmp, JSON.stringify({
               cursor: onDisk,
               ...(backlog !== undefined ? { backlog } : {}),

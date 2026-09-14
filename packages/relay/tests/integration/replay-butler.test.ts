@@ -340,6 +340,26 @@ describe('GET /v1/messages pending_after — poll-side butler', () => {
     expect(body.pending_capped).toBe(false)
   })
 
+  it('T7d the tail count caps at 10 000 pollable rows across pages: 10 001 → capped, 10 000 → exact', async () => {
+    const ids: string[] = []
+    const insert = db.transaction((n: number) => {
+      for (let i = 0; i < n; i++) {
+        const e = store.buildEnvelope(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'chat', content: 'x' })
+        store.persist(e); ids.push(e.id)
+      }
+    })
+    insert(10_002)
+    const poll = async (since: string) => (await (await app.request(`/v1/messages?since=${since}&limit=1`, {
+      headers: { authorization: `Bearer ${tok.bob}`, 'x-hangar-instance': INST },
+    })).json()) as { pending_after: number; pending_capped: boolean }
+    // page = row 1; tail = rows 2..10002 = 10 001 → capped
+    const a = await poll(SINCE0)
+    expect(a.pending_after).toBe(10_000); expect(a.pending_capped).toBe(true)
+    // page = row 2; tail = rows 3..10002 = 10 000 → exact
+    const b = await poll(ids[0]!)
+    expect(b.pending_after).toBe(10_000); expect(b.pending_capped).toBe(false)
+  }, 60_000)
+
   it('T7b pending_after is 0 on the last page', async () => {
     for (let i = 0; i < 3; i++) store.insert(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'chat', content: `m${i}` })
     const res = await app.request(`/v1/messages?since=${SINCE0}&limit=10`, {
