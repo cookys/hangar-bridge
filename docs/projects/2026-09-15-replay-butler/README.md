@@ -1,0 +1,71 @@
+# Replay butler
+
+## Project Goal
+
+> **Final goal**: a session that reconnects (or a handle that enrolls) after a long absence receives ONE
+> summary of its chat backlog instead of every message, and pulls the rest on its own terms; nothing
+> else about delivery changes.
+> **Success criteria**: (1) relay: with `replay_max=N` and a chat backlog > N the SSE emits exactly one
+> `backlog` event, zero chat `message` events from the backlog, every non-chat row, then `backlog_end`
+> (T3/T14); with `replay_max` absent the event sequence is byte-identical to today (T1); (2) peer-agent:
+> one synthetic notification, cursor advanced only at `backlog_end`, `pendingBacklog` survives restart
+> (T9/T10/T12); (3) `poll_inbox` reports `pending_after` including through the spool merge (T7/T18);
+> (4) `pnpm -r typecheck && pnpm -r test:ci` green per phase, coverage thresholds unchanged (shared 95 /
+> relay 85 / peer-agent 80); (5) live: a handle offline > 1 day reconnects and `fleet peers` shows
+> `backlog:N` while the harness receives one summary (§5 step 3).
+> **Scope boundary**: SSE lane only (no NATS); presentation only (no TTL/purge, no mailbox change);
+> only `kind === 'chat'` is summarized; stream/poll predicate unification and `replay_max_age` are out.
+
+- Plan: [replay butler r3](../../plans/2026-09-15-replay-butler.md) — hetero plan loop 2 generations,
+  receipts exit 0 (see plan §7)
+- Base: `65585b6` (develop) · Branch: `feat/replay-butler` · Merge target: `develop`
+- Status: in progress
+- Verification contract: `corepack pnpm -r typecheck && corepack pnpm -r test:ci`, each phase RED first
+  (new vitest cases fail on base, pass on head); risk = medium (wire format additive, cursor semantics)
+  → hetero review stays gating per phase.
+- TaskCreate is unavailable to this model (Claude 5 gated, `CLAUDE_CODE_ENABLE_TODO_TOOLS` unset) —
+  the phase table below is the tracking surface; L-1.6 / L-5 forcing functions are recorded here.
+
+## Scope completeness audit (L-1.5)
+
+| Dimension | In scope | Coverage |
+|---|---:|---|
+| Source code + tests | yes | shared (event types), relay (stream, messages, store), peer-agent (config, stream, index, tools, cursor-store, inbox-spool, agent-call-ingress, switchboard) |
+| User-facing docs | yes | `docs/architecture.md` §4 replay butler; hangar runbook rollout order (P5) |
+| API/interface reference | yes | additive: SSE `backlog`/`backlog_end` events, `replay_max` query, `pending_after`/`pending_capped` fields; documented in architecture.md |
+| Config templates/examples | yes | `inbox.replay_threshold` in peer-agent config schema + `packages/operations` example config if one lists `inbox` |
+| CHANGELOG | no | repository has no changelog; project ledger carries notes |
+| Version bump | no | no package publication; `RELAY_VERSION` untouched (additive) |
+| Migration notes | no | no schema change; cursor-store file gains one optional key (backward-compatible read) |
+| Dependent systems | yes | dotfiles `fleet` (poll only — ignores new fields, verified `bin/fleet` parses only messages/next_cursor); ChatGPT courier (gets `pending_after` via poll_inbox header) |
+| Credit/attribution | no | nothing absorbed |
+| Dogfood target | yes | hub relay + this session's peer-agent after rollout |
+
+User-stated requirements ledger: (a) "一上線就全塞" must stop above a threshold → P2/P4; (b) "管家等待
+他 load 完出一個 summary 提醒 harness/user 處理" → P2 `backlog` + P4 synthetic notification; (c) "把控制權
+交給 agent/user" → cursor advance + `poll_inbox` resume + `pending_after` (P3/P4).
+
+## Skill routing (L-1.6)
+
+| Area | Routing entry | Action |
+|---|---|---|
+| SSE / cursor / resume / ULID ordering | autopilot:debug | invoked for the watermark + cursor-ordering design; evidence-first reading of stream.ts drain and cursor-store done in plan review (file:line in dispositions) |
+| envelope / zod schema | autopilot:debug | same invocation; `backlog` event is a new SSE event type, envelope schema untouched |
+| coverage / vitest | autopilot:test-strategy | invoked before P2: RED-first per phase, thresholds per memory (shared 95 / relay 85 / peer-agent 80) |
+| channel tag / escaping | autopilot:reviewer | synthetic notification text is relay-derived (sender handles) — escaping reviewed at P4 hetero review |
+
+## Phases (plan §3 grouped into mergeable units)
+
+| Phase | Plan steps | Status | Evidence |
+|---|---|---|---|
+| relay | P1 shared types + P2 stream butler + P3 poll `pending_after` | pending | T1–T7, T13–T16, T19 |
+| peer-agent | P4 | pending | T8–T12, T14b, T17, T18, T20 |
+| docs | P5 | pending | architecture.md, hangar runbook, BACKLOG close |
+| L-5 finish-flow | — | pending | autopilot:finish-flow |
+
+## Decisions
+
+- Phases grouped 3→relay / 1→peer-agent / 1→docs: relay must deploy first (§5), so relay-side steps
+  share one review + one merge; peer-agent is independently revertible.
+- `pending` counts the stream population (what SSE would have pushed), not the poll count; poll returns
+  a superset and the summary says so (plan §2.1, gen-2 adjudication).
