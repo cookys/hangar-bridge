@@ -6,112 +6,134 @@
     {
       "fingerprint": "89d979697de8b50cc002ffb2229a6239b19e636551baa041ef8be33c34a4f5f7",
       "disposition": "accepted_blocker",
-      "rationale": "Folded: §2.1 now fixes a high-watermark H = max id of the count snapshot, subscribe-before-count (stream.ts:123-125 already), and drops live-queue envelopes with id <= H after the backlog event; T13 covers the race window."
+      "rationale": "Folded: §2.1 now fixes a high-watermark H = max id of the count snapshot, subscribe-before-count (stream.ts:123-125 already), and drops live-queue envelopes with id <= H after the backlog event; T13 covers the race window.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "0b19bd5fae6fb5c5958466d322ef3bbe35d1142ad89b2baaaf4795df680ea464",
       "disposition": "accepted_blocker",
-      "rationale": "Folded: §2.4 step 3 persists pendingBacklog {count, since, newest, at} in the cursor-store file (cursor-store.ts persistPath) so it survives restart; clear only when poll next_cursor >= newest, partial polls update count from pending_after; T12 revised."
+      "rationale": "Folded: §2.4 step 3 persists pendingBacklog {count, since, newest, at} in the cursor-store file (cursor-store.ts persistPath) so it survives restart; clear only when poll next_cursor >= newest, partial polls update count from pending_after; T12 revised.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "ee6760c01893671bfcc222e5ed81b804df49aef620f388b42239d5139776cea7",
       "disposition": "accepted_blocker",
-      "rationale": "Folded: §1 now exempts task_dispatch and permission_request from summarization (always replayed), citing the same silence-is-lost-session reasoning inbound.ts:101-106 and tools.ts:211 already encode; backlog event reports by_kind + replayed_exempt; T14 covers it."
+      "rationale": "Folded: §1 now exempts task_dispatch and permission_request from summarization (always replayed), citing the same silence-is-lost-session reasoning inbound.ts:101-106 and tools.ts:211 already encode; backlog event reports by_kind + replayed_exempt; T14 covers it.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "43b560b5ff8f10a8b10bd9d7d48b465bb445b4810a175bafe03f9ff276d40422",
       "disposition": "accepted_blocker",
-      "rationale": "Folded: §2.4 courier path now synthesizes a local Envelope (minted msg_ ULID, from/to = self handle, kind chat, meta.synthetic=backlog, meta.reply=none) because agent-call-ingress.ts:15,39 and switchboard.ts:189,277 only accept Envelope; P4 file list now includes agent-call-ingress.ts, switchboard.ts, cursor-store.ts; T17 covers it; reply to it is documented as a relay 400."
+      "rationale": "Folded: §2.4 courier path now synthesizes a local Envelope (minted msg_ ULID, from/to = self handle, kind chat, meta.synthetic=backlog, meta.reply=none) because agent-call-ingress.ts:15,39 and switchboard.ts:189,277 only accept Envelope; P4 file list now includes agent-call-ingress.ts, switchboard.ts, cursor-store.ts; T17 covers it; reply to it is documented as a relay 400.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "de5121397a69151ed0e42f9c2a95cd3703e29b137c13879d601db09426c22693",
       "disposition": "accepted_nonblocking",
-      "rationale": "Folded: §0 and §2.3 corrected — delivered_at is one global stamp per message (store.ts:217-221 COALESCE), so historical @team rows are mostly outside the SSE cold-start set; the 148-broadcast case is the poll path (fetchInboxSince, store.ts:198-215) and is handled by §2.5 pending_after."
+      "rationale": "Folded: §0 and §2.3 corrected — delivered_at is one global stamp per message (store.ts:217-221 COALESCE), so historical @team rows are mostly outside the SSE cold-start set; the 148-broadcast case is the poll path (fetchInboxSince, store.ts:198-215) and is handled by §2.5 pending_after.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "e922238ac32a6f19fcadb225a216f3bfa04299ae3917651c4d5c93e7a474e45e",
       "disposition": "accepted_nonblocking",
-      "rationale": "Folded: §2.2 and §2.5 add pending_capped (true = exactly 10000 and possibly more, false = exact) for both backlog.pending and pending_after; T16 covers the boundary."
+      "rationale": "Folded: §2.2 and §2.5 add pending_capped (true = exactly 10000 and possibly more, false = exact) for both backlog.pending and pending_after; T16 covers the boundary.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "85c1eccf5a0bf7806d1de92ce76d530b814402c7383b674f073c4221a69e68cf",
       "disposition": "accepted_nonblocking",
-      "rationale": "Folded: T13 (watermark race), T14 (exempt kinds), T15 (invalid replay_max -> 400), T16 (capped boundary), T17 (courier synthetic envelope + switchboard target + non-replyable wording) added."
+      "rationale": "Folded: T13 (watermark race), T14 (exempt kinds), T15 (invalid replay_max -> 400), T16 (capped boundary), T17 (courier synthetic envelope + switchboard target + non-replyable wording) added.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "86d8fed5f3a54f0c9ac0470110fecdba2811b29be2750eb0817ae9d77445a1c7",
       "disposition": "accepted_nonblocking",
-      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id."
+      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "c69b2a09868061e4b34631fe17fc2c7b6fe5c7970f5aa771c4afffb84966f12c",
       "disposition": "rejected",
-      "rationale": "The finding restates the rubric line rather than naming a defect. The substantive gap it alludes to (a fatal flaw in A) was raised concretely by the chair (count/live race) and glm (predicate mismatch) and is folded there: §2.1 now counts on the poll predicate via a shared countPollable and fixes the high-watermark rule."
+      "rationale": "The finding restates the rubric line rather than naming a defect. The substantive gap it alludes to (a fatal flaw in A) was raised concretely by the chair (count/live race) and glm (predicate mismatch) and is folded there: §2.1 now counts on the poll predicate via a shared countPollable and fixes the high-watermark rule.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "e4fc656c6ce3f13b2fcb079e4758c39657d5dea259a67ca6252610822e45a677",
       "disposition": "rejected",
-      "rationale": "Verified in source, not by silence: peer-agent stream.ts:191-192 `if (ev.event !== 'message') continue` ignores unknown events; relay stream.ts:30 reads only `since` from the query and validates nothing else, so an unknown replay_max is ignored by an old relay; absent replay_max takes the unchanged drain branch. §5 step 2 now cites these lines."
+      "rationale": "Verified in source, not by silence: peer-agent stream.ts:191-192 `if (ev.event !== 'message') continue` ignores unknown events; relay stream.ts:30 reads only `since` from the query and validates nothing else, so an unknown replay_max is ignored by an old relay; absent replay_max takes the unchanged drain branch. §5 step 2 now cites these lines.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "07c06b9675d58c46ea6cd8ad9b2802b4f83f1cb8fc000784ddfc4dadcafa1402",
       "disposition": "accepted_nonblocking",
-      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id."
+      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "9a06266678f3ef4375ab40ecb79b72ca6641985e00353706bf9465402de8badf",
       "disposition": "accepted_nonblocking",
-      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id."
+      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "a1e2b813eafeba00a1d684b4d3298070dd139b137111433157fc583232e352fb",
       "disposition": "accepted_nonblocking",
-      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id."
+      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "02cc2755b37185b2971c5e7ccab710005e51d7f4da0ea3d034dd598e92da3599",
       "disposition": "accepted_nonblocking",
-      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id."
+      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "7c509b5789841653b56dec4878a8761a3de2247951a20c85df112a9961d59e7a",
       "disposition": "accepted_nonblocking",
-      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id."
+      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "5c3b139453fd73c6a5cda0a1c3527be6b220789ac11689a561adbd6e547c2cbd",
       "disposition": "rejected",
-      "rationale": "Verified: packages/operations/systemd/install-relay.sh:185 comments the exact drift ('HANGAR_BUILD_REVISION could otherwise accompany yesterday's JavaScript') and :258 writes the env file; the hub relay showed 3addbb4 while running 6dc62da on 2026-09-13 (hangar gotcha indirect-signal-is-not-the-observation). Relay-first order follows from §2.2 param-absent = old behavior. No plan change needed."
+      "rationale": "Verified: packages/operations/systemd/install-relay.sh:185 comments the exact drift ('HANGAR_BUILD_REVISION could otherwise accompany yesterday's JavaScript') and :258 writes the env file; the hub relay showed 3addbb4 while running 6dc62da on 2026-09-13 (hangar gotcha indirect-signal-is-not-the-observation). Relay-first order follows from §2.2 param-absent = old behavior. No plan change needed.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "f7569e0dd6ddfa75ca4b4454bce0e32d711a27d40b72cc46c7e08c7e6a247113",
       "disposition": "accepted_nonblocking",
-      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id."
+      "rationale": "Confirmation of the rubric line, no defect named; no plan change beyond the folds recorded on the chair's and glm's findings for the same rubric id.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "06c6404ef02de8ec2b4a64a477beea79ce50fcee105ddd294d299d44122735ef",
       "disposition": "rejected",
-      "rationale": "Verified in source: stream.ts:15 BACKLOG_PAGE = 1000; stream.ts:149-158 `for (;;)` drains pages until `page.length < BACKLOG_PAGE` with no count or age bound; index.ts:257-260 emits one server.notification per envelope; grep for any cap/coalesce in the drain and dispatcher finds none (SEEN_CAP is a dedupe set, not a delivery cap). §0 stands as written."
+      "rationale": "Verified in source: stream.ts:15 BACKLOG_PAGE = 1000; stream.ts:149-158 `for (;;)` drains pages until `page.length < BACKLOG_PAGE` with no count or age bound; index.ts:257-260 emits one server.notification per envelope; grep for any cap/coalesce in the drain and dispatcher finds none (SEEN_CAP is a dedupe set, not a delivery cap). §0 stands as written.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "1cc5059ea4f86751bd8afc25d60670a9a0f6b10aab9136062c03d980b4298480",
       "disposition": "accepted_nonblocking",
-      "rationale": "Folded: the count-vs-subscribe ordering gap is closed by §2.1's high-watermark rule (subscribe first, then count, drop live id <= H); reasons (1)(2) against B are now cited to messages.ts:113-117 and rewritten."
+      "rationale": "Folded: the count-vs-subscribe ordering gap is closed by §2.1's high-watermark rule (subscribe first, then count, drop live id <= H); reasons (1)(2) against B are now cited to messages.ts:113-117 and rewritten.",
+      "candidate_blocker": false
     },
     {
       "fingerprint": "5bc2e5f67cc012dd09fa64bb7ac8e7528762cf2b63a8d8dbc8603cfe72c81c98",
       "disposition": "accepted_blocker",
-      "rationale": "Folded: §2.1 now makes the summary count use the poll predicate (fetchInboxSince + ownsNamespace) through a shared countPollable so backlog.pending equals what poll_inbox will return; §2.5 pending_after shares the same function; T6 now asserts equality. Predicate unification between stream and poll is explicitly deferred (§2.6)."
+      "rationale": "Folded: §2.1 now makes the summary count use the poll predicate (fetchInboxSince + ownsNamespace) through a shared countPollable so backlog.pending equals what poll_inbox will return; §2.5 pending_after shares the same function; T6 now asserts equality. Predicate unification between stream and poll is explicitly deferred (§2.6).",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "b99cc66cf23e8d9bf1a5661c5bd785fd0d7efb3fdba12902dd9ec548c6082825",
       "disposition": "rejected",
-      "rationale": "Verified in source (same evidence as the MiniMax R3 disposition): stream.ts:191-192 ignores unknown SSE events; relay stream.ts:30 reads only `since`; §5 step 2 now cites both lines and the 'must confirm' clause is closed."
+      "rationale": "Verified in source (same evidence as the MiniMax R3 disposition): stream.ts:191-192 ignores unknown SSE events; relay stream.ts:30 reads only `since`; §5 step 2 now cites both lines and the 'must confirm' clause is closed.",
+      "candidate_blocker": true
     },
     {
       "fingerprint": "adf84eb8f8ce3952aae6dc8fcb4150e6f2cfc162d6fbfed4544916a0949562ab",
       "disposition": "accepted_nonblocking",
-      "rationale": "Folded into T15 (invalid replay_max 400), T16 (capped), T17 (switchboard per-extension + non-replyable wording); replay_threshold clamp is now stated in §2.4 (max 1000) and covered by config parsing in P4."
+      "rationale": "Folded into T15 (invalid replay_max 400), T16 (capped), T17 (switchboard per-extension + non-replyable wording); replay_threshold clamp is now stated in §2.4 (max 1000) and covered by config parsing in P4.",
+      "candidate_blocker": false
     }
   ]
 }

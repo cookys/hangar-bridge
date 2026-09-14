@@ -1,0 +1,782 @@
+{
+  "schema_version": 1,
+  "artifact_type": "plan_review_artifact",
+  "ticket": "replay-butler",
+  "logical_plan_id": "replay-butler-2026-09-15",
+  "session_id": "session_01UwUukUz8DbhhAsuxwmYoJh",
+  "session_key": "e7052d9cf789103cf82a89fb57df90eb2de1b8c5f6ad02c631a2f5019504ddc7",
+  "generation": 1,
+  "verdict": "CONDITIONAL",
+  "semantic_verdict": "CONDITIONAL",
+  "terminal": false,
+  "policy_reason": "depth_0_adjudication_required",
+  "rubric_sha256": "25640499160d02e849edeb5899831b97424fd7398440fcf9fbbec2932a81ea95",
+  "manifest_sha256": "ee1033eaf14907baab0010f5d41a72d2dd20b2e87bdf78605b4ac7d22a33a38d",
+  "plan_sha256": "91fd8ad85e90424814cf342024e0a298173017d2cc0c2dd35486497b8f38dd7e",
+  "growth_ratio": {
+    "numerator": 1,
+    "denominator": 1
+  },
+  "growth_warning": false,
+  "transport_status": "complete",
+  "attempts": [
+    {
+      "seat_id": "sol_architecture_chair",
+      "target_id": "sol_architecture_chair",
+      "attempt": 1,
+      "transport_envelope": {
+        "schema_version": 1,
+        "artifact_type": "runner_transport_envelope",
+        "request_binding": {
+          "runner": "codex",
+          "model": "gpt-5.6-sol",
+          "operation": "plan-review",
+          "request_digest": "85f9eef3e5405e34944e29426c51ab306d4d37bfcdc206f33374d3a68e39dae5"
+        },
+        "outcome": {
+          "classification": "success",
+          "exit_status": 0,
+          "signal": null,
+          "error_code": null
+        },
+        "output_digests": {
+          "stdout_sha256": "dc868cb1c987ab2bfda9da5f96e569ade32558c15fa975c809bd60c9e7f64d87",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "private_raw_reference": {
+          "kind": "private-file",
+          "locator": "/tmp/dispatch-author-codex-7xKZm7/stdout",
+          "digest": "dc868cb1c987ab2bfda9da5f96e569ade32558c15fa975c809bd60c9e7f64d87"
+        },
+        "receipt_digest": "b3fd6397c71d4fec6dc09efe9afcb43c1d90e72d1a705791c9b0d7b5357ee740"
+      },
+      "transport_status": "success",
+      "parser_status": "strict",
+      "semantic_status": "available",
+      "unratified_semantic_status": "unavailable"
+    },
+    {
+      "seat_id": "minimax_evidence_skeptic",
+      "target_id": "minimax_evidence_skeptic",
+      "attempt": 1,
+      "transport_envelope": {
+        "schema_version": 1,
+        "artifact_type": "runner_transport_envelope",
+        "request_binding": {
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3",
+          "operation": "plan-review",
+          "request_digest": "9a3e6cd28b722b0ac3bb4e105ea2a50e8348015d1ab52e79ceced0e8bbda7d56"
+        },
+        "outcome": {
+          "classification": "success",
+          "exit_status": 0,
+          "signal": null,
+          "error_code": null
+        },
+        "output_digests": {
+          "stdout_sha256": "d37a0703fd25b8bfb9c4d264d7161d835feaa3ca61761d096fc67b3a3c654d9a",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "private_raw_reference": {
+          "kind": "private-file",
+          "locator": "/tmp/dispatch-author-log-AMgtp6",
+          "digest": "d37a0703fd25b8bfb9c4d264d7161d835feaa3ca61761d096fc67b3a3c654d9a"
+        },
+        "receipt_digest": "5e2a9c61a7228997932e0cf84224083c483d4a379d99d01ee5e880ce1fcaf126"
+      },
+      "transport_status": "success",
+      "parser_status": "strict",
+      "semantic_status": "available",
+      "unratified_semantic_status": "unavailable"
+    },
+    {
+      "seat_id": "glm_compat_reviewer",
+      "target_id": "glm_compat_reviewer",
+      "attempt": 1,
+      "transport_envelope": {
+        "schema_version": 1,
+        "artifact_type": "runner_transport_envelope",
+        "request_binding": {
+          "runner": "anthropic-compatible",
+          "model": "glm-5.3",
+          "operation": "plan-review",
+          "request_digest": "592d21ba82a698a904c5b57e23a994b672bccc3f916d7263bd185e40fca80737"
+        },
+        "outcome": {
+          "classification": "success",
+          "exit_status": 0,
+          "signal": null,
+          "error_code": null
+        },
+        "output_digests": {
+          "stdout_sha256": "3cd11d973fbcbd42c4a47ec7d8d5706bc647c83d3695db424258824e515b5217",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "private_raw_reference": {
+          "kind": "private-file",
+          "locator": "/tmp/dispatch-author-log-3cGZqr",
+          "digest": "3cd11d973fbcbd42c4a47ec7d8d5706bc647c83d3695db424258824e515b5217"
+        },
+        "receipt_digest": "2753ab434037ed3589598c0cba8e6003c7c7baa03e1ec4fb3953723cc53ff1e5"
+      },
+      "transport_status": "success",
+      "parser_status": "strict",
+      "semantic_status": "available",
+      "unratified_semantic_status": "unavailable"
+    }
+  ],
+  "substitutions": [],
+  "reviewer_verdicts": [
+    {
+      "seat_id": "sol_architecture_chair",
+      "target_id": "sol_architecture_chair",
+      "family": "openai",
+      "verdict": "STOP"
+    },
+    {
+      "seat_id": "minimax_evidence_skeptic",
+      "target_id": "minimax_evidence_skeptic",
+      "family": "minimax",
+      "verdict": "CONDITIONAL"
+    },
+    {
+      "seat_id": "glm_compat_reviewer",
+      "target_id": "glm_compat_reviewer",
+      "family": "zhipu",
+      "verdict": "CONDITIONAL"
+    }
+  ],
+  "findings": [
+    {
+      "rubric_id": "R2",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "Relay SSE backlog-to-live transition and replay cursor",
+      "claim": "The plan lacks a fixed high-watermark and queue-reconciliation rule, so a message counted in the backlog summary can subsequently be emitted as a live message, violating the promised zero-message summary path.",
+      "evidence": "The relay subscribes before draining and queues concurrent arrivals. Existing deduplication marks an ID seen only when writeAndMark emits it. The live loop later emits every queued unseen ID. The proposed summary path explicitly skips message writes but does not mark or remove summarized queued IDs. The 10,000-row counting cap also cannot determine the true live edge unless a separate bounded high-watermark algorithm is specified.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:37; docs/plans/2026-09-15-replay-butler.md:39; docs/plans/2026-09-15-replay-butler.md:59; packages/relay/src/routes/stream.ts:123; packages/relay/src/routes/stream.ts:132; packages/relay/src/routes/stream.ts:153; packages/relay/src/routes/stream.ts:209",
+      "repair": "Capture an explicit raw-ID high-watermark before the dry-run, constrain counting and summary metadata to rows at or below it, define how newest is obtained when counting stops at 10,001, and discard or mark seen every queued ID at or below that cutoff without stamping delivered_at or inserting grants. Add an interleaving test where a message arrives after subscription but before summary completion.",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "sol_architecture_chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "89d979697de8b50cc002ffb2229a6239b19e636551baa041ef8be33c34a4f5f7"
+    },
+    {
+      "rubric_id": "R5",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "Peer-agent durable cursor, pendingBacklog state, and presence reminder",
+      "claim": "The proposed in-memory reminder does not cover the forget-to-pull requirement after restart and is cleared prematurely by a partial poll.",
+      "evidence": "The plan durably advances the SSE cursor to newest but stores pendingBacklog only in memory. A restart therefore retains the advanced cursor, loses the reminder, and receives no repeated summary. The plan also clears the marker on any poll whose since precedes the old cursor, even though poll_inbox may return only 1 to 1,000 rows and leave most of the summarized backlog unread.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:79; docs/plans/2026-09-15-replay-butler.md:80; docs/plans/2026-09-15-replay-butler.md:82; docs/plans/2026-09-15-replay-butler.md:85; packages/peer-agent/src/cursor-store.ts:31; packages/peer-agent/src/cursor-store.ts:49; packages/peer-agent/src/tools.ts:61; packages/peer-agent/src/tools.ts:582",
+      "repair": "Persist the pending-backlog record together with the advanced cursor, restore it at startup, and update its remaining count and continuation cursor after each poll. Clear it only when the relay reports no remaining summarized rows or the poll cursor reaches the recorded summary cutoff.",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "sol_architecture_chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "0b19bd5fae6fb5c5958466d322ef3bbe35d1142ad89b2baaaf4795df680ea464"
+    },
+    {
+      "rubric_id": "R7",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "Durable task_dispatch delivery and disposition contract",
+      "claim": "Summarizing task_dispatch messages breaks the existing dispatch contract because the receiver does not get the structured dispatch and the sender interprets absence of a disposition as lost delivery.",
+      "evidence": "The plan deliberately summarizes task_dispatch and bypasses InboundDispatcher. Current inbound policy explicitly preserves task_dispatch because swallowing it manufactures the same silence used to detect a lost session. The public dispatch tool likewise states that the receiver gets a structured task_dispatch and that silence with no disposition is the lost-session signal.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:27; docs/plans/2026-09-15-replay-butler.md:76; packages/peer-agent/src/inbound.ts:101; packages/peer-agent/src/inbound.ts:104; packages/peer-agent/src/inbound.ts:106; packages/peer-agent/src/tools.ts:211; packages/peer-agent/src/tools.ts:213",
+      "repair": "Make command-bearing task_dispatch rows non-suppressible and deliver them individually, or introduce a protocol-level receipt/disposition that preserves each correlation before advancing past it. Remove the no-kind-split decision unless the dispatch contract is explicitly redesigned and migrated.",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "sol_architecture_chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "ee6760c01893671bfcc222e5ed81b804df49aef620f388b42239d5139776cea7"
+    },
+    {
+      "rubric_id": "R10",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "Agent-call and switchboard delivery of synthetic backlog summaries",
+      "claim": "The plan promises a non-envelope, non-replyable summary through agent-call and switchboard, but the current final-mile APIs require an Envelope and always expose its remote message ID; the listed P4 files do not include the components that must change.",
+      "evidence": "deliverViaAgentCall accepts Envelope and always emits remote_msg_id and kind. Switchboard routing and delivery also accept Envelope, while index routes agent-call delivery through those APIs. Risk judgments: R-a needs a fixed cutoff and bounded live-edge algorithm; R-b needs a separate broadcast field because @team is not a sender; R-c needs a dedicated synthetic final-mile shape; R-d needs an explicit routing choice because the current fallback targets every registration; R-e is acceptable for v1 because the threshold is configurable and zero disables it.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:76; docs/plans/2026-09-15-replay-butler.md:88; docs/plans/2026-09-15-replay-butler.md:110; docs/plans/2026-09-15-replay-butler.md:141; packages/peer-agent/src/agent-call-ingress.ts:15; packages/peer-agent/src/agent-call-ingress.ts:39; packages/peer-agent/src/switchboard.ts:189; packages/peer-agent/src/switchboard.ts:277; packages/peer-agent/src/index.ts:255",
+      "repair": "Define a dedicated BacklogNotification final-mile API with no remote_msg_id or reply route, add agent-call-ingress.ts and switchboard.ts to P4, specify authority, retry, cursor-ordering, and switchboard targeting semantics, and test both single-target and switchboard delivery. Use a separate broadcast_count field rather than inserting @team into by_sender.",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "sol_architecture_chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "43b560b5ff8f10a8b10bd9d7d48b465bb445b4810a175bafe03f9ff276d40422"
+    },
+    {
+      "rubric_id": "R4",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "Cold-start backlog definition and rollout acceptance fixture",
+      "claim": "The statement that historical @team rows always have delivered_at IS NULL is false because delivered_at is global per message, not per recipient.",
+      "evidence": "Cold-start fetchPendingSince selects only rows whose delivered_at is null. Any earlier stream presentation calls markDelivered on that shared message row, including @team rows, so a newly registered handle will not necessarily summarize historical broadcasts. Polling differs because fetchInboxSince intentionally ignores delivered_at.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:69; docs/plans/2026-09-15-replay-butler.md:70; packages/relay/src/messages/store.ts:170; packages/relay/src/messages/store.ts:181; packages/relay/src/messages/store.ts:198; packages/relay/src/messages/store.ts:217",
+      "repair": "State that cold start applies only to globally undelivered rows and seed such rows explicitly in T5 and rollout validation. If all historical broadcasts must be visible to every newly registered handle, expand the design to per-recipient delivery state instead of relying on delivered_at.",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "sol_architecture_chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "de5121397a69151ed0e42f9c2a95cd3703e29b137c13879d601db09426c22693"
+    },
+    {
+      "rubric_id": "R6",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "GET /v1/messages pending_after wire semantics",
+      "claim": "The capped pending_after field is ambiguous at exactly 10,000 because the response does not distinguish an exact count from a truncated count.",
+      "evidence": "The backlog event explicitly includes pending_capped when its count is truncated, but the poll response specifies only an integer pending_after capped at 10,000. Rendering it as 'K remain' would present a lower bound as an exact total when more than 10,000 deliverable rows remain.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:59; docs/plans/2026-09-15-replay-butler.md:93; docs/plans/2026-09-15-replay-butler.md:94",
+      "repair": "Add pending_after_capped, define pending_after as min(actual, 10000), and render capped values as 'at least 10000 remain'. Test both exact 10,000 and greater-than-10,000 cases using the same ACL and self-exclusion semantics as poll_inbox.",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "sol_architecture_chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "e922238ac32a6f19fcadb225a216f3bfa04299ae3917651c4d5c93e7a474e45e"
+    },
+    {
+      "rubric_id": "R8",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "Replay-butler acceptance test matrix",
+      "claim": "T1 through T12 omit several boundary and integration cases required to detect the identified failures.",
+      "evidence": "T4 inserts only after the summary and therefore misses the subscribe-to-summary race. T12 expects the marker to disappear after one poll without proving the summarized range was exhausted. There is no test for restart persistence, capped counts, poll ACL filtering, a 200-character presence summary plus suffix, agent-call delivery, or switchboard fanout. T9 covers only claude-channel.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:115; docs/plans/2026-09-15-replay-butler.md:119; docs/plans/2026-09-15-replay-butler.md:124; docs/plans/2026-09-15-replay-butler.md:127; packages/relay/src/routes/presence.ts:9; packages/relay/src/routes/presence.ts:10",
+      "repair": "Expand the test matrix with deterministic connect-window interleaving, pending-state restart and multi-page polling, replay_max validation, both 10,000 caps, ACL-filtered pending_after, maximum-length presence summaries, dedicated agent-call summaries, and switchboard routing behavior.",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "sol_architecture_chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "85c1eccf5a0bf7806d1de92ce76d530b814402c7383b674f073c4221a69e68cf"
+    },
+    {
+      "rubric_id": "R1",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "packages/relay/src/routes/stream.ts",
+      "claim": "§0 claims backlog drain has no cap/no age cutoff and peer-agent emits one notification per envelope",
+      "evidence": "未驗證。需實際讀 packages/relay/src/routes/stream.ts:149-158 的 drain loop、BACKLOG_PAGE=1000 的定義,以及 packages/peer-agent/src/index.ts:257-260 的 InboundDispatcher.emit 對 claude-channel 的處理;若現碼已有任何 cap / 合併機制而 plan 漏看,即 FAIL。",
+      "evidence_reference": "stream.ts:149-158, index.ts:257-260",
+      "repair": "No current change; follow-up only. Reviewer 在跑流程前以 grep 驗證 BACKLOG_PAGE、drain 迴圈終止條件、emit 對 claude-channel 的分支。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "86d8fed5f3a54f0c9ac0470110fecdba2811b29be2750eb0817ae9d77445a1c7"
+    },
+    {
+      "rubric_id": "R2",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "packages/relay/src/routes/stream.ts",
+      "claim": "§2.1 選 relay-side(A)的三條理由成立,以及 plan 未提 A 的致命缺陷",
+      "evidence": "未驗證。(1) messages.ts 的 ownsNamespace 與 stream.ts 的 deliverable 兩條可投遞判定口徑差異,需逐行比對 messages.ts:107 與 stream.ts:74-96;(2) poll 是否真會 insertGrants(messages.ts:113-117)的每筆呼叫;(3)「兩次往返」的成本論證。另需檢查 A 的 dry-run + drain 跳轉在 live 訊息於兩者之間插入時,cursor/grant 是否會分岔——plan 未明示防護。",
+      "evidence_reference": "stream.ts:74-96, messages.ts:107, messages.ts:113-117",
+      "repair": "實作 P2 前:(a) 在 relay 內把 dry-run count 與跳轉 cursor 用同一個 transaction 內的 read-modify-write 封裝,或將 cursor 跳轉改寫為「drain 送出 backlog 事件時即以 newest 為下次 fanout 起點」並說明 live fanout 在此期間會沿游標單調推進;(b) 在 §2.3 加一句「dry-run 與跳轉之間不允許新寫入」的不變式,並標出哪行程式碼守護它。",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "c69b2a09868061e4b34631fe17fc2c7b6fe5c7970f5aa771c4afffb84966f12c"
+    },
+    {
+      "rubric_id": "R3",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "packages/peer-agent/src/stream.ts, packages/relay/src/routes/stream.ts",
+      "claim": "§2.2 相容性:replay_max 缺席 ⇒ 與今日完全相同;舊 peer-agent SSE parser 對未知 backlog event 忽略;舊 relay 對未知 query param 忽略",
+      "evidence": "未驗證。需實際讀 packages/peer-agent/src/stream.ts 的 readStream 確認對未知 event 的處理(是忽略還是 throw,以及是否有嚴格模式開關);以及 Hono router 對未知 query param 的預設行為(§5 已自稱「Hono 預設忽略」,需以源碼或文件佐證)。",
+      "evidence_reference": "peer-agent/src/stream.ts readStream, Hono router 行為",
+      "repair": "P4 前在 packages/peer-agent/src/stream.ts 加一個最小的 unit test 餵 `event: backlog\\ndata: {}\\n\\n` 並斷言不 throw、cursor 不被消費;P2 前補一行 relay-side test 送一個未知 query param 並斷言回應等同今日。",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "e4fc656c6ce3f13b2fcb079e4758c39657d5dea259a67ca6252610822e45a677"
+    },
+    {
+      "rubric_id": "R4",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "packages/relay/src/routes/stream.ts, packages/relay/src/routes/messages.ts",
+      "claim": "§2.3 略過列不 stamp delivered_at、不 insertGrants;poll 後續讀到時會 grant,語意一致",
+      "evidence": "未驗證。需對照 stream.ts 的 writeAndMark / markDelivered(stream.ts:135-137)確認「不寫就不 mark」,並確認當略過列之後被 poll 讀到時,messages.ts:113-117 的 insertGrants 路徑確實會跑(不會因某個 since 旗標而被略過)。",
+      "evidence_reference": "stream.ts:135-137, messages.ts:113-117",
+      "repair": "No current change; follow-up only. 在 T3 補一個反向斷言:略過的 11 列隨後以 poll_inbox since=cursor 讀取時,grant row 數量從 0 變 11。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "07c06b9675d58c46ea6cd8ad9b2802b4f83f1cb8fc000784ddfc4dadcafa1402"
+    },
+    {
+      "rubric_id": "R5",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "packages/peer-agent/src/index.ts",
+      "claim": "§2.4 採「推進 cursor + 本機 pendingBacklog + presence 尾綴」,未造成不可恢復遺漏",
+      "evidence": "未驗證。需追蹤:略過列的 `id > newest` 為 false 恆成立時,下次重連或 poll 是否仍可讀。已標的 cursorStore + poll_inbox since≤pendingBacklog.since 清記憶 機制足以保證無遺漏,但 poll 的 since 採的是「連線前的 cursor」還是「newest」需寫明,以免錯位。",
+      "evidence_reference": "peer-agent cursor-store, poll_inbox handler",
+      "repair": "在 §2.4 補一句 poll_inbox 的 since 比較口徑:「since 用 cursorStore 持久化值,而非 pendingBacklog.since」,並把 T12 的斷言明確化(目前 T12 寫「since=<舊 cursor>」語意模糊)。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "9a06266678f3ef4375ab40ecb79b72ca6641985e00353706bf9465402de8badf"
+    },
+    {
+      "rubric_id": "R6",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "packages/relay/src/routes/messages.ts",
+      "claim": "§2.5 pending_after 語意與 next_cursor 一致、上限 10 000、舊 client 忽略",
+      "evidence": "未驗證。需確認 messages.ts 回應 envelope 的 JSON shape 在多一個欄位時,舊 client 走「未知欄位忽略」路徑(常見是 undefined-check 或解構取值,不會炸)。",
+      "evidence_reference": "messages.ts response envelope",
+      "repair": "No current change; follow-up only. T7 之外補一個形狀測:舊 client 解構 `{messages, next_cursor}` 不應被新 `pending_after` 影響。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "a1e2b813eafeba00a1d684b4d3298070dd139b137111433157fc583232e352fb"
+    },
+    {
+      "rubric_id": "R7",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "packages/relay/src/dispatchTracker 或 task-dispatch 路徑",
+      "claim": "§1 不做 kind 分流,不會破壞 task_dispatch / dispatchTracker / task dedup / correlation 契約",
+      "evidence": "未驗證。摘要略過 task_dispatch 列時,delivered_at 未 stamp;若 dispatchTracker 把「relay 已送出 SSE」當作一個信號,可能誤判。需引 file:line 確認 dispatchTracker 不依賴 delivered_at 或 SSE 是否被消費。",
+      "evidence_reference": "dispatchTracker, task dedup",
+      "repair": "No current change; follow-up only. 在 §1 加一句明指「dispatchTracker 的信號來源不是 SSE 送達」並引 file:line;若反之,plan 須改。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "02cc2755b37185b2971c5e7ccab710005e51d7f4da0ea3d034dd598e92da3599"
+    },
+    {
+      "rubric_id": "R8",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "packages/relay/src/routes/stream.ts, packages/peer-agent",
+      "claim": "§4 T1–T12 覆蓋相容、門檻兩側、略過列不變性、live 續投、cold start、口徑一致、poll 總量、peer-agent 路徑、積壓記憶",
+      "evidence": "未驗證。缺口列為建議:replay_max 非法值/超界 400 缺專測(只在 P2 驗收列了,但 T 集沒有)、pending 上限 10 000 截斷後回 10000+ 與 pending_capped=true 缺測、switchboard 摘要投遞(§2.4 末句)無測。",
+      "evidence_reference": "§4 T1–T12",
+      "repair": "在 §4 加 T13 = replay_max=abc / 超界 → 400;T14 = pending>10000 → pending_capped=true 且 by_sender 不爆 key;T15 = switchboard 模式 backlog 事件 fanout 數 = extension 數。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "7c509b5789841653b56dec4878a8761a3de2247951a20c85df112a9961d59e7a"
+    },
+    {
+      "rubric_id": "R9",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "hangar deploy runbook",
+      "claim": "§5 relay 先、peer-agent 後的順序是相容性必然;install-relay.sh 而非手動 build+restart 有明確理由",
+      "evidence": "未驗證。install-relay.sh 與「手動 build+restart 造成 build_revision 漂移」的因果需引 hangar 文件段落(hangar gotcha `indirect-signal-is-not-the-observation`)佐證。驗收步驟 3「找一個離線 > 1 天的 handle」可執行性,需確認此類 handle 在 fleet 中存在或可建立。",
+      "evidence_reference": "install-relay.sh, hangar gotcha 文件",
+      "repair": "在 §5 步驟 1 補一句「build_revision 漂移如何讓 fleet 顯示看起來正常但 relay 實際未生效」的因果;步驟 3 改寫成「若無現成離線 handle,以臨時 secret 建立新 handle 並預填 > threshold 筆歷史」並加一個 dry-run 指令。",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "5c3b139453fd73c6a5cda0a1c3527be6b220789ac11689a561adbd6e547c2cbd"
+    },
+    {
+      "rubric_id": "R10",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "§6 風險列",
+      "claim": "§6 R-a–R-e 風險真實且未被 §2 偷解",
+      "evidence": "未驗證。逐條判斷:R-a(dry-run 兩次讀 SQLite + 10000 上限)需確認上限落在 dry-run 路徑而非 drain 路徑;R-b(@team 用 from 還是 to)plan 自承需 reviewer 判斷,語意會誤導 operator;R-c(摘要被當訊息回覆)需在 §2.4 明示「合成通知 reply_to_peer 不可用」並 file:line 佐證;R-d(switchboard 廣播)需在 §2.4 末句加 fallback 決策,否則 v1 launch 即過吵。",
+      "evidence_reference": "§6 R-a, R-b, R-c, R-d, R-e",
+      "repair": "R-a:在 §2.1 dry-run 段加一句「上限 10000 計算 count 後即停,不繼續 drain」;R-b:改成 to 欄位(@team 在 to 時才計入 @team 鍵),或明示「by_sender 為 from」並加註;R-c:§2.4 補一行「合成通知無 msg id,reply_to_peer 回 422」並引 file:line;R-d:§2.4 改寫「switchboard 模式只送 target extension,除非 target 為空才 fanout」;R-e:留為 reviewer 資料收集項,加一個 dash 查詢樣板。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "minimax_evidence_skeptic",
+          "runner": "anthropic-compatible",
+          "model": "MiniMax-M3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "f7569e0dd6ddfa75ca4b4454bce0e32d711a27d40b72cc46c7e08c7e6a247113"
+    },
+    {
+      "rubric_id": "R1",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "packages/relay/src/routes/stream.ts backlog drain 與 deliverable/markDelivered 位置;packages/peer-agent/src/index.ts 通知 emit;plan §0 與 §2.3",
+      "claim": "§0 對現況的描述(每頁 1000 分頁、迴圈到短頁、無筆數上限、無年齡截止;每封一個 server.notification;現碼無任何既有 cap 或合併機制)在本輪審查未經源碼驗證;P2 直接改動同一段程式,前提未證實前不應開切片。",
+      "evidence": "plan §0 引 stream.ts:149-158 與 index.ts:257-260;§2.3 另引 stream.ts:135-137(markDelivered)與 stream.ts:74-96(deliverable)宣稱不需改;本審查席在凍結上下文中無法開啟 packages/** 檔案,依 reviewer contract 記為未驗證,不得從 plan 文字推定;若現碼已有任何 cap/合併機制而 plan 漏看,R1 即 FAIL。",
+      "evidence_reference": "plan §0、§2.3;plan 所引 packages/relay/src/routes/stream.ts:74-96、135-137、149-158;packages/peer-agent/src/index.ts:257-260",
+      "repair": "P2 開始前實際讀檔:確認 drain 迴圈終止條件與 BACKLOG_PAGE 常數、deliverable() gate、markDelivered/writeAndMark 只在真正 write 時呼叫、index.ts 對 claude-channel 每封 emit;把 file:line 證據補回 plan §0;若發現既有 cap 或合併機制,修訂 §0 並重劃 P2 範圍。",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "glm_compat_reviewer",
+          "runner": "anthropic-compatible",
+          "model": "glm-5.3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "06c6404ef02de8ec2b4a64a477beea79ce50fcee105ddd294d299d44122735ef"
+    },
+    {
+      "rubric_id": "R2",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "packages/relay/src/routes/stream.ts dry-run 與 drain/live 訂閱順序;plan §2.1",
+      "claim": "否決 B 的理由(1)(2)屬程式行為主張但未驗證;另 A 有一個 plan 未規定的順序缺口:dry-run 快照與 live 訂閱的先後未指定,若快照先於訂閱,落在兩者之間插入的列既不計入 pending 也不被 live fanout 推送,只能等下次重連補送(可恢復、非永久遺漏,故非致命)。",
+      "evidence": "plan §2.1 理由(1)引 messages.ts:107(ownsNamespace)、理由(2)引 messages.ts:113-117(insertGrants),本席未能讀檔驗證;§2.1 只說 dry-run 在既有 drain loop 之前,未規定訂閱必須先於快照;§6 R-a 僅涵蓋雙讀成本,未涵蓋此視窗。",
+      "evidence_reference": "plan §2.1、§6 R-a;plan 所引 packages/relay/src/routes/messages.ts:107、113-117",
+      "repair": "讀檔驗證 ownsNamespace 與 insertGrants 兩處引用;在 §2.1 加一條硬順序:live fanout 訂閱必須先於 dry-run 快照(或 newest 與計數同一快照原子取得),並補測試:訂閱與快照之間插入的列恰被 live 推送一次且不重複計入 pending。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "glm_compat_reviewer",
+          "runner": "anthropic-compatible",
+          "model": "glm-5.3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "1cc5059ea4f86751bd8afc25d60670a9a0f6b10aab9136062c03d980b4298480"
+    },
+    {
+      "rubric_id": "R4",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "backlog 事件 pending 計數;resume_hint;packages/relay/src/routes/messages.ts poll 口徑與 pending_after;plan §2.2 §2.3 §2.5",
+      "claim": "略過列的 resume 語意不保證一致:摘要計數採 stream 端 deliverable() 口徑,但 resume_hint 指向的 poll_inbox 與 pending_after 採 poll 端 ownsNamespace 口徑,而 plan 自己在 §2.1 理由(1)主張兩口徑不同;因此部分被摘要的列可能無法經建議的 poll 路徑讀回,或 poll 筆數與 pending 不符,§2.3 的語意一致宣稱不成立。",
+      "evidence": "plan §2.1 理由(1)明言 messages.ts:107 與 stream.ts:74-96 口徑不同;§2.2 resume_hint 要使用者以 poll_inbox since=舊 cursor 撈回;§2.3 稱 poll 路徑自己會 grant(messages.ts:113-117)故語意一致;§2.5 pending_after 明定同 poll 口徑;兩謂詞實際差集未驗證,但 plan 已自認存在差異,而 resume 設計未處理該差異。",
+      "evidence_reference": "plan §2.1、§2.2、§2.3、§2.5;plan 所引 packages/relay/src/routes/messages.ts:107、113-117;packages/relay/src/routes/stream.ts:74-96",
+      "repair": "P3 前定案三選一:(a) resume 讀取路徑改用與摘要相同的 deliverable 口徑(例如 since 參數走與 drain 同一 gate);(b) pending 與 pending_after 統一改用 poll 口徑計數,deliverable 僅作推不推的決策;(c) 明確文件化 resume 僅覆蓋 poll 口徑並把差集列入 §6 風險;並補測試:構造 deliverable 但不通過 ownsNamespace 的列,斷言摘要後能(或明確不能)經建議路徑讀回。",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "glm_compat_reviewer",
+          "runner": "anthropic-compatible",
+          "model": "glm-5.3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "5bc2e5f67cc012dd09fa64bb7ac8e7528762cf2b63a8d8dbc8603cfe72c81c98"
+    },
+    {
+      "rubric_id": "R3",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "packages/peer-agent/src/stream.ts readStream 未知 event 處理;舊 relay 未知 query param 處理;rollout 順序 §5",
+      "claim": "§2.2 三項相容主張(舊 peer-agent 對未知 backlog event 忽略而不 throw、舊 relay 忽略未知 query param replay_max、參數缺席行為與今日完全相同)本輪皆未驗證;§5 先 relay 後 peer-agent 的硬順序與混合版本安全性完全建立在此三點上,其中舊 relay 行為 plan 自己標為必須確認但未收口。",
+      "evidence": "rubric R3 要求實際在 packages/peer-agent/src/stream.ts readStream 確認未知 event 處理,本席無法讀檔,記為未驗證;plan §5 步驟 2 原文承認必須確認舊 relay 忽略未知 query param,Hono 預設忽略屬框架推定而非實測;參數缺席等價性是 T1 的待寫測試,不是已驗證事實。",
+      "evidence_reference": "plan §2.2、§5 步驟 2;packages/peer-agent/src/stream.ts(readStream,未驗證)",
+      "repair": "P4 與 rollout 前完成兩個實測並把結果補回 §2.2:對現行 peer-agent build 餵含未知 event 名的 SSE stream,確認 readStream 忽略而不 throw;對現行 relay 發一個帶未知 query param 的 /v1/stream 請求,確認 200 且全量 replay;若任一失敗,改為同版本部署窗口或先修 parser 再 rollout。",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "glm_compat_reviewer",
+          "runner": "anthropic-compatible",
+          "model": "glm-5.3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "b99cc66cf23e8d9bf1a5661c5bd785fd0d7efb3fdba12902dd9ec548c6082825"
+    },
+    {
+      "rubric_id": "R8",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "plan §4 測試矩陣 T1–T12",
+      "claim": "T1–T12 缺四類案例:replay_max 非法值(非整數、負數、超界)應 400;pending 達 10 000 上限的截斷表示(pending_capped 與 pending_after 的確定行為);switchboard 模式摘要投遞(每 extension 恰一則);replay_threshold 超過 1000 的 clamp 行為;另 T9 未覆蓋 §6 R-c 要求的這不是一封訊息免回覆文案。",
+      "evidence": "§3 P2 明定非整數與超界回 400,§2.2 明定 pending_capped:true,§2.4 明定 switchboard 送所有 extension 且 threshold 上限 1000,§6 R-c 要求文案明講不可回覆,但 §4 T1–T12 逐一檢視皆無對應案例;rubric R8 已把非法值 400、上限截斷、switchboard 摘要列為可能缺口。",
+      "evidence_reference": "plan §3 P2、§2.2、§2.4、§4 T1–T12、§6 R-c",
+      "repair": "增補 T13(replay_max=abc、-1、1001 各回 400 且缺席路徑不受影響)、T14(種 10001 列可投遞,斷言 backlog 含 pending_capped 且 pending_after 以 10000 為上限的確定表示法)、T15(switchboard 兩個 extension 各恰收一則摘要)、T16(config 載入時 replay_threshold=5000 被 clamp 到 1000 或拒絕,擇一並測),並在 T9 增加斷言合成通知含免回覆宣告。",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "glm_compat_reviewer",
+          "runner": "anthropic-compatible",
+          "model": "glm-5.3"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": null,
+      "fingerprint": "adf84eb8f8ce3952aae6dc8fcb4150e6f2cfc162d6fbfed4544916a0949562ab"
+    }
+  ],
+  "backlog_candidates": [
+    {
+      "fingerprint": "de5121397a69151ed0e42f9c2a95cd3703e29b137c13879d601db09426c22693",
+      "rubric_id": "R4",
+      "affected_surface": "Cold-start backlog definition and rollout acceptance fixture",
+      "claim": "The statement that historical @team rows always have delivered_at IS NULL is false because delivered_at is global per message, not per recipient.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:69; docs/plans/2026-09-15-replay-butler.md:70; packages/relay/src/messages/store.ts:170; packages/relay/src/messages/store.ts:181; packages/relay/src/messages/store.ts:198; packages/relay/src/messages/store.ts:217",
+      "disposition": null
+    },
+    {
+      "fingerprint": "e922238ac32a6f19fcadb225a216f3bfa04299ae3917651c4d5c93e7a474e45e",
+      "rubric_id": "R6",
+      "affected_surface": "GET /v1/messages pending_after wire semantics",
+      "claim": "The capped pending_after field is ambiguous at exactly 10,000 because the response does not distinguish an exact count from a truncated count.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:59; docs/plans/2026-09-15-replay-butler.md:93; docs/plans/2026-09-15-replay-butler.md:94",
+      "disposition": null
+    },
+    {
+      "fingerprint": "85c1eccf5a0bf7806d1de92ce76d530b814402c7383b674f073c4221a69e68cf",
+      "rubric_id": "R8",
+      "affected_surface": "Replay-butler acceptance test matrix",
+      "claim": "T1 through T12 omit several boundary and integration cases required to detect the identified failures.",
+      "evidence_reference": "docs/plans/2026-09-15-replay-butler.md:115; docs/plans/2026-09-15-replay-butler.md:119; docs/plans/2026-09-15-replay-butler.md:124; docs/plans/2026-09-15-replay-butler.md:127; packages/relay/src/routes/presence.ts:9; packages/relay/src/routes/presence.ts:10",
+      "disposition": null
+    },
+    {
+      "fingerprint": "86d8fed5f3a54f0c9ac0470110fecdba2811b29be2750eb0817ae9d77445a1c7",
+      "rubric_id": "R1",
+      "affected_surface": "packages/relay/src/routes/stream.ts",
+      "claim": "§0 claims backlog drain has no cap/no age cutoff and peer-agent emits one notification per envelope",
+      "evidence_reference": "stream.ts:149-158, index.ts:257-260",
+      "disposition": null
+    },
+    {
+      "fingerprint": "07c06b9675d58c46ea6cd8ad9b2802b4f83f1cb8fc000784ddfc4dadcafa1402",
+      "rubric_id": "R4",
+      "affected_surface": "packages/relay/src/routes/stream.ts, packages/relay/src/routes/messages.ts",
+      "claim": "§2.3 略過列不 stamp delivered_at、不 insertGrants;poll 後續讀到時會 grant,語意一致",
+      "evidence_reference": "stream.ts:135-137, messages.ts:113-117",
+      "disposition": null
+    },
+    {
+      "fingerprint": "9a06266678f3ef4375ab40ecb79b72ca6641985e00353706bf9465402de8badf",
+      "rubric_id": "R5",
+      "affected_surface": "packages/peer-agent/src/index.ts",
+      "claim": "§2.4 採「推進 cursor + 本機 pendingBacklog + presence 尾綴」,未造成不可恢復遺漏",
+      "evidence_reference": "peer-agent cursor-store, poll_inbox handler",
+      "disposition": null
+    },
+    {
+      "fingerprint": "a1e2b813eafeba00a1d684b4d3298070dd139b137111433157fc583232e352fb",
+      "rubric_id": "R6",
+      "affected_surface": "packages/relay/src/routes/messages.ts",
+      "claim": "§2.5 pending_after 語意與 next_cursor 一致、上限 10 000、舊 client 忽略",
+      "evidence_reference": "messages.ts response envelope",
+      "disposition": null
+    },
+    {
+      "fingerprint": "02cc2755b37185b2971c5e7ccab710005e51d7f4da0ea3d034dd598e92da3599",
+      "rubric_id": "R7",
+      "affected_surface": "packages/relay/src/dispatchTracker 或 task-dispatch 路徑",
+      "claim": "§1 不做 kind 分流,不會破壞 task_dispatch / dispatchTracker / task dedup / correlation 契約",
+      "evidence_reference": "dispatchTracker, task dedup",
+      "disposition": null
+    },
+    {
+      "fingerprint": "7c509b5789841653b56dec4878a8761a3de2247951a20c85df112a9961d59e7a",
+      "rubric_id": "R8",
+      "affected_surface": "packages/relay/src/routes/stream.ts, packages/peer-agent",
+      "claim": "§4 T1–T12 覆蓋相容、門檻兩側、略過列不變性、live 續投、cold start、口徑一致、poll 總量、peer-agent 路徑、積壓記憶",
+      "evidence_reference": "§4 T1–T12",
+      "disposition": null
+    },
+    {
+      "fingerprint": "f7569e0dd6ddfa75ca4b4454bce0e32d711a27d40b72cc46c7e08c7e6a247113",
+      "rubric_id": "R10",
+      "affected_surface": "§6 風險列",
+      "claim": "§6 R-a–R-e 風險真實且未被 §2 偷解",
+      "evidence_reference": "§6 R-a, R-b, R-c, R-d, R-e",
+      "disposition": null
+    },
+    {
+      "fingerprint": "1cc5059ea4f86751bd8afc25d60670a9a0f6b10aab9136062c03d980b4298480",
+      "rubric_id": "R2",
+      "affected_surface": "packages/relay/src/routes/stream.ts dry-run 與 drain/live 訂閱順序;plan §2.1",
+      "claim": "否決 B 的理由(1)(2)屬程式行為主張但未驗證;另 A 有一個 plan 未規定的順序缺口:dry-run 快照與 live 訂閱的先後未指定,若快照先於訂閱,落在兩者之間插入的列既不計入 pending 也不被 live fanout 推送,只能等下次重連補送(可恢復、非永久遺漏,故非致命)。",
+      "evidence_reference": "plan §2.1、§6 R-a;plan 所引 packages/relay/src/routes/messages.ts:107、113-117",
+      "disposition": null
+    },
+    {
+      "fingerprint": "adf84eb8f8ce3952aae6dc8fcb4150e6f2cfc162d6fbfed4544916a0949562ab",
+      "rubric_id": "R8",
+      "affected_surface": "plan §4 測試矩陣 T1–T12",
+      "claim": "T1–T12 缺四類案例:replay_max 非法值(非整數、負數、超界)應 400;pending 達 10 000 上限的截斷表示(pending_capped 與 pending_after 的確定行為);switchboard 模式摘要投遞(每 extension 恰一則);replay_threshold 超過 1000 的 clamp 行為;另 T9 未覆蓋 §6 R-c 要求的這不是一封訊息免回覆文案。",
+      "evidence_reference": "plan §3 P2、§2.2、§2.4、§4 T1–T12、§6 R-c",
+      "disposition": null
+    }
+  ],
+  "accepted_blocker_count": 0,
+  "repair_authorized": false,
+  "next_generation": 2,
+  "reviewed_at": "2026-09-14T21:23:54.788Z"
+}

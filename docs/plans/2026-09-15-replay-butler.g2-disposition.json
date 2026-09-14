@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "logical_plan_id": "replay-butler-2026-09-15",
+  "generation": 2,
+  "findings": [
+    {
+      "fingerprint": "af660a7714364db35328c21d679f88d41aebddf21521c5dd00df80913b654597",
+      "disposition": "accepted_blocker",
+      "rationale": "Folded in r3 §2.1: the count predicate is back on the stream population P (fetchSince/fetchPendingSince ∩ deliverable), pending = |P ∩ chat|, replayed_exempt = |P \\ chat|; the plan no longer claims pending equals the poll count — poll returns a superset and the summary wording says so. T6 now asserts pending + replayed_exempt == message events without replay_max; T14 counts are consistent.",
+      "candidate_blocker": true
+    },
+    {
+      "fingerprint": "b6a431fe8da6c30724ebf3ddb4dfb7bd0c28992c309c92386000843601498215",
+      "disposition": "accepted_blocker",
+      "rationale": "Folded in r3 §2.1/§2.3: one population definition for both branches — since-resume uses fetchSince, cold start uses fetchPendingSince (delivered_at IS NULL), both ∩ deliverable; the poll-predicate rule is withdrawn; resume_since is carried in the event (\"\" on cold start) so the harness always has a since to poll from; T5 fixture now includes stamped historical rows.",
+      "candidate_blocker": true
+    },
+    {
+      "fingerprint": "b9a0d5f08fb58a73dedd41d5a10d87ced312f11ac6c11fea0f54b2e657a0c3ef",
+      "disposition": "accepted_blocker",
+      "rationale": "Folded in r3 §1: only kind === 'chat' is summarized; every other kind (task_dispatch, task_result, permission_request, permission_verdict) is always replayed, citing the trackers in inbound.ts:141-183 and tools.ts:582-612; T14 adds a permission_verdict row.",
+      "candidate_blocker": true
+    },
+    {
+      "fingerprint": "cb81accc65c12011afd871eaca13c25f55d58a727eb3866d50f5c04605cbd868",
+      "disposition": "accepted_blocker",
+      "rationale": "Folded in r3 §2.2/§2.4: event order is backlog (peer-agent persists pendingBacklog, cursor untouched) → exempt rows one by one (cursor advances per row as today) → backlog_end (only then cursor := newest). A mid-way disconnect leaves the cursor at the last exempt row, so exempt rows are never lost and the cursor never passes an unpersisted summary; T14b covers the disconnect.",
+      "candidate_blocker": true
+    },
+    {
+      "fingerprint": "5d79c72a445bc4c293dd242f955f053e5437a05baba9a1b62b2e50857ea8723a",
+      "disposition": "accepted_blocker",
+      "rationale": "Folded in r3 §2.5 and P4: inbox-spool.ts is now in scope; mergeInboxPage passes pending_after/pending_capped through and adds the truncated count to pending_after when the union is cut; T18 covers it.",
+      "candidate_blocker": true
+    },
+    {
+      "fingerprint": "62cbd5c27ed66689a5a5ea638d543beb6297d1ea526b275c8a80d073348ad23f",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Folded in r3 §2.4 step 3: multiple batches merge (since = min, count summed, newest = latest); clearing requires a poll whose since <= stored since AND next_cursor >= newest; pending_after no longer updates the count (different predicate); T20 covers it.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "68782abb667fa9b0c22c5082f504527061fac3aad1c1204c630e06f4a1cff438",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Folded: R-a scan bounds defined in §2.1 (single pass, cap 10 000, H = last scanned id); R-b fixed in §2.2 (@team rows count only under the \"@team\" key, direct rows under from — the example arithmetic now holds); R-c accepted with wording; R-d strict rule in §2.4 (target only when present, else all).",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "84e9e6ea55100168d0199ab1ad3e761811ff93416544e98d8683459cdad64187",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "a79621ccf6f6cf1b66d7dfaa1e6609f3409056089ac848522b19941e4ff36a08",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "9184a423c527dc39243dc262f036226af5320b3401f9ad7205b83591910e0f90",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "f350fdbd3aa232d9564b1061607cbf29622d4359bc0b10ea5d31b233bd888665",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "529fc3dd91e521a3308b7103e439a1f05c455051f1661085ffcc13fca2c75b24",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "85236d1850e6c1a186743eaf28cdd6e2d4d8dfaa545fbb2652daae4f6ecafa18",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "7e97c3e3937825684592a32a6f4d528ab76930c4548320abaa8cd6f0d1a2564e",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "b42c740d026425fc7c4635eb0fc075277246e191cfbe176d38047867d1ffc247",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "f821c70c3a15777e1b6874db3284e2a9bcfec1429a5af54c36c865ccd811b927",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "a96c245f45f6819e1e7f47ed1a16f12b27456685095ad081287a4f4d44fd1682",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Confirmation of the rubric line (reviewer notes files not opened); depth-0 verification and any fold are recorded on the chair's and glm's findings for the same rubric id. No further plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "2825ea433dcdd45961decaf41745045f62da35219d2cd327483aecc6b2b846b3",
+      "disposition": "accepted_blocker",
+      "rationale": "Folded in r3 §2.1/§2.3 (same fold as the chair's R4 population finding): one population definition, poll-predicate claim withdrawn, resume_since defined for cold start (\"\"), T5 fixture with stamped rows.",
+      "candidate_blocker": true
+    },
+    {
+      "fingerprint": "aa29082f52c3f0eeac07b6ccfc1885ab3c28fc897048b64eb995cfdd1d5f0120",
+      "disposition": "rejected",
+      "rationale": "Verified by depth-0 in source (this reviewer's harness could not open packages/**; the rubric's no-argument-from-silence clause is satisfied by the caller): peer-agent stream.ts:191-192 `if (ev.event !== 'message') continue`; relay routes/stream.ts:30 reads only `since` and validates no other query key; tools.ts:582-610 poll_inbox builds its text from messages/next_cursor only and ignores unknown response fields. §5 step 2 cites these.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "9b453a8c2fe3e26c206d3d894d75da2d9c3b9e520830e25216eb43cce6255e08",
+      "disposition": "rejected",
+      "rationale": "Verified by depth-0 in source (this reviewer's harness could not open packages/**; the rubric's no-argument-from-silence clause is satisfied by the caller): stream.ts:15 BACKLOG_PAGE = 1000, :149-158 unbounded page loop; index.ts:257-260 one server.notification per envelope; no cap or coalescing exists in the drain or dispatcher.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "3175059551dff2036880ebb7a06eaea996bd4a14e9a393dde7dc495bbfe5d560",
+      "disposition": "rejected",
+      "rationale": "Verified by depth-0 in source (this reviewer's harness could not open packages/**; the rubric's no-argument-from-silence clause is satisfied by the caller): messages.ts:107 ownsNamespace vs stream.ts:74-96 deliverable; messages.ts:113-117 insertGrants on poll; shared/src/ulid.ts newMessageId is a ULID (time-ordered, monotonic within a process). Note r3 no longer relies on the poll predicate for the count, so reason (1) is now informational only.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "837caad7c892543a9cb6d12e5d1e3f6134b55aa444da318cc1bcd2f40d368859",
+      "disposition": "rejected",
+      "rationale": "Verified by depth-0 in source (this reviewer's harness could not open packages/**; the rubric's no-argument-from-silence clause is satisfied by the caller): stream.ts:132-138 writeAndMark is the only place markDelivered/insertGrants run on the stream path, so a row that is never written is never stamped or granted; messages.ts:113-117 grants on poll presentation. No plan change.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "e9896746a4e5435a7ccd2eecb0d040b66b39b25d0471f2673f3c640bae6f84cc",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Folded: T19 (by_sender cap/merge + resume_since correctness), T5 (cold-start fixture with stamped historical rows) added in r3.",
+      "candidate_blocker": false
+    },
+    {
+      "fingerprint": "739847f4dde5c1a9db6dd967434087df510bbd46b8caf0fa49cf97977c222ff2",
+      "disposition": "accepted_nonblocking",
+      "rationale": "Folded in r3 §2.2: attribution priority stated — to === '@team' rows count only under \"@team\", direct rows under from; the example arithmetic (90+40+7=137) is now consistent with the rule.",
+      "candidate_blocker": false
+    }
+  ]
+}

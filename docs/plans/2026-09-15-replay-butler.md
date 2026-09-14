@@ -1,6 +1,6 @@
 # Plan — Replay butler:重連/初次註冊時先報數,超過門檻只給一則摘要,把「拉」交還 harness
 
-status: DRAFT r2(gen-1 hetero 審查後修訂:sol STOP ×4 / MiniMax、glm CONDITIONAL,全部 fold)
+status: REVIEWED r3 — hetero plan loop 兩代到頂(sol gpt-5.6-sol / MiniMax-M3 / glm-5.3),depth-0 裁決收斂,可動工(dev-flow)
 owner: cookys
 scope: `packages/relay`(`routes/stream.ts` backlog drain、`routes/messages.ts` poll 回應)、`packages/shared`(SSE `backlog` event 型別)、`packages/peer-agent`(`config.ts`、`stream.ts`、`inbound.ts`/`index.ts` 合成通知與 cursor)、docs
 origin: hangar `docs/BACKLOG.md`「hangar-bridge replay has no butler」(2026-09-15)
@@ -26,11 +26,11 @@ SSE cold start 只 drain `delivered_at IS NULL`,而 `delivered_at` 是**每則�
 - 不做 NATS 任何東西(NATS lane 無 backlog replay 語意可改,且 session-addressing 本身 deferred)。
 - 不改 `@mailbox:*` 路徑(`/v1/inbox` 已是 pull-only + client cursor,已有管家形狀:
   dotfiles `1f246f1` 的 `fleet send`/`fleet peers` 未讀提示)。
-- **kind 分流只有一條,且是豁免不是差別呈現**:`task_dispatch` 與 `permission_request` **永遠逐封
-  replay、不進摘要**。理由:fleet 把「dispatch 無任何 disposition」讀成 lost session
-  (`inbound.ts:101-106` 的廣播閘已為同一理由豁免 dispatch;`tools.ts:211` 描述明寫 silence 是
-  唯一訊號),摘要掉一則 dispatch 等於製造假的 lost-session;permission 稀少且時效性強。
-  chat 才是洪水的本體(同段註解:116 則中 91 則是廣播)。摘要 `by_kind` 回報這兩類各幾則被逐封推。
+- **只有 `kind === 'chat'` 進摘要;其他每一種 kind 永遠逐封 replay**(`task_dispatch`、`task_result`、
+  `permission_request`、`permission_verdict`;`presence_update` 本就不落盤)。理由:非 chat 的 kind 各有
+  接收端的狀態機——dispatch 的 correlation / 「無 disposition = lost session」(`inbound.ts:101-106`、
+  `tools.ts:211`)、`task_result` 的 dispatchTracker、permission 兩端的 tracker(`inbound.ts:141-183`)——
+  摘要掉任一則都是讓一個追蹤器等到天荒地老。chat 才是洪水本體(同段註解:116 則中 91 則是廣播)。
 - 不做「積壓自動老化丟棄」——`poll_inbox` 永遠讀得到,是 by design。
 
 ## 2. 設計決策
@@ -42,17 +42,17 @@ SSE cold start 只 drain `delivered_at IS NULL`,而 `delivered_at` 是**每則�
 - **A(採用)relay-side**:`GET /v1/stream?since=…&replay_max=N`。relay 在既有 drain loop 之前先
   算積壓;`≤ N` 照舊逐封推(現行 `deliverable(e)` gate,`stream.ts:74-96`);`> N` 只送一個
   `event: backlog`,**不**送 chat 類 `message` 事件(§1 豁免的 kind 仍逐封推),游標跳到高水位。
-- **⭐ 計數口徑 = poll 口徑,不是 stream 口徑**(gen-1 glm R4 / sol R2 修正)。摘要的 `resume_hint`
-  指向 `poll_inbox`,所以 `pending` 必須等於 harness 之後 poll 會看到的筆數,否則「有 12 則、
-  poll 出 8 則」自相矛盾。poll 口徑 = `fetchInboxSince`(handle/@team/sender_instance 自我排除,
-  `store.ts:198-215`)+ `ownsNamespace`(`messages.ts:107`);它比 stream 口徑**寬**(不含 to_filter
-  presence gate 與 interest 收窄)——寬的那部分本來就是 poll 今日已可見的列,不是新暴露。
-  實作:抽一個 `countPollable(handle, instance, since, cap)` 進 `messages/store.ts`,`backlog.pending`
-  與 §2.5 `pending_after` **共用它**;T6 改為驗證兩者相等。stream 與 poll 口徑的統一是另一個 plan。
-- **⭐ 高水位規則**(sol R2):relay 先 `subscribe`(現碼已如此,`stream.ts:123-125`),再計數;
-  計數時取 `H = 快照內最大 id`;`backlog.newest = H`;之後 live queue 中 **id ≤ H 的 envelope 一律丟棄**
-  (它們已計入摘要,poll 可讀)。relay 的 `newMessageId` 單調,所以 `id ≤ H` 是精確的分界;
-  這保證「摘要之後零封 chat message 事件來自積壓」。
+- **⭐ 母體與計數口徑(gen-2 sol R2/R4、glm R4 收口)**:母體 P = **這條連線在沒有 `replay_max`
+  時會逐封推的列**——since-resume 用 `fetchSince`、cold start 用 `fetchPendingSince`(現行兩個分支,
+  `stream.ts:149-151`),都再過同一個 `deliverable(e)`。`pending = |P ∩ chat|`;`replayed_exempt =
+  |P \ chat|`(這些照常逐封推)。**不再宣稱 pending 等於 poll 會回的筆數**:poll 口徑較寬(無
+  to_filter / interest 收窄、含已 stamp 的歷史列),所以 `poll_inbox since=resume_since` 回的是 P 的
+  **超集**——摘要說的是「你錯過了 N 則」,不是「poll 會給你 N 則」;文案照此寫。`pending_after`
+  (§2.5)是 poll 口徑,回答另一個問題(「這頁之後還有幾則」),兩者不比較。
+- **掃描界限與高水位(R-a 收口)**:單次順序掃描 P,最多 **10 000 列**;`H = 最後掃到的 id`;掃滿
+  10 000 則 `pending_capped=true` 且 H 停在第 10 000 列(其餘留給下次重連)。relay 先 `subscribe`
+  (現碼 `stream.ts:123-125`),再掃描;掃描後 live queue 中 **id ≤ H 的 envelope 一律丟棄**(已計入
+  摘要,poll 可讀)。relay `newMessageId` 是 ULID、單調(`shared/src/ulid.ts`),`id ≤ H` 是精確分界。
 - **B(否決)peer-agent-side**(開 SSE 前先 poll 探數):poll 是 presentation path,每筆
   `insertGrants`(`messages.ts:113-117`)= 沒看就先授回覆路由;要 page 到底才知高水位;高水位丟棄
   只有 relay 能做到原子。
@@ -60,19 +60,24 @@ SSE cold start 只 drain `delivered_at IS NULL`,而 `delivered_at` 是**每則�
 ### 2.2 wire 形狀:一個新 SSE event,舊 client 零影響
 
 ```
-event: backlog
+event: backlog            ← 先送:摘要 + 高水位;peer-agent 持久化 pendingBacklog,cursor 不動
 data: {"pending": 137, "pending_capped": false, "oldest": "msg_01…", "newest": "msg_01…",
-       "by_sender": {"aimax395": 90, "cuda": 40, "@team": 7},
-       "by_kind": {"chat": 135, "task_dispatch": 2},
-       "replayed_exempt": 2,
-       "resume_hint": "poll_inbox since=<連線時 cursor> limit=…"}
+       "resume_since": "<連線時的 since;cold start 為 \"\">",
+       "by_sender": {"aimax395": 90, "cuda": 40, "@team": 7}, "replayed_exempt": 2}
+event: message …          ← 中間:P \ chat 逐封(cursor 照常逐封前進)
+event: backlog_end        ← 最後:peer-agent 此時才把 cursor 推到 newest
+data: {"newest": "msg_01…"}
 ```
+
+- **事件順序**(gen-2 sol R4):`backlog` → 豁免列逐封 → `backlog_end`。中途斷線:cursor 停在最後一封
+  豁免列,重連後 relay 重新計數(chat 會再被摘要一次,豁免列不會漏);`backlog_end` 之後才推進到 H,
+  所以「豁免列永遠送達」與「cursor 不越過未持久化的摘要」同時成立。
+- `by_sender` 歸因:`to === '@team'` 的列**只**計入 `"@team"` 鍵,直送列計入 `from`(範例 90+40+7 = 137)。
 
 - `replay_max` **query param 缺席 ⇒ 現行行為**(全量 replay)。舊 peer-agent 不送這個參數,relay
   升級後對它們完全無感 —— 這是 rollout 順序的依據(§5)。
-- `by_sender` 上限 20 個 key,其餘併入 `"…"`;`pending` 計數上限 10 000,`pending_capped: true`
-  表示「恰 10 000 且可能更多」,`false` 表示精確值(sol R6:恰好 10 000 時靠旗標消歧)——避免計數
-  在病態 buffer 上跑到天荒地老。`replay_max` 非整數 / `< 1` / `> 1000` → 400 `invalid_replay_max`。
+- `by_sender` 上限 20 個 key,其餘併入 `"…"`;`pending_capped` 語意見 §2.1(恰 10 000 且掃描停止 =
+  `true`)。`replay_max` 非整數 / `< 1` / `> 1000` → 400 `invalid_replay_max`。
 - 型別放 `@hangar-bridge/shared`(與 envelope 同處),peer-agent 的 SSE parser
   (`stream.ts` `readStream`)目前只認 `message`/`ping`,要加 `backlog` 分支;**未知 event 仍忽略**。
 
@@ -81,11 +86,10 @@ data: {"pending": 137, "pending_capped": false, "oldest": "msg_01…", "newest":
 - 被摘要略過的列 **不** stamp `delivered_at`(它們沒被呈現)。`markDelivered` 只在真正 write 時發生,
   現碼即如此(`stream.ts:135-137`),不需改。注意 `delivered_at` 是每則全域一枚(`store.ts:217-221`
   `COALESCE`),不是 per-recipient;本 plan 不改這點。
-- **`backlog` 事件送出後,relay 對這條連線的 drain 游標 = `newest`(= H)**;之後只走 live fanout,
-  且套用 §2.1 的 `id ≤ H` 丟棄規則。
-- 對 **cold start**(無 `since`,pending-only drain):同樣適用,但集合是 `delivered_at IS NULL`
-  的列——因為 `delivered_at` 全域,歷史 `@team` 多半已被別人的連線 stamp,新 handle 的 cold-start
-  積壓通常很小;它真正會撞到 148 封的是 poll 路徑,由 §2.5 的 `pending_after` 管。
+- **`backlog_end` 之後 relay 對這條連線只走 live fanout**,套用 §2.1 的 `id ≤ H` 丟棄規則。
+- **cold start**(無 `since`):母體是 `fetchPendingSince`(`delivered_at IS NULL`)∩ `deliverable`,
+  與 §2.1 一致;`resume_since = ""`,poll 從頭讀會看到含歷史 stamp 列的超集(§2.1 已明說)。因
+  `delivered_at` 全域,新 handle 的 cold-start 積壓通常小;148 封那種是 poll 路徑,由 §2.5 管。
 - **grants**:略過的列不 `insertGrants`(沒呈現就沒有回覆路由);harness 之後 `poll_inbox` 讀到時,
   poll 路徑自己會 grant(`messages.ts:113-117`),語意一致。
 
@@ -94,15 +98,15 @@ data: {"pending": 137, "pending_capped": false, "oldest": "msg_01…", "newest":
 - 收到 `backlog` → `InboundDispatcher` 之外的一條短路徑(它不是 envelope,不過 gate/dedupe):
   1. 產生**一則**合成 notification(claude-channel)/ 一則 agent-call envelope(courier),內容即
      §2.2 的 data 人話化,含 `resume_hint`。
-  2. `cursorSink(newest)` —— cursor 推進到 live edge,**持久化**(`cursor-store`)。
-  3. 記 `pendingBacklog = {count, since: <連線前 cursor>, newest: H, at}` **持久化在 cursor-store
-     同一個檔**(`cursor-store.ts` 現有 `persistPath`,新增一個鍵;sol R5:記憶體版本 restart 就忘),
-     並反映到 presence `summary` 尾綴(`backlog:137`)——`list_peers` / `fleet peers` 看得到「這個
-     session 有一批沒拉」。**清除規則**:`poll_inbox` 回應的 `next_cursor ≥ newest` 才清;部分 poll
-     (`next_cursor < newest`)只把 `count` 更新為回應的 `pending_after`,不清。
-- **⭐ cursor 推進(採用)vs 停住(否決)**:停住會讓每次重連都再報一次同一批,而「不再報同一批」
-  需要 relay 或 peer-agent 記住「已報過哪批」——多一個狀態、多一個漂移點。推進 + 步驟 3 的本機
-  記憶 + presence 可見,已覆蓋「忘了拉」的提醒需求,且不會重複灌。
+  2. 收到 `backlog` 時**先**持久化 `pendingBacklog`(下一點),cursor 不動;收到 `backlog_end` 才
+     `cursorSink(newest)`(§2.2 事件順序)。
+  3. `pendingBacklog = {count, since, newest, at}` **持久化在 cursor-store 同一個檔**(`cursor-store.ts`
+     `persistPath` 新增一鍵;sol R5)。**多批合併**:再收到一個 `backlog` 時 `since = min(舊, 新)`、
+     `newest = 新`、`count = 舊 + 新`。presence `summary` 尾綴 `backlog:N`。**清除規則**:一次
+     `poll_inbox` 呼叫的 `since ≤ pendingBacklog.since` 且回應 `next_cursor ≥ newest` 才清;其他 poll
+     不動它(不用 `pending_after` 更新 count——它是另一口徑)。
+- **⭐ cursor 推進(採用)vs 停住(否決)**:停住 = 每次重連再報同一批,而「不重報」又要多記一個
+  狀態;推進 + 持久化的 pendingBacklog + presence 可見已覆蓋「忘了拉」,且不重複灌。
 - 門檻:`inbox.replay_threshold`(`config.ts` `inbox` 物件新增鍵),整數,預設 **10**,`0` = 停用
   (不送 `replay_max`,行為與今日相同)。上限 1000(等於 relay 一頁)。
 - courier(`final_mile.kind = agent-call`)同樣適用,但 final mile 的 API 只吃 `Envelope`
@@ -114,23 +118,25 @@ data: {"pending": 137, "pending_capped": false, "oldest": "msg_01…", "newest":
 
 ### 2.5 poll-only harness:`poll_inbox` 回應帶總量
 
-`GET /v1/messages` 回應加 `pending_after: <int>` + `pending_capped: <bool>`(next_cursor 之後還有
-幾筆可投遞,**與 §2.1 `countPollable` 同一函式**,上限 10 000)。peer-agent `poll_inbox` tool 把它印在頁首:「本頁 M 則,之後尚有 K 則」。
-ChatGPT 這類 harness 沒有 SSE,§2.2 的事件到不了它,這是它的等價管家。舊 client 忽略新欄位。
+`GET /v1/messages` 回應加 `pending_after: <int>` + `pending_capped: <bool>`(next_cursor 之後、poll
+口徑、上限 10 000;`store.ts` 新增一個 count 查詢)。peer-agent `poll_inbox` 頁首印「本頁 M 則,之後
+尚有 K 則」。**`inbox.spool` 合併要跟著改**(gen-2 sol R6):`mergeInboxPage`(`inbox-spool.ts:84-108`)
+目前只回 `messages/next_cursor/from_spool`,且截斷聯集時會把 relay 的 `next_cursor` 拉回——改為透傳
+`pending_after`/`pending_capped`,截斷時 `pending_after += 被截掉的筆數`(T18)。ChatGPT 這類 harness
+沒有 SSE,這是它的等價管家。舊 client 忽略新欄位。
 
 ### 2.6 不在 v1 但預留
 
-- stream 與 poll 可投遞口徑統一(§2.1)——本 plan 只共用計數函式,不動 poll 的過濾。
-- relay 端 `replay_max_age`(年齡截止)——目前無需求;`pending` 上限 + 摘要已擋住病態情境。
+- stream 與 poll 可投遞口徑統一;relay 端 `replay_max_age`(年齡截止)。
 
 ## 3. 實作切分(每步可獨立 merge、獨立回滾)
 
 | # | 內容 | 檔案 | 驗收 |
 |---|---|---|---|
 | P1 | shared:`BacklogEvent` 型別 + SSE event 名常數 | `packages/shared/src/` | type test |
-| P2 | relay:`replay_max` 解析(缺席=舊行為;非法 400)、`countPollable`、`backlog` 事件、高水位 H + `id ≤ H` live 丟棄、豁免 kind 逐封、略過列不 mark/不 grant | `routes/stream.ts`、`messages/store.ts` | 見 §4 T1–T6、T13–T15 |
-| P3 | relay:`GET /v1/messages` 回 `pending_after` + `pending_capped`(共用 `countPollable`) | `routes/messages.ts` | T7、T16 |
-| P4 | peer-agent:config 鍵、`stream.ts` 送 `replay_max` + parse `backlog`、合成通知 / 合成 Envelope、cursor 推進、`pendingBacklog` 持久化與 presence 尾綴、`poll_inbox` 頁首 | `config.ts` `stream.ts` `index.ts` `tools.ts` `cursor-store.ts` `agent-call-ingress.ts` `switchboard.ts`;`inbox-spool` 不動 | T8–T12、T17 |
+| P2 | relay:`replay_max` 解析(缺席=舊行為;非法 400)、單次掃描 P(cap 10 000)、`backlog` / `backlog_end` 事件、非 chat 逐封、`id ≤ H` live 丟棄、略過列不 mark/不 grant | `routes/stream.ts` | 見 §4 T1–T6、T13–T16 |
+| P3 | relay:`GET /v1/messages` 回 `pending_after` + `pending_capped` | `routes/messages.ts`、`messages/store.ts` | T7 |
+| P4 | peer-agent:config 鍵、`stream.ts` 送 `replay_max` + parse `backlog`/`backlog_end`、合成通知 / 合成 Envelope、cursor 於 `backlog_end` 推進、`pendingBacklog` 持久化/合併/清除與 presence 尾綴、`poll_inbox` 頁首 + spool 合併透傳 | `config.ts` `stream.ts` `index.ts` `tools.ts` `cursor-store.ts` `inbox-spool.ts` `agent-call-ingress.ts` `switchboard.ts` | T8–T12、T17–T19 |
 | P5 | docs:`architecture.md` §4 補「replay butler」段;hangar runbook `hangar-bridge-fleet-deployment.md` 加 rollout 順序;`docs/BACKLOG.md` 收掉對應列 | docs | lint |
 
 ## 4. 驗收測試(RED → GREEN,全部 vitest,無 live 依賴)
@@ -140,8 +146,8 @@ ChatGPT 這類 harness 沒有 SSE,§2.2 的事件到不了它,這是它的等價
 - T3 `replay_max=10`、積壓 11 → **恰一個** `backlog`(`pending=11`、`oldest`/`newest` 正確、
   `by_sender` 正確),**零** `message` event;略過的 11 列 `delivered_at IS NULL` 且無 grant row。
 - T4 T3 之後新到一則 live 訊息 → 正常以 `message` 送達(游標已在 live edge)。
-- T5 cold start(無 since)+ 歷史 `@team` 20 列 + `replay_max=10` → 一個 `backlog`,`by_sender["@team"]=20`。
-- T6 口徑一致:同一組列下 `backlog.pending` === `GET /v1/messages` 的 `pending_after`(同 `countPollable`)。
+- T5 cold start(無 since)+ 歷史 `@team` 20 列**其中 8 列已被他人 stamp** + `replay_max=10` → 一個 `backlog`,`pending=12`、`by_sender["@team"]=12`、`resume_since=""`。
+- T6 母體一致:同一組列、同一連線參數下,`backlog.pending + replayed_exempt` === 無 `replay_max` 時該連線會送出的 `message` 事件數。
 - T7 `pending_after`:since 之後 30 筆可投遞、limit 10 → `messages.length=10`、`pending_after=20`。
 - T8 peer-agent parser:`backlog` event → 一次 `emitBacklog`,不進 `InboundDispatcher.handle`。
 - T9 合成通知內容含 `pending`、`oldest`、`resume_hint`;claude-channel 走 `server.notification` 恰一次。
@@ -151,12 +157,19 @@ ChatGPT 這類 harness 沒有 SSE,§2.2 的事件到不了它,這是它的等價
   (`next_cursor < newest`)只更新 count;`next_cursor ≥ newest` 才清除。
 - T13 高水位:計數快照後、`backlog` 事件前插入一則 live chat(id ≤ H)→ 不以 `message` 事件出現;
   id > H 的 live chat 正常出現。
-- T14 豁免 kind:積壓 20 chat + 1 task_dispatch、`replay_max=10` → 一個 `backlog`(`pending=20`、
-  `by_kind.task_dispatch=1`、`replayed_exempt=1`)**加**一個 task_dispatch `message` 事件。
+- T14 非 chat 逐封:積壓 20 chat + 1 task_dispatch + 1 permission_verdict、`replay_max=10` → 事件序恰為
+  `backlog`(`pending=20`、`replayed_exempt=2`)→ 2 個 `message` → `backlog_end{newest=H}`。
+- T14b 中途斷線:在 `backlog_end` 前斷開 → peer-agent cursor = 最後一封豁免列 id(未到 H);重連後
+  豁免列不重送、chat 再被摘要一次。
 - T15 `replay_max` 非法值(`abc`、`0`、`1001`)→ 400 `invalid_replay_max`。
-- T16 `pending_capped`:10 001 列 → `pending=10000, pending_capped=true`;恰 10 000 列 → `false`。
+- T16 `pending_capped`:10 001 列 → `pending=10000, pending_capped=true, newest=第 10000 列`;恰 10 000 列 → `false`。
 - T17 courier 合成 Envelope:agent-call final mile 收到恰一封、`meta.synthetic=backlog`、`reply=none`;
   switchboard 有 `target` 時只送該 extension;內容含「這不是一封訊息、不可回覆」字樣。
+- T18 spool 合併:relay 頁 `pending_after=5` + spool 多 3 筆致截斷 2 筆 → 回 `pending_after=7`、
+  `pending_capped` 透傳、`next_cursor` 為截斷後最後一筆。
+- T19 `by_sender` 上限:21 個寄件者 → 20 鍵 + `"…"` 合計正確;`resume_since` 等於連線時的 `since`。
+- T20 多批合併與清除:兩次 `backlog`(since A<B)→ `pendingBacklog.since=A`、count 相加;
+  `poll_inbox since=A` 回 `next_cursor ≥ newest` 才清;`since=B` 不清。
 
 ## 5. Rollout(順序有硬約束)
 
@@ -170,14 +183,20 @@ ChatGPT 這類 harness 沒有 SSE,§2.2 的事件到不了它,這是它的等價
 3. 驗收:找一個離線 > 1 天的 handle(或用臨時 secret 起一個新 handle 面對歷史 `@team`),重連,
    `fleet peers` 看 `backlog:N`,harness 收到一則摘要,`poll_inbox since=` 撈得到內容。
 
-## 6. 風險 / 開放問題(給 reviewer)
+## 6. 殘餘風險(gen-1/2 未收口者)
 
-- R-a:dry-run 兩次讀 SQLite(count + 正式 drain 或 live edge 跳轉)。fleet 規模 685 列,可忽略;
-  但 `pending` 上限 10 000 是防禦,不是效能保證——reviewer 請確認上限位置對。
-- R-b:`by_sender` 對 `@team` 列用 `to` 還是 `from`?plan 採 `from`(誰寄的),`@team` 只在
-  廣播計數另列一鍵。reviewer 判斷是否會誤導。
-- R-c:摘要會不會被 harness 當成「訊息」回覆?claude-channel 路徑不帶 msg id;courier 路徑的合成
-  Envelope 有本機 id 但 `meta.reply=none`,relay 對它的 `in_reply_to` 回 400;文案明講「這不是一封
-  訊息」(T17 驗)。
-- R-d:已收口——switchboard 有 `target` 只送 `target`,否則全部。
-- R-e:`replay_threshold` 預設 10 是拍腦袋;reviewer 可提數據(fleet 目前每 handle 日均幾則)。
+- R-c:摘要被當「訊息」回覆——claude-channel 路徑無 msg id;courier 合成 Envelope `meta.reply=none`,
+  relay 對其 `in_reply_to` 回 400;`meta.reply` 擋不住無 thread 的自由回覆,靠文案(T17)。接受。
+- R-e:`replay_threshold` 預設 10 無數據;上線一週後用 `backlog` 事件的 `pending` 分佈校準。
+- R-a/R-b/R-d 已於 §2.1、§2.2、§2.4 收口。
+
+## 7. Review record(hetero plan loop,2026-09-15)
+
+| gen | plan sha | verdict | seats | blockers | receipt |
+|---|---|---|---|---|---|
+| 1 | `91fd8ad8…`(r1,`abd9687`) | CONDITIONAL | sol STOP / MiniMax COND / glm COND | 5 accepted → r2 | `check-phase-review-receipt` exit 0 |
+| 2 | `796fb1ff…`(r2,`HEAD~`) | CONDITIONAL, terminal(generation cap) | sol STOP / MiniMax COND / glm COND | 6 accepted → r3(depth-0 adjudication) | exit 0 |
+
+Artifacts beside this file: `.g{1,2}-artifact.json`(controller output)、`.g{1,2}-disposition.json`
+(depth-0)、`.rubric.md`、`.plan-review-manifest.json`。r3 是 gen-2 之後的 depth-0 裁決版,
+未再送審(loop 上限);gen-2 六個 blocker 的 fold 位置見 g2 dispositions 的 rationale。
