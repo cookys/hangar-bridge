@@ -152,8 +152,8 @@ summary — its receiver's tracker would wait forever), then `backlog_end`. The 
 durable buffer, unstamped and ungranted, for `poll_inbox`; the summary names them (`pending`,
 `oldest`/`newest`, `by_sender`, `resume_since`) and says it is not a message. Absent `replay_max`
 the drain is unchanged, which is why the relay is rolled out first. The relay counts the population
-the drain would have delivered (same pages, same gate, at most 10 000 rows; `pending_capped` is
-exact) and afterwards drops any live envelope with id ≤ `newest` — the connect-window race. The
+the drain would have delivered (same pages, same gate; at most 10 000 *deliverable* rows are counted —
+raw rows in between are walked, see BACKLOG; `pending_capped` is exact) and afterwards drops any live envelope with id ≤ `newest` — the connect-window race. The
 peer-agent persists the reminder beside its cursor before emitting anything, advances the cursor
 only at `backlog_end` (a drop in between resumes from the last exempt row), stamps
 `[backlog:N]` on its presence summary until a `poll_inbox` that started at or before the batch's
