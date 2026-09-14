@@ -1,0 +1,719 @@
+diff --git a/packages/relay/src/messages/store.ts b/packages/relay/src/messages/store.ts
+index 9e5c830..9ff279f 100644
+--- a/packages/relay/src/messages/store.ts
++++ b/packages/relay/src/messages/store.ts
+@@ -214,6 +214,28 @@ export class MessageStore {
+     return rows.map(envelopeFromRow)
+   }
+ 
++  /**
++   * Replay butler (§2.5): the pollable rows strictly after `after_id`, in the
++   * same shape `fetchInboxSince` selects (the route applies ownsNamespace on
++   * top). Reads at most `cap + 1` rows so the caller can report an exact count
++   * up to the cap and a `capped` flag beyond it, without paging the buffer.
++   */
++  fetchInboxIdsAfter(team_id: string, to_handle: string, after_id: string, cap: number, pollerInstance?: string): Array<{ id: string; subject: string | null }> {
++    const directClause = pollerInstance === undefined
++      ? 'to_handle=?'
++      : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
++    const params = pollerInstance === undefined
++      ? [team_id, after_id, to_handle, to_handle, cap + 1]
++      : [team_id, after_id, to_handle, pollerInstance, to_handle, cap + 1]
++    return this.db.prepare(`
++      SELECT id, subject FROM message
++      WHERE team_id=? AND id > ?
++        AND to_handle NOT LIKE '@mailbox:%'
++        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
++      ORDER BY id ASC LIMIT ?
++    `).all(...params) as Array<{ id: string; subject: string | null }>
++  }
++
+   markDelivered(id: string): void {
+     this.db.prepare(
+       "UPDATE message SET delivered_at=COALESCE(delivered_at,?) WHERE id=?"
+diff --git a/packages/relay/src/routes/messages.ts b/packages/relay/src/routes/messages.ts
+index 472465e..8160769 100644
+--- a/packages/relay/src/routes/messages.ts
++++ b/packages/relay/src/routes/messages.ts
+@@ -6,6 +6,7 @@ import {
+   newMessageId,
+   TEAM_BROADCAST_HANDLE,
+   EPHEMERAL_ROUTE_TTL_MS,
++  BACKLOG_SCAN_CAP,
+   type Envelope,
+ } from '@hangar-bridge/shared'
+ import { loadOwnedSet, ownsNamespace } from '../acl.ts'
+@@ -119,6 +120,13 @@ export function messagesRoute(deps: Deps) {
+     // The cursor advances over EVERY row read, not only the deliverable ones, so
+     // a page full of gated rows can never wedge the caller below the live edge.
+     const next_cursor = rows.length > 0 ? rows[rows.length - 1]!.id : (since ?? null)
++    // Replay butler (§2.5): how much is still waiting past this page, so a
++    // poll-only harness (no SSE, so no `backlog` event) gets the same butler.
++    // Same predicate as this page; counted up to BACKLOG_SCAN_CAP, exact below it.
++    const tail = deps.store.fetchInboxIdsAfter(HANGAR_TEAM_ID, handle, next_cursor ?? '', BACKLOG_SCAN_CAP, pollerInstance)
++      .filter(r => r.subject === null || ownsNamespace(r.subject, owned))
++    const pending_capped = tail.length > BACKLOG_SCAN_CAP
++    const pending_after = pending_capped ? BACKLOG_SCAN_CAP : tail.length
+     // Flag off + no instance: this poll's OWN inability to grant is reported
+     // at the RESPONSE level, not stamped onto each envelope's meta —
+     // `meta.attribution_status` is the SENDER-stamped field (set only via
+@@ -126,7 +134,7 @@ export function messagesRoute(deps: Deps) {
+     // overwrite it; the two describe different things (who sent it vs.
+     // whether THIS presentation could be granted).
+     return c.json({
+-      messages, next_cursor,
++      messages, next_cursor, pending_after, pending_capped,
+       ...(pollerInstance === undefined ? { attribution_status: 'unverifiable' } : {}),
+     })
+   })
+diff --git a/packages/relay/src/routes/stream.ts b/packages/relay/src/routes/stream.ts
+index 8788d56..12c8039 100644
+--- a/packages/relay/src/routes/stream.ts
++++ b/packages/relay/src/routes/stream.ts
+@@ -1,7 +1,10 @@
+ import { Hono } from 'hono'
+ import { streamSSE } from 'hono/streaming'
+ import {
+-  HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, type Envelope,
++  HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, TEAM_BROADCAST_HANDLE,
++  SSE_EVENT_BACKLOG, SSE_EVENT_BACKLOG_END, REPLAY_MAX_MIN, REPLAY_MAX_MAX,
++  BACKLOG_SCAN_CAP, BACKLOG_BY_SENDER_CAP, BACKLOG_BY_SENDER_REST,
++  type Envelope, type BacklogEvent, type BacklogEndEvent, type MessageId,
+ } from '@hangar-bridge/shared'
+ import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
+ import { loadOwnedSet, ownsNamespace, matchesInterest } from '../acl.ts'
+@@ -43,6 +46,19 @@ export function streamRoute(deps: Deps) {
+     const parsedInstance = parseInstanceHeader(c.req.header('x-hangar-instance'))
+     if (!parsedInstance.ok) return c.json({ error: 'invalid_instance' }, 400)
+     const instance = parsedInstance.instance
++    // Replay butler (docs/plans/2026-09-15-replay-butler.md): a client that
++    // sends `replay_max=N` asks for ONE summary instead of the chat backlog
++    // when more than N chat rows are waiting. Absent ⇒ the pre-butler drain,
++    // unchanged — that is what makes relay-first rollout safe.
++    const rawReplayMax = c.req.query('replay_max')
++    let replayMax: number | undefined
++    if (rawReplayMax !== undefined) {
++      if (!/^[0-9]+$/.test(rawReplayMax)) return c.json({ error: 'invalid_replay_max' }, 400)
++      replayMax = Number(rawReplayMax)
++      if (replayMax < REPLAY_MAX_MIN || replayMax > REPLAY_MAX_MAX) {
++        return c.json({ error: 'invalid_replay_max' }, 400)
++      }
++    }
+ 
+     // Optional interest narrowing. Header (set by undici fetch) takes precedence
+     // over query param. Comma-separated. Interest can only NARROW within owned
+@@ -149,13 +165,59 @@ export function streamRoute(deps: Deps) {
+       const drain = since
+         ? (cur: string) => deps.store.fetchSince(team_id, handle, cur)
+         : (cur: string) => deps.store.fetchPendingSince(team_id, handle, cur)
+-      let cursor: string = since ?? ''
+-      for (;;) {
+-        const page = drain(cursor)
+-        if (page.length === 0) break
+-        for (const e of page) if (deliverable(e) && !seen.has(e.id)) await writeAndMark(e)
+-        cursor = page[page.length - 1]!.id
+-        if (page.length < BACKLOG_PAGE) break
++
++      // Butler pass (§2.1): scan the population P this connection would replay
++      // — the same drain, the same `deliverable` gate — up to BACKLOG_SCAN_CAP
++      // rows, without writing anything. H (`newest`) is the last row scanned.
++      // When |P ∩ chat| > replay_max: one `backlog` event, then every non-chat
++      // row of P in order (a dispatch or a permission must never be swallowed
++      // into a summary — its receiver's tracker would wait forever), then
++      // `backlog_end`. The chat rows stay unstamped and ungranted for poll.
++      // Live envelopes with id <= H are dropped afterwards: they are inside the
++      // summary already (the connect-window race, plan §2.1 high watermark).
++      let watermark: string | null = null
++      if (replayMax !== undefined) {
++        const summary = scanBacklog(drain, since ?? '', deliverable)
++        if (summary !== null && summary.pending > replayMax) {
++          const event: BacklogEvent = {
++            pending: summary.pending,
++            pending_capped: summary.capped,
++            oldest: summary.oldest,
++            newest: summary.newest,
++            resume_since: since ?? '',
++            by_sender: foldBySender(summary.bySender),
++            replayed_exempt: summary.exempt,
++          }
++          await stream.writeSSE({ event: SSE_EVENT_BACKLOG, data: JSON.stringify(event) })
++          let cur: string = since ?? ''
++          scan: for (;;) {
++            const page = drain(cur)
++            if (page.length === 0) break
++            for (const e of page) {
++              if (e.id > summary.newest) break scan
++              if (e.kind !== 'chat' && deliverable(e) && !seen.has(e.id)) await writeAndMark(e)
++            }
++            cur = page[page.length - 1]!.id
++            if (page.length < BACKLOG_PAGE) break
++          }
++          const end: BacklogEndEvent = { newest: summary.newest }
++          await stream.writeSSE({ event: SSE_EVENT_BACKLOG_END, data: JSON.stringify(end) })
++          watermark = summary.newest
++          logJson('info', 'relay.stream.backlog_summarized', {
++            handle, instance: instance ?? '', pending: summary.pending, exempt: summary.exempt, newest: summary.newest,
++          })
++        }
++      }
++
++      if (watermark === null) {
++        let cursor: string = since ?? ''
++        for (;;) {
++          const page = drain(cursor)
++          if (page.length === 0) break
++          for (const e of page) if (deliverable(e) && !seen.has(e.id)) await writeAndMark(e)
++          cursor = page[page.length - 1]!.id
++          if (page.length < BACKLOG_PAGE) break
++        }
+       }
+ 
+       const pingTimer = setInterval(() => {
+@@ -208,6 +270,7 @@ export function streamRoute(deps: Deps) {
+           }
+           const e = queue.shift()!
+           if (seen.has(e.id)) continue
++          if (watermark !== null && e.id <= watermark) continue
+           await stream.writeSSE({ event: 'message', data: JSON.stringify(e) })
+           deps.store.markDelivered(e.id)
+           markSeen(e.id)
+@@ -225,3 +288,66 @@ export function streamRoute(deps: Deps) {
+   })
+   return app
+ }
++
++interface BacklogScan {
++  pending: number
++  exempt: number
++  capped: boolean
++  oldest: MessageId
++  newest: MessageId
++  bySender: Map<string, number>
++}
++
++/**
++ * Count the population a drain would deliver — same pages, same gate — without
++ * writing. Stops after BACKLOG_SCAN_CAP population rows (`capped`), so a
++ * pathological buffer bounds the work; `newest` is then the cap row and the
++ * rest is left for the next reconnect. Returns null for an empty population.
++ */
++function scanBacklog(
++  drain: (cursor: string) => Envelope[],
++  since: string,
++  deliverable: (e: Envelope) => boolean,
++): BacklogScan | null {
++  let pending = 0
++  let exempt = 0
++  let oldest: MessageId | null = null
++  let newest: MessageId | null = null
++  const bySender = new Map<string, number>()
++  let cursor = since
++  let capped = false
++  scan: for (;;) {
++    const page = drain(cursor)
++    if (page.length === 0) break
++    for (const e of page) {
++      if (!deliverable(e)) continue
++      // One row past the cap proves "more"; the cap row itself stays `newest`.
++      if (pending + exempt >= BACKLOG_SCAN_CAP) { capped = true; break scan }
++      if (e.kind === 'chat') {
++        pending += 1
++        const key = e.to === TEAM_BROADCAST_HANDLE ? TEAM_BROADCAST_HANDLE : e.from
++        bySender.set(key, (bySender.get(key) ?? 0) + 1)
++      } else {
++        exempt += 1
++      }
++      oldest ??= e.id as MessageId
++      newest = e.id as MessageId
++    }
++    cursor = page[page.length - 1]!.id
++    if (page.length < BACKLOG_PAGE) break
++  }
++  if (oldest === null || newest === null) return null
++  // `capped` is exact: it is set only when a further deliverable row was seen
++  // beyond the cap row, so exactly BACKLOG_SCAN_CAP rows report false.
++  return { pending, exempt, capped, oldest, newest, bySender }
++}
++
++/** Top BACKLOG_BY_SENDER_CAP senders by count (ties by name); the rest fold into one key. */
++function foldBySender(bySender: Map<string, number>): Record<string, number> {
++  const entries = [...bySender.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
++  const out: Record<string, number> = {}
++  let rest = 0
++  entries.forEach(([k, n], i) => { if (i < BACKLOG_BY_SENDER_CAP) out[k] = n; else rest += n })
++  if (rest > 0) out[BACKLOG_BY_SENDER_REST] = rest
++  return out
++}
+diff --git a/packages/relay/tests/integration/replay-butler.test.ts b/packages/relay/tests/integration/replay-butler.test.ts
+new file mode 100644
+index 0000000..101a7c3
+--- /dev/null
++++ b/packages/relay/tests/integration/replay-butler.test.ts
+@@ -0,0 +1,355 @@
++import { describe, it, expect, beforeEach } from 'vitest'
++import { HANGAR_TEAM_ID, newMessageId, type Envelope } from '@hangar-bridge/shared'
++import { openDatabase, type Db } from '../../src/db/db.ts'
++import { MessageStore } from '../../src/messages/store.ts'
++import { Fanout } from '../../src/fanout.ts'
++import { PresenceRegistry } from '../../src/presence/registry.ts'
++import { buildApp } from '../../src/app.ts'
++import { seedPeerSecrets } from './_seed.ts'
++import { ClaimStore } from '../../src/claims/store.ts'
++
++// Plan docs/plans/2026-09-15-replay-butler.md §2.1–§2.3, §4 T1–T7, T13–T16, T19.
++//
++// A reconnecting (or freshly enrolled) session used to get every backlog row
++// pushed one `message` event at a time. With `?replay_max=N` the relay counts
++// the population it would have replayed (P), and when |P ∩ chat| > N it sends
++// ONE `backlog` summary, then every non-chat row, then `backlog_end`; the chat
++// rows stay in the durable buffer for `poll_inbox`. Absent `replay_max` ⇒ the
++// pre-butler event sequence, byte for byte.
++
++const SINCE0 = 'msg_00000000000000000000000000'
++const INST = '01HRK7Y0000000000000000000'
++
++interface SseEvent { event: string; data: string }
++
++function parseEvents(blocks: string[]): SseEvent[] {
++  return blocks.map(block => {
++    let event = 'message'
++    const data: string[] = []
++    for (const line of block.split('\n')) {
++      if (line.startsWith('event:')) event = line.slice(6).trim()
++      else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''))
++    }
++    return { event, data: data.join('\n') }
++  })
++}
++
++async function readEvents(stream: ReadableStream<Uint8Array>, n: number, timeoutMs = 2000): Promise<SseEvent[]> {
++  const reader = stream.getReader()
++  const decoder = new TextDecoder()
++  const blocks: string[] = []
++  let buf = ''
++  const deadline = Date.now() + timeoutMs
++  while (blocks.length < n && Date.now() < deadline) {
++    const remaining = deadline - Date.now()
++    if (remaining <= 0) break
++    const timeoutPromise = new Promise<{ value: undefined; done: true }>(resolve =>
++      setTimeout(() => resolve({ value: undefined, done: true }), remaining)
++    )
++    const { value, done } = await Promise.race([reader.read(), timeoutPromise])
++    if (done) break
++    buf += decoder.decode(value)
++    const parts = buf.split('\n\n')
++    buf = parts.pop() ?? ''
++    blocks.push(...parts.filter(p => p.trim().length > 0))
++  }
++  try { await reader.cancel() } catch { /* ignore */ }
++  return parseEvents(blocks).filter(e => e.event !== 'ping')
++}
++
++describe('GET /v1/stream?replay_max — replay butler', () => {
++  let db: Db
++  let store: MessageStore
++  let fanout: Fanout
++  let app: ReturnType<typeof buildApp>
++  let tok: { alice: string; bob: string; carol: string }
++
++  const post = (from: 'alice' | 'carol', body: Record<string, unknown>) =>
++    app.request('/v1/messages', {
++      method: 'POST',
++      headers: { authorization: `Bearer ${tok[from]}`, 'content-type': 'application/json' },
++      body: JSON.stringify(body),
++    })
++
++  const chatToBob = async (n: number, from: 'alice' | 'carol' = 'alice') => {
++    const ids: string[] = []
++    for (let i = 0; i < n; i++) {
++      const res = await post(from, { to: 'bob', kind: 'chat', content: `c${i}` })
++      ids.push(((await res.json()) as { id: string }).id)
++    }
++    return ids
++  }
++
++  const open = (query: string, headers: Record<string, string> = {}) =>
++    app.request(`/v1/stream${query}`, { headers: { authorization: `Bearer ${tok.bob}`, ...headers } })
++
++  beforeEach(() => {
++    db = openDatabase(':memory:')
++    const peers = seedPeerSecrets(db, ['alice', 'bob', 'carol'])
++    tok = { alice: peers.alice!.token, bob: peers.bob!.token, carol: peers.carol!.token }
++    store = new MessageStore(db)
++    fanout = new Fanout()
++    app = buildApp({ db, store, fanout, presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date() })
++  })
++
++  // T1 — absent replay_max ⇒ today's behavior, no backlog event even for a big backlog.
++  it('T1 replay_max absent: 50 rows replay as 50 message events and no backlog event', async () => {
++    await chatToBob(50)
++    const res = await open(`?since=${SINCE0}`)
++    const events = await readEvents(res.body!, 50)
++    expect(events.filter(e => e.event === 'message')).toHaveLength(50)
++    expect(events.some(e => e.event === 'backlog')).toBe(false)
++  })
++
++  // T2 — at or under the threshold nothing changes.
++  it('T2 replay_max=10 with 7 pending: 7 message events, no backlog event', async () => {
++    await chatToBob(7)
++    const res = await open(`?since=${SINCE0}&replay_max=10`)
++    const events = await readEvents(res.body!, 7)
++    expect(events.filter(e => e.event === 'message')).toHaveLength(7)
++    expect(events.some(e => e.event === 'backlog' || e.event === 'backlog_end')).toBe(false)
++  })
++
++  // T3 — over the threshold: exactly one backlog, zero chat message events,
++  // then backlog_end; skipped rows are neither delivered-stamped nor granted.
++  it('T3 replay_max=10 with 11 pending: one backlog + backlog_end, no message events, rows untouched', async () => {
++    const ids = await chatToBob(11)
++    const res = await open(`?since=${SINCE0}&replay_max=10`, { 'x-hangar-instance': INST })
++    const events = await readEvents(res.body!, 2)
++    expect(events.map(e => e.event)).toEqual(['backlog', 'backlog_end'])
++    const summary = JSON.parse(events[0]!.data) as Record<string, unknown>
++    expect(summary.pending).toBe(11)
++    expect(summary.pending_capped).toBe(false)
++    expect(summary.oldest).toBe(ids[0])
++    expect(summary.newest).toBe(ids[10])
++    expect(summary.resume_since).toBe(SINCE0)
++    expect(summary.by_sender).toEqual({ alice: 11 })
++    expect(summary.replayed_exempt).toBe(0)
++    expect(JSON.parse(events[1]!.data)).toEqual({ newest: ids[10] })
++    for (const id of ids) {
++      const row = db.prepare('SELECT delivered_at FROM message WHERE id=?').get(id) as { delivered_at: string | null }
++      expect(row.delivered_at).toBeNull()
++      expect(store.hasGrant(id, 'bob', INST)).toBe(false)
++    }
++  })
++
++  // T4 — after the summary, a live message flows as usual.
++  it('T4 a message posted after the summary arrives live as a message event', async () => {
++    await chatToBob(11)
++    const res = await open(`?since=${SINCE0}&replay_max=10`)
++    const reader = res.body!
++    const first = await readEventsNoCancel(reader, 2)
++    expect(first.events.map(e => e.event)).toEqual(['backlog', 'backlog_end'])
++    await post('alice', { to: 'bob', kind: 'chat', content: 'live' })
++    const next = await readEventsNoCancel(reader, 1, first.state)
++    expect(next.events).toHaveLength(1)
++    expect(next.events[0]!.event).toBe('message')
++    expect(next.events[0]!.data).toContain('"content":"live"')
++    await next.state.reader.cancel()
++  })
++
++  // T5 — cold start (no since): population is the pending-only drain; rows
++  // already stamped for another recipient are not in it; resume_since is "".
++  it('T5 cold start counts only never-delivered rows and reports resume_since ""', async () => {
++    // 20 @team broadcasts from alice; stamp 8 of them as delivered (to anyone).
++    const ids: string[] = []
++    for (let i = 0; i < 20; i++) {
++      const res = await post('alice', { to: '@team', kind: 'chat', content: `b${i}` })
++      ids.push(((await res.json()) as { id: string }).id)
++    }
++    for (const id of ids.slice(0, 8)) store.markDelivered(id)
++    const res = await open('?replay_max=10')
++    const events = await readEvents(res.body!, 2)
++    expect(events.map(e => e.event)).toEqual(['backlog', 'backlog_end'])
++    const summary = JSON.parse(events[0]!.data) as Record<string, unknown>
++    expect(summary.pending).toBe(12)
++    expect(summary.by_sender).toEqual({ '@team': 12 })
++    expect(summary.resume_since).toBe('')
++    expect(summary.oldest).toBe(ids[8])
++    expect(summary.newest).toBe(ids[19])
++  })
++
++  // T6 — population identity: pending + replayed_exempt equals the number of
++  // message events the same connection emits without replay_max.
++  it('T6 pending + replayed_exempt == message events of the un-butlered replay', async () => {
++    await chatToBob(12)
++    store.insert(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'permission_request', content: 'may I?' })
++    // A message bob's own instance sent is self-excluded from both paths.
++    store.insert(HANGAR_TEAM_ID, 'bob', { to: 'bob', kind: 'chat', content: 'self', meta: { sender_instance: INST } })
++    const plain = await open(`?since=${SINCE0}`, { 'x-hangar-instance': INST })
++    const plainEvents = await readEvents(plain.body!, 13)
++    const plainCount = plainEvents.filter(e => e.event === 'message').length
++    expect(plainCount).toBe(13)
++
++    const butlered = await open(`?since=${SINCE0}&replay_max=10`, { 'x-hangar-instance': INST })
++    const events = await readEvents(butlered.body!, 3)
++    const summary = JSON.parse(events[0]!.data) as { pending: number; replayed_exempt: number }
++    expect(summary.pending + summary.replayed_exempt).toBe(plainCount)
++  })
++
++  // T14 — non-chat rows are always replayed, in id order, between backlog and backlog_end.
++  it('T14 non-chat rows replay one by one between backlog and backlog_end', async () => {
++    await chatToBob(20)
++    const pr = store.insert(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'permission_request', content: 'p' })
++    const td = store.insert(HANGAR_TEAM_ID, 'alice', {
++      to: 'bob', kind: 'task_dispatch', content: 'do', meta: { correlation_id: 'c1' }, to_filter: { instance: INST },
++    })
++    const res = await open(`?since=${SINCE0}&replay_max=10`, { 'x-hangar-instance': INST })
++    const events = await readEvents(res.body!, 4)
++    expect(events.map(e => e.event)).toEqual(['backlog', 'message', 'message', 'backlog_end'])
++    const summary = JSON.parse(events[0]!.data) as Record<string, unknown>
++    expect(summary.pending).toBe(20)
++    expect(summary.replayed_exempt).toBe(2)
++    expect((JSON.parse(events[1]!.data) as Envelope).id).toBe(pr.id)
++    expect((JSON.parse(events[2]!.data) as Envelope).id).toBe(td.id)
++    expect((JSON.parse(events[3]!.data) as { newest: string }).newest).toBe(td.id)
++    // The exempt rows were presented (delivered-stamped); the summarized chat rows were not.
++    for (const id of [pr.id, td.id]) {
++      const row = db.prepare('SELECT delivered_at FROM message WHERE id=?').get(id) as { delivered_at: string | null }
++      expect(row.delivered_at).not.toBeNull()
++    }
++    const chatRow = db.prepare("SELECT delivered_at FROM message WHERE kind='chat' AND to_handle='bob' LIMIT 1").get() as { delivered_at: string | null }
++    expect(chatRow.delivered_at).toBeNull()
++  })
++
++  // T13 — high watermark: a live envelope whose id is at or below H is dropped
++  // after the summary (it is already counted, readable via poll); above H flows.
++  it('T13 live envelopes with id <= newest are dropped after the summary; newer ones flow', async () => {
++    const ids = await chatToBob(11)
++    const res = await open(`?since=${SINCE0}&replay_max=10`)
++    const first = await readEventsNoCancel(res.body!, 2)
++    const H = (JSON.parse(first.events[1]!.data) as { newest: string }).newest
++    expect(H).toBe(ids[10])
++    // Re-deliver a counted row through the live path (simulates the connect-window race).
++    const stale = store.fetchSince(HANGAR_TEAM_ID, 'bob', SINCE0)[3]!
++    fanout.deliver(stale)
++    const fresh = store.insert(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'chat', content: 'fresh' })
++    fanout.deliver(fresh)
++    const next = await readEventsNoCancel(res.body!, 1, first.state)
++    expect(next.events).toHaveLength(1)
++    expect((JSON.parse(next.events[0]!.data) as Envelope).id).toBe(fresh.id)
++    await next.state.reader.cancel()
++  })
++
++  // T15 — invalid replay_max is refused before any stream is opened.
++  it.each(['abc', '0', '1001', '-1', '1.5'])('T15 replay_max=%s → 400 invalid_replay_max', async v => {
++    const res = await open(`?replay_max=${v}`)
++    expect(res.status).toBe(400)
++    expect(((await res.json()) as { error: string }).error).toBe('invalid_replay_max')
++  })
++
++  // T16 — the scan is capped at 10 000 rows: pending_capped, newest = 10 000th row.
++  it('T16 10 001 pending rows → pending=10000, pending_capped=true, newest=row 10000; exactly 10 000 → false', async () => {
++    const ids: string[] = []
++    const insert = db.transaction((n: number) => {
++      for (let i = 0; i < n; i++) {
++        const e = store.buildEnvelope(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'chat', content: 'x' })
++        store.persist(e)
++        ids.push(e.id)
++      }
++    })
++    insert(10_001)
++    const res = await open(`?since=${SINCE0}&replay_max=10`)
++    const events = await readEvents(res.body!, 2, 10_000)
++    const summary = JSON.parse(events[0]!.data) as Record<string, unknown>
++    expect(summary.pending).toBe(10_000)
++    expect(summary.pending_capped).toBe(true)
++    expect(summary.newest).toBe(ids[9_999])
++
++    // Exactly 10 000 (resume just past the first row) → not capped.
++    const res2 = await open(`?since=${ids[0]}&replay_max=10`)
++    const events2 = await readEvents(res2.body!, 2, 10_000)
++    const summary2 = JSON.parse(events2[0]!.data) as Record<string, unknown>
++    expect(summary2.pending).toBe(10_000)
++    expect(summary2.pending_capped).toBe(false)
++  }, 60_000)
++
++  // T19 — by_sender caps at 20 keys, the rest fold into "…"; @team rows count
++  // under "@team" only; resume_since echoes the since the connection carried.
++  it('T19 by_sender folds the 21st sender into "…" and @team rows into "@team"', async () => {
++    // 21 distinct senders are more handles than the seed helper wants; use the
++    // store directly with synthetic handles so the count logic is what is tested.
++    for (let s = 0; s < 21; s++) {
++      db.prepare("INSERT INTO human(id,team_id,handle,display_name,subjects,created_at,last_active_at) VALUES (?,?,?,?,?,?,?)")
++        .run(`h_s${s}`, HANGAR_TEAM_ID, `s${s}`, `s${s}`, '[]', new Date().toISOString(), new Date().toISOString())
++      store.insert(HANGAR_TEAM_ID, `s${s}`, { to: 'bob', kind: 'chat', content: 'x' })
++    }
++    await post('alice', { to: '@team', kind: 'chat', content: 'all' })
++    await post('carol', { to: '@team', kind: 'chat', content: 'all2' })
++    const res = await open(`?since=${SINCE0}&replay_max=10`)
++    const events = await readEvents(res.body!, 2)
++    const summary = JSON.parse(events[0]!.data) as { pending: number; by_sender: Record<string, number>; resume_since: string }
++    expect(summary.pending).toBe(23)
++    expect(summary.resume_since).toBe(SINCE0)
++    const keys = Object.keys(summary.by_sender)
++    expect(keys).toHaveLength(21) // 20 named + "…"
++    expect(keys).toContain('…')
++    expect(summary.by_sender['@team']).toBe(2)
++    expect(Object.values(summary.by_sender).reduce((a, b) => a + b, 0)).toBe(23)
++  })
++})
++
++describe('GET /v1/messages pending_after — poll-side butler', () => {
++  let db: Db
++  let store: MessageStore
++  let app: ReturnType<typeof buildApp>
++  let tok: { alice: string; bob: string }
++
++  beforeEach(() => {
++    db = openDatabase(':memory:')
++    const peers = seedPeerSecrets(db, ['alice', 'bob'])
++    tok = { alice: peers.alice!.token, bob: peers.bob!.token }
++    store = new MessageStore(db)
++    app = buildApp({ db, store, fanout: new Fanout(), presence: new PresenceRegistry(), claims: new ClaimStore(db), now: () => new Date() })
++  })
++
++  // T7 — pending_after counts pollable rows beyond next_cursor.
++  it('T7 30 pollable rows, limit 10 → 10 messages, pending_after 20, pending_capped false', async () => {
++    for (let i = 0; i < 30; i++) store.insert(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'chat', content: `m${i}` })
++    const res = await app.request(`/v1/messages?since=${SINCE0}&limit=10`, {
++      headers: { authorization: `Bearer ${tok.bob}`, 'x-hangar-instance': INST },
++    })
++    expect(res.status).toBe(200)
++    const body = await res.json() as { messages: unknown[]; pending_after: number; pending_capped: boolean }
++    expect(body.messages).toHaveLength(10)
++    expect(body.pending_after).toBe(20)
++    expect(body.pending_capped).toBe(false)
++  })
++
++  it('T7b pending_after is 0 on the last page', async () => {
++    for (let i = 0; i < 3; i++) store.insert(HANGAR_TEAM_ID, 'alice', { to: 'bob', kind: 'chat', content: `m${i}` })
++    const res = await app.request(`/v1/messages?since=${SINCE0}&limit=10`, {
++      headers: { authorization: `Bearer ${tok.bob}`, 'x-hangar-instance': INST },
++    })
++    const body = await res.json() as { pending_after: number }
++    expect(body.pending_after).toBe(0)
++  })
++})
++
++// Read events without cancelling the reader so a later read can continue the
++// same stream (T4/T13 need "summary, then live").
++interface ReadState { reader: ReadableStreamDefaultReader<Uint8Array>; buf: string }
++async function readEventsNoCancel(
++  stream: ReadableStream<Uint8Array>, n: number, state?: ReadState, timeoutMs = 2000,
++): Promise<{ events: SseEvent[]; state: ReadState }> {
++  const st = state ?? { reader: stream.getReader(), buf: '' }
++  const decoder = new TextDecoder()
++  const blocks: string[] = []
++  const deadline = Date.now() + timeoutMs
++  while (blocks.length < n && Date.now() < deadline) {
++    const remaining = deadline - Date.now()
++    const timeoutPromise = new Promise<{ value: undefined; done: true }>(resolve =>
++      setTimeout(() => resolve({ value: undefined, done: true }), remaining)
++    )
++    const { value, done } = await Promise.race([st.reader.read(), timeoutPromise])
++    if (done) break
++    st.buf += decoder.decode(value)
++    const parts = st.buf.split('\n\n')
++    st.buf = parts.pop() ?? ''
++    blocks.push(...parts.filter(p => p.trim().length > 0))
++  }
++  return { events: parseEvents(blocks).filter(e => e.event !== 'ping'), state: st }
++}
++
++// keep the import used even when a test is filtered out
++void newMessageId
+diff --git a/packages/shared/src/backlog.test.ts b/packages/shared/src/backlog.test.ts
+new file mode 100644
+index 0000000..d1e8550
+--- /dev/null
++++ b/packages/shared/src/backlog.test.ts
+@@ -0,0 +1,43 @@
++import { describe, it, expect } from 'vitest'
++import {
++  BacklogEventSchema, BacklogEndEventSchema, SSE_EVENT_BACKLOG, SSE_EVENT_BACKLOG_END,
++  REPLAY_MAX_MIN, REPLAY_MAX_MAX, BACKLOG_SCAN_CAP, BACKLOG_BY_SENDER_CAP,
++} from './backlog.ts'
++
++const ID = 'msg_01ARZ3NDEKTSV4RRFFQ69G5FAV'
++
++describe('backlog event schemas (replay butler)', () => {
++  it('names the two SSE events and the bounds the relay enforces', () => {
++    expect(SSE_EVENT_BACKLOG).toBe('backlog')
++    expect(SSE_EVENT_BACKLOG_END).toBe('backlog_end')
++    expect(REPLAY_MAX_MIN).toBe(1)
++    expect(REPLAY_MAX_MAX).toBe(1000)
++    expect(BACKLOG_SCAN_CAP).toBe(10_000)
++    expect(BACKLOG_BY_SENDER_CAP).toBe(20)
++  })
++
++  it('accepts a well-formed backlog event', () => {
++    const e = BacklogEventSchema.parse({
++      pending: 137, pending_capped: false, oldest: ID, newest: ID, resume_since: '',
++      by_sender: { alice: 130, '@team': 7 }, replayed_exempt: 2,
++    })
++    expect(e.pending).toBe(137)
++  })
++
++  it('rejects a negative pending, a bad id, or a non-integer count', () => {
++    expect(() => BacklogEventSchema.parse({
++      pending: -1, pending_capped: false, oldest: ID, newest: ID, resume_since: '', by_sender: {}, replayed_exempt: 0,
++    })).toThrow()
++    expect(() => BacklogEventSchema.parse({
++      pending: 1, pending_capped: false, oldest: 'nope', newest: ID, resume_since: '', by_sender: {}, replayed_exempt: 0,
++    })).toThrow()
++    expect(() => BacklogEventSchema.parse({
++      pending: 1, pending_capped: false, oldest: ID, newest: ID, resume_since: '', by_sender: { a: 1.5 }, replayed_exempt: 0,
++    })).toThrow()
++  })
++
++  it('backlog_end carries only newest', () => {
++    expect(BacklogEndEventSchema.parse({ newest: ID })).toEqual({ newest: ID })
++    expect(() => BacklogEndEventSchema.parse({ newest: 'x' })).toThrow()
++  })
++})
+diff --git a/packages/shared/src/backlog.ts b/packages/shared/src/backlog.ts
+new file mode 100644
+index 0000000..ab97573
+--- /dev/null
++++ b/packages/shared/src/backlog.ts
+@@ -0,0 +1,48 @@
++import { z } from 'zod'
++import { isValidMessageId } from './ulid.ts'
++
++const MessageId = z.string().refine(isValidMessageId, 'invalid message id')
++
++// Replay butler (docs/plans/2026-09-15-replay-butler.md §2.2).
++//
++// When a stream connects with `?replay_max=N` and the chat backlog it would
++// have replayed exceeds N, the relay sends ONE `backlog` event instead of the
++// chat rows, then every non-chat row as ordinary `message` events, then
++// `backlog_end`. The chat rows stay in the durable buffer for `poll_inbox`.
++// A client that does not send `replay_max` never sees either event.
++
++export const SSE_EVENT_BACKLOG = 'backlog' as const
++export const SSE_EVENT_BACKLOG_END = 'backlog_end' as const
++
++/** `replay_max` is a positive integer no larger than one relay backlog page. */
++export const REPLAY_MAX_MIN = 1
++export const REPLAY_MAX_MAX = 1000
++
++/** The relay scans at most this many rows when counting a backlog (§2.1). */
++export const BACKLOG_SCAN_CAP = 10_000
++/** `by_sender` carries at most this many named keys; the rest fold into `"…"`. */
++export const BACKLOG_BY_SENDER_CAP = 20
++export const BACKLOG_BY_SENDER_REST = '…' as const
++
++export const BacklogEventSchema = z.object({
++  /** Chat rows summarized away (|P ∩ chat|). */
++  pending: z.number().int().min(0),
++  /** True when the scan hit BACKLOG_SCAN_CAP — there may be more beyond `newest`. */
++  pending_capped: z.boolean(),
++  /** Oldest / newest ids in the scanned population (any kind). */
++  oldest: MessageId,
++  newest: MessageId,
++  /** The `since` this connection carried; "" on a cold start. Poll from here to read the rest. */
++  resume_since: z.string(),
++  /** `@team` rows count under "@team" only; direct rows under their sender. */
++  by_sender: z.record(z.string(), z.number().int().min(0)),
++  /** Non-chat rows in the population — these were replayed one by one. */
++  replayed_exempt: z.number().int().min(0),
++})
++export type BacklogEvent = z.infer<typeof BacklogEventSchema>
++
++export const BacklogEndEventSchema = z.object({
++  /** Same as the preceding `backlog.newest`: advance the cursor here. */
++  newest: MessageId,
++})
++export type BacklogEndEvent = z.infer<typeof BacklogEndEventSchema>
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 908ba08..f01074a 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -5,3 +5,4 @@ export * from './subject.ts'
+ export * from './channel.ts'
+ export * from './env-loader.ts'
+ export * from './repo-name.ts'
++export * from './backlog.ts'

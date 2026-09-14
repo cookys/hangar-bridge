@@ -1,0 +1,10 @@
+{
+  "base": "d92dda73182d1753dc4f3fe83792eeb6a709a20e",
+  "head": "9683b66de9f02fb3f9e7a1a0cf7edc5ee0548073",
+  "diff_sha256": "1295f3acba23fa3a6cb5b40926f7b39f36c28d9181f385451d1cd8b87542a68a",
+  "full_range_sha256": "1295f3acba23fa3a6cb5b40926f7b39f36c28d9181f385451d1cd8b87542a68a",
+  "excluded": [
+    "docs/projects/2026-09-15-replay-butler/ledger"
+  ],
+  "diff_bytes": 34949
+}

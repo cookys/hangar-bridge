@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "phase": "relay",
+  "generation": 1,
+  "findings": [
+    {
+      "id": "c32f62cdd2f5debd88e05e2e4fa5c0b71ff3a35486f0377b8d6b188aa5394838",
+      "disposition": "refuted",
+      "rationale": "The plan does not put pending_after on /v1/stream. §2.5 (poll-only harness) attaches pending_after/pending_capped to GET /v1/messages only; §2.2 gives SSE clients the `backlog` event instead, and §2.3 is about cursor/delivered_at semantics. An SSE client that wants the count has it in `backlog.pending`; a response-body field on a text/event-stream endpoint has no consumer. Parity is by event vs field, not by duplicating the field."
+    },
+    {
+      "id": "c3b2e0a6956dcf12ececa1e32ea151baacc962fcb84ee16029f1109945b99086",
+      "disposition": "refuted",
+      "rationale": "fetchInboxIdsAfter (store.ts) copies fetchInboxSince's WHERE clause verbatim: `to_handle NOT LIKE '@mailbox:%'` is a constant pattern, to_handle/team/since/instance are all positional bindings, and with a pollerInstance the directClause excludes rows whose meta.sender_instance equals the poller — the same self-exclusion the page applies. The route passes the same `pollerInstance` (undefined when the header is absent, exactly as for the page), so count and page share one predicate by construction; ownsNamespace is applied on top in the route just as for the page. T7/T7b exercise the count against the page. No injection surface and no parity gap."
+    },
+    {
+      "id": "e94d21406a3934a66e7a6d830d34a45511e303fdc80e9861c6ee12f25d0f6a97",
+      "disposition": "refuted",
+      "rationale": "Reviewer concludes 'correct, not blocking' itself: readEventsNoCancel is a top-level function declaration, hoisted before the describe callbacks execute. Nothing to change."
+    },
+    {
+      "id": "1ed574a454c0244ecef7e6d4859e0e05939d12de6d5060139e487556f2743314",
+      "disposition": "refuted",
+      "rationale": "Reviewer confirms the cap semantics match T16 and reports no defect; the diff's comment states the rule (`capped` is exact: set only when a row beyond the cap row is seen)."
+    },
+    {
+      "id": "fcce40778432469b049d12a113874f154933c959117c08f08d2938b2018aa87d",
+      "disposition": "refuted",
+      "rationale": "Reviewer confirms foldBySender ordering and the @team bucketing against T19 and reports no defect."
+    }
+  ]
+}

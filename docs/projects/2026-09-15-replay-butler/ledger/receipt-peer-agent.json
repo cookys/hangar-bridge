@@ -1,0 +1,35 @@
+{
+  "kind": "review",
+  "phase": "peer-agent",
+  "phase_base_sha": "9683b66de9f02fb3f9e7a1a0cf7edc5ee0548073",
+  "chain": [
+    {
+      "generation": 1,
+      "base": "9683b66de9f02fb3f9e7a1a0cf7edc5ee0548073",
+      "head": "6dc02952f43766447beb270f4f16cbcfd6b0aa99",
+      "seats": [
+        {
+          "id": "s0",
+          "status": "reviewed"
+        }
+      ],
+      "reviewed_seats": 1,
+      "total_seats": 1,
+      "reviewed_seats_count": 1,
+      "total_seats_count": 1,
+      "status": "finalized",
+      "diff_sha256": "8bf17f6c8cced53fa942a16290cb8c27618b90a5a81cd17a622c263d45b281ef",
+      "full_range_sha256": "8bf17f6c8cced53fa942a16290cb8c27618b90a5a81cd17a622c263d45b281ef",
+      "findings_sha256": "8aa973100a15bf817985395637131e838cf84e427be4792583def923f020f5fa",
+      "seat_artifact_sha256": {
+        "s0": "8069d73d1eb9ab3a0900743a14dca1c5228a950c873013ee5f2e2027d3651406"
+      },
+      "dispositions_path": "review-peer-agent/g1/dispositions.json",
+      "dispositions_sha256": "f050008aa289a6e304a51ef6ef01f84ed0dc8b789c2b883dc8da4da2fbecc5b1"
+    }
+  ],
+  "verdict": "SHIP-AS-IS",
+  "open_findings": [],
+  "resolved_from": "topology",
+  "written_at": "2026-09-14T23:17:35.515Z"
+}

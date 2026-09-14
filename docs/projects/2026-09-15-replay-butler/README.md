@@ -19,7 +19,7 @@
 - Plan: [replay butler r3](../../plans/2026-09-15-replay-butler.md) — hetero plan loop 2 generations,
   receipts exit 0 (see plan §7)
 - Base: `65585b6` (develop) · Branch: `feat/replay-butler` · Merge target: `develop`
-- Status: in progress
+- Status: phases complete — awaiting finish-flow (merge to develop) and relay-first deploy
 - Verification contract: `corepack pnpm -r typecheck && corepack pnpm -r test:ci`, each phase RED first
   (new vitest cases fail on base, pass on head); risk = medium (wire format additive, cursor semantics)
   → hetero review stays gating per phase.
@@ -58,9 +58,9 @@ User-stated requirements ledger: (a) "一上線就全塞" must stop above a thre
 
 | Phase | Plan steps | Status | Evidence |
 |---|---|---|---|
-| relay | P1 shared types + P2 stream butler + P3 poll `pending_after` | pending | T1–T7, T13–T16, T19 |
-| peer-agent | P4 | pending | T8–T12, T14b, T17, T18, T20 |
-| docs | P5 | pending | architecture.md, hangar runbook, BACKLOG close |
+| relay | P1 shared types + P2 stream butler + P3 poll `pending_after` | complete | `9683b66`; T1–T7, T13–T16, T19 (17/17); relay 406 passed, cov 94.85 %; hetero g1 MiniMax-M3 xhigh SHIP-AS-IS (5 findings, all refuted with evidence), receipt exit 0 |
+| peer-agent | P4 | complete | `6dc0295`; replay-butler.test.ts 20 cases; peer-agent 520 passed, cov 92.85 %; hetero g1 SHIP-AS-IS (0 findings, invariant proof present), receipt exit 0 |
+| docs | P5 | complete | architecture.md §4 replay butler, README (summary suffix + `inbox.replay_threshold`), hangar runbook step 8 (hangar commit); hangar BACKLOG row closes on deploy |
 | L-5 finish-flow | — | pending | autopilot:finish-flow |
 
 ## Decisions

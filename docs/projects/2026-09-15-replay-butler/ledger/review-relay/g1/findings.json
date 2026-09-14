@@ -1,0 +1,34 @@
+{
+  "findings": [
+    {
+      "id": "c32f62cdd2f5debd88e05e2e4fa5c0b71ff3a35486f0377b8d6b188aa5394838",
+      "severity": "Major",
+      "seat": "s0",
+      "text": "🟠 [stream-pending-after] MUST-FIX GET /v1/stream omits a pollable \"pending\" butler for poll-only harnesses; plan §2.3 requires /v1/stream also report pending_after/pending_capped so SSE and poll parity hold (the diff only adds the SSE backlog summary and the GET /v1/messages pending_after, not the /v1/stream response fields). Smallest fix: add the same tail-count computation to the stream handler response (mirror messages.ts) before the initial SSE write."
+    },
+    {
+      "id": "e94d21406a3934a66e7a6d830d34a45511e303fdc80e9861c6ee12f25d0f6a97",
+      "severity": "Suggestion",
+      "seat": "s0",
+      "text": "🔵 [test-t4-t13-helpers] CUT/FOLLOW-UP The T4 and T13 tests reference a local `readEventsNoCancel` defined at the bottom of the file; vitest hoists hoisted? No — these are top-level `async function` declarations so they resolve before the `describe` blocks run. It is correct, just non-obvious; not blocking."
+    },
+    {
+      "id": "c3b2e0a6956dcf12ececa1e32ea151baacc962fcb84ee16029f1109945b99086",
+      "severity": "Major",
+      "seat": "s0",
+      "text": "🟠 [store-fetch-inbox-ids-after-handle-escape] MUST-FIX `fetchInboxIdsAfter` interpolates `to_handle` directly into a SQL LIKE clause (`to_handle NOT LIKE '@mailbox:%'`), and the `directClause` builder also inlines the `to_handle` value into a literal pattern. With a pollerInstance the same handle is bound twice via positional placeholders, which is safe for SQL injection but the LIKE constant `'@mailbox:%'` and the team/from_handle binding are still handled correctly. The real concern: the route passes `pollerInstance` to `fetchInboxIdsAfter` for the poller-side tail count, but `fetchInboxIdsAfter` ignores it for the filter on `meta_json->>'$.sender_instance'` when pollerInstance is undefined (fine), yet the route always passes pollerInstance for tail counts — verify the count excludes self-sent rows for parity with the deliverable gate. Re-check: deliverable gate uses `sender_instance != pollerInstance`; the new helper does the same. OK, but the unfiltered (no pollerInstance) branch lacks the guard — must be unreachable from the route. Confirm: route always passes pollerInstance. If true, this is fine; otherwise `pending_after` overcounts. Smallest fix: assert/reject pollerInstance === undefined at the top of the route's tail-count block."
+    },
+    {
+      "id": "1ed574a454c0244ecef7e6d4859e0e05939d12de6d5060139e487556f2743314",
+      "severity": "Suggestion",
+      "seat": "s0",
+      "text": "🔵 [scan-cap-off-by-one] CUT/FOLLOW-UP `scanBacklog` sets `capped = true` when `pending + exempt >= BACKLOG_SCAN_CAP`, breaking BEFORE incrementing the 10 001st row — so `newest` is the 10 000th. The T16 test asserts exactly that. Good. No defect."
+    },
+    {
+      "id": "fcce40778432469b049d12a113874f154933c959117c08f08d2938b2018aa87d",
+      "severity": "Suggestion",
+      "seat": "s0",
+      "text": "🔵 [by-sender-team-fold] CUT/FOLLOW-UP `foldBySender` sorts by descending count then name; `@team` rows are bucketed under `TEAM_BROADCAST_HANDLE` in scanBacklog. T19 verifies behavior. No defect."
+    }
+  ]
+}
