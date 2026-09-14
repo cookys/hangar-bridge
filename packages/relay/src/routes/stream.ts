@@ -1,7 +1,10 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import {
-  HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, type Envelope,
+  HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, TEAM_BROADCAST_HANDLE,
+  SSE_EVENT_BACKLOG, SSE_EVENT_BACKLOG_END, REPLAY_MAX_MIN, REPLAY_MAX_MAX,
+  BACKLOG_SCAN_CAP, BACKLOG_BY_SENDER_CAP, BACKLOG_BY_SENDER_REST,
+  type Envelope, type BacklogEvent, type BacklogEndEvent, type MessageId,
 } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { loadOwnedSet, ownsNamespace, matchesInterest } from '../acl.ts'
@@ -43,6 +46,19 @@ export function streamRoute(deps: Deps) {
     const parsedInstance = parseInstanceHeader(c.req.header('x-hangar-instance'))
     if (!parsedInstance.ok) return c.json({ error: 'invalid_instance' }, 400)
     const instance = parsedInstance.instance
+    // Replay butler (docs/plans/2026-09-15-replay-butler.md): a client that
+    // sends `replay_max=N` asks for ONE summary instead of the chat backlog
+    // when more than N chat rows are waiting. Absent ⇒ the pre-butler drain,
+    // unchanged — that is what makes relay-first rollout safe.
+    const rawReplayMax = c.req.query('replay_max')
+    let replayMax: number | undefined
+    if (rawReplayMax !== undefined) {
+      if (!/^[0-9]+$/.test(rawReplayMax)) return c.json({ error: 'invalid_replay_max' }, 400)
+      replayMax = Number(rawReplayMax)
+      if (replayMax < REPLAY_MAX_MIN || replayMax > REPLAY_MAX_MAX) {
+        return c.json({ error: 'invalid_replay_max' }, 400)
+      }
+    }
 
     // Optional interest narrowing. Header (set by undici fetch) takes precedence
     // over query param. Comma-separated. Interest can only NARROW within owned
@@ -149,13 +165,59 @@ export function streamRoute(deps: Deps) {
       const drain = since
         ? (cur: string) => deps.store.fetchSince(team_id, handle, cur)
         : (cur: string) => deps.store.fetchPendingSince(team_id, handle, cur)
-      let cursor: string = since ?? ''
-      for (;;) {
-        const page = drain(cursor)
-        if (page.length === 0) break
-        for (const e of page) if (deliverable(e) && !seen.has(e.id)) await writeAndMark(e)
-        cursor = page[page.length - 1]!.id
-        if (page.length < BACKLOG_PAGE) break
+
+      // Butler pass (§2.1): scan the population P this connection would replay
+      // — the same drain, the same `deliverable` gate — up to BACKLOG_SCAN_CAP
+      // rows, without writing anything. H (`newest`) is the last row scanned.
+      // When |P ∩ chat| > replay_max: one `backlog` event, then every non-chat
+      // row of P in order (a dispatch or a permission must never be swallowed
+      // into a summary — its receiver's tracker would wait forever), then
+      // `backlog_end`. The chat rows stay unstamped and ungranted for poll.
+      // Live envelopes with id <= H are dropped afterwards: they are inside the
+      // summary already (the connect-window race, plan §2.1 high watermark).
+      let watermark: string | null = null
+      if (replayMax !== undefined) {
+        const summary = scanBacklog(drain, since ?? '', deliverable)
+        if (summary !== null && summary.pending > replayMax) {
+          const event: BacklogEvent = {
+            pending: summary.pending,
+            pending_capped: summary.capped,
+            oldest: summary.oldest,
+            newest: summary.newest,
+            resume_since: since ?? '',
+            by_sender: foldBySender(summary.bySender),
+            replayed_exempt: summary.exempt,
+          }
+          await stream.writeSSE({ event: SSE_EVENT_BACKLOG, data: JSON.stringify(event) })
+          let cur: string = since ?? ''
+          scan: for (;;) {
+            const page = drain(cur)
+            if (page.length === 0) break
+            for (const e of page) {
+              if (e.id > summary.newest) break scan
+              if (e.kind !== 'chat' && deliverable(e) && !seen.has(e.id)) await writeAndMark(e)
+            }
+            cur = page[page.length - 1]!.id
+            if (page.length < BACKLOG_PAGE) break
+          }
+          const end: BacklogEndEvent = { newest: summary.newest }
+          await stream.writeSSE({ event: SSE_EVENT_BACKLOG_END, data: JSON.stringify(end) })
+          watermark = summary.newest
+          logJson('info', 'relay.stream.backlog_summarized', {
+            handle, instance: instance ?? '', pending: summary.pending, exempt: summary.exempt, newest: summary.newest,
+          })
+        }
+      }
+
+      if (watermark === null) {
+        let cursor: string = since ?? ''
+        for (;;) {
+          const page = drain(cursor)
+          if (page.length === 0) break
+          for (const e of page) if (deliverable(e) && !seen.has(e.id)) await writeAndMark(e)
+          cursor = page[page.length - 1]!.id
+          if (page.length < BACKLOG_PAGE) break
+        }
       }
 
       const pingTimer = setInterval(() => {
@@ -208,6 +270,7 @@ export function streamRoute(deps: Deps) {
           }
           const e = queue.shift()!
           if (seen.has(e.id)) continue
+          if (watermark !== null && e.id <= watermark) continue
           await stream.writeSSE({ event: 'message', data: JSON.stringify(e) })
           deps.store.markDelivered(e.id)
           markSeen(e.id)
@@ -224,4 +287,67 @@ export function streamRoute(deps: Deps) {
     })
   })
   return app
+}
+
+interface BacklogScan {
+  pending: number
+  exempt: number
+  capped: boolean
+  oldest: MessageId
+  newest: MessageId
+  bySender: Map<string, number>
+}
+
+/**
+ * Count the population a drain would deliver — same pages, same gate — without
+ * writing. Stops after BACKLOG_SCAN_CAP population rows (`capped`), so a
+ * pathological buffer bounds the work; `newest` is then the cap row and the
+ * rest is left for the next reconnect. Returns null for an empty population.
+ */
+function scanBacklog(
+  drain: (cursor: string) => Envelope[],
+  since: string,
+  deliverable: (e: Envelope) => boolean,
+): BacklogScan | null {
+  let pending = 0
+  let exempt = 0
+  let oldest: MessageId | null = null
+  let newest: MessageId | null = null
+  const bySender = new Map<string, number>()
+  let cursor = since
+  let capped = false
+  scan: for (;;) {
+    const page = drain(cursor)
+    if (page.length === 0) break
+    for (const e of page) {
+      if (!deliverable(e)) continue
+      // One row past the cap proves "more"; the cap row itself stays `newest`.
+      if (pending + exempt >= BACKLOG_SCAN_CAP) { capped = true; break scan }
+      if (e.kind === 'chat') {
+        pending += 1
+        const key = e.to === TEAM_BROADCAST_HANDLE ? TEAM_BROADCAST_HANDLE : e.from
+        bySender.set(key, (bySender.get(key) ?? 0) + 1)
+      } else {
+        exempt += 1
+      }
+      oldest ??= e.id as MessageId
+      newest = e.id as MessageId
+    }
+    cursor = page[page.length - 1]!.id
+    if (page.length < BACKLOG_PAGE) break
+  }
+  if (oldest === null || newest === null) return null
+  // `capped` is exact: it is set only when a further deliverable row was seen
+  // beyond the cap row, so exactly BACKLOG_SCAN_CAP rows report false.
+  return { pending, exempt, capped, oldest, newest, bySender }
+}
+
+/** Top BACKLOG_BY_SENDER_CAP senders by count (ties by name); the rest fold into one key. */
+function foldBySender(bySender: Map<string, number>): Record<string, number> {
+  const entries = [...bySender.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  const out: Record<string, number> = {}
+  let rest = 0
+  entries.forEach(([k, n], i) => { if (i < BACKLOG_BY_SENDER_CAP) out[k] = n; else rest += n })
+  if (rest > 0) out[BACKLOG_BY_SENDER_REST] = rest
+  return out
 }

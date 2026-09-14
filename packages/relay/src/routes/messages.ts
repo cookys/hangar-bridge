@@ -6,6 +6,7 @@ import {
   newMessageId,
   TEAM_BROADCAST_HANDLE,
   EPHEMERAL_ROUTE_TTL_MS,
+  BACKLOG_SCAN_CAP,
   type Envelope,
 } from '@hangar-bridge/shared'
 import { loadOwnedSet, ownsNamespace } from '../acl.ts'
@@ -119,6 +120,13 @@ export function messagesRoute(deps: Deps) {
     // The cursor advances over EVERY row read, not only the deliverable ones, so
     // a page full of gated rows can never wedge the caller below the live edge.
     const next_cursor = rows.length > 0 ? rows[rows.length - 1]!.id : (since ?? null)
+    // Replay butler (§2.5): how much is still waiting past this page, so a
+    // poll-only harness (no SSE, so no `backlog` event) gets the same butler.
+    // Same predicate as this page; counted up to BACKLOG_SCAN_CAP, exact below it.
+    const tail = deps.store.fetchInboxIdsAfter(HANGAR_TEAM_ID, handle, next_cursor ?? '', BACKLOG_SCAN_CAP, pollerInstance)
+      .filter(r => r.subject === null || ownsNamespace(r.subject, owned))
+    const pending_capped = tail.length > BACKLOG_SCAN_CAP
+    const pending_after = pending_capped ? BACKLOG_SCAN_CAP : tail.length
     // Flag off + no instance: this poll's OWN inability to grant is reported
     // at the RESPONSE level, not stamped onto each envelope's meta —
     // `meta.attribution_status` is the SENDER-stamped field (set only via
@@ -126,7 +134,7 @@ export function messagesRoute(deps: Deps) {
     // overwrite it; the two describe different things (who sent it vs.
     // whether THIS presentation could be granted).
     return c.json({
-      messages, next_cursor,
+      messages, next_cursor, pending_after, pending_capped,
       ...(pollerInstance === undefined ? { attribution_status: 'unverifiable' } : {}),
     })
   })
