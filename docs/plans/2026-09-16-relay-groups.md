@@ -61,7 +61,7 @@ group 的成員。不同 group 的成員彼此**看不見、送不到、列不�
 
 ### 2.1.2 ⭐ 每則訊息一個 group,relay 蓋章,sender 不能選它不屬於的
 
-- POST `/v1/messages` 接受選填 `group`(regex 同 `HANDLE_REGEX`)。預設 = sender 的 `default_group`
+- POST `/v1/messages` 接受選填 `group`(regex `GROUP_ID_REGEX`)。預設 = sender 的 `default_group`
   (peers.json 每個 peer 必填,且必須是它的 membership 之一,否則 relay 啟動 fail)。
 - **插入點(必須在所有會回應的既有步驟之前)**:group 解析 → membership → cap → 收件人成員判定,緊接在
   B1 meta 剝除(`messages.ts:175-181`)與 `x-hangar-instance` 解析之後、**`thread_root` 續串(`:250`)之前**;
@@ -300,7 +300,7 @@ version guard):
 
 | 檔案 | 責任 |
 |---|---|
-| `packages/shared/src/constants.ts` | `GROUP_BROADCAST_HANDLE='@group'`、`GROUP_ID_REGEX`(= HANDLE_REGEX)、`MEMBER_CAPS` 常數、`DEFAULT_GROUP_ID='cookys'`、`isBroadcastHandle()` |
+| `packages/shared/src/constants.ts` | `GROUP_BROADCAST_HANDLE='@group'`、`GROUP_ID_REGEX = /^[a-z][a-z0-9._-]{0,63}$/`(比 HANDLE_REGEX 多允許 `.`、長度 64,讓 domain 能當 group id)、`MEMBER_CAPS` 常數、`DEFAULT_GROUP_ID='cookys'`、`isBroadcastHandle()` |
 | `packages/shared/src/envelope.ts` | Envelope 加 `group: string`(relay 側 NOT NULL;client 送件 schema 為 optional);`to` 接受 `@group`;`@team` 別名判定 |
 | `packages/relay/src/db/schema.sql` + `db/db.ts` | schema.sql 升到 v10 形狀(fresh DB 的 canonical);`migrateV9ToV10` 逐步 guard |
 | `packages/relay/src/auth/peers-file.ts` | `PeersFileSchema` 加頂層 `groups`、peer 級 `default_group`;`seedPeers` 同步 `group` / `group_member`(含 since_msg_id 只在**新**成員時寫);legacy 判定 |
@@ -415,8 +415,8 @@ P0 → P1 → P2 → P3 嚴格序;P2 的 `bin/fleet` 可與 P1 後段並行(只�
 operator 的預期:同事會跨域維護多個專案,而 context 限制讓一隻 agent 不太可能跨多個專案,所以切分單位
 自然是「專案(domain)」。本設計**不加第二層階層**,而是把它映成既有兩個機制的組合:
 
-- **group = domain**:一個上線專案一個 group,id 建議直接用它的 domain(`GROUP_ID_REGEX` = `HANDLE_REGEX`,
-  已允許 `.`、`-`),例如 `sikax.io`、`nikki.cookys.org`。
+- **group = domain**:一個上線專案一個 group,id 建議直接用它的 domain(`GROUP_ID_REGEX` 允許 `.`、`-`,長度 64;
+  `HANDLE_REGEX` 本身不允許 `.`,所以是獨立 regex),例如 `sikax.io`、`nikki.cookys.org`。
 - **handle = 專案 agent,不是機器**:`hangar-bridge init-project`(`docs/PROJECT_ISOLATION.md`)已能在同一台機器
   為每個專案產一個獨立 handle(`<hostname>-<project>`,自己的 secret 與 config dir);該 handle 的
   `default_group` = 那個專案的 group。同事的每個專案 agent 也各是一個 handle、各進自己的 group。
