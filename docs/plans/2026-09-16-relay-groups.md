@@ -19,7 +19,7 @@ presence 快照、每一個 claim、每一條 reply 路由都帶一個 relay 蓋
 group 的成員。不同 group 的成員彼此**看不見、送不到、列不出、回放不到**。要讓兩個圈子互通,唯一方式是
 把某個 handle 同時放進兩個 group(multi-membership),沒有「跨 group 橋接」這種第二套規則。
 
-一句話驗收:**新建一個 `guest` handle 只放在 `guest-lab` group,它對 `fleet` group 的一切,行為上等同
+一句話驗收:**新建一個 `guest` handle 只放在 `guest-lab` group,它對 `cookys` group 的一切,行為上等同
 於 relay 上根本沒有 `fleet` 這個東西**(不是 403,是「不存在」)。
 
 ## 1. 非目標(明確不做)
@@ -28,7 +28,7 @@ group 的成員。不同 group 的成員彼此**看不見、送不到、列不�
   `peers.json` + SIGHUP,維持「no dynamic registration」不變量(`architecture.md` §5.1)。
 - 不做跨 group 的 bridge / forward / 轉發規則。需要互通 = multi-membership。
 - 不做 group 內的角色階層(owner / admin)。v1 只有「成員」加上每個成員的能力集(§2.1.6 caps)。
-- 不動 NATS lane(`fleet-roster.json` / NKey 主題權限)。**不變量:非 `fleet` group 的成員永不核發 NKey、永不進
+- 不動 NATS lane(`fleet-roster.json` / NKey 主題權限)。**不變量:非 `cookys` group 的成員永不核發 NKey、永不進
   `fleet-roster.json`**(NATS lane 是獨立 transport、不經 relay message 表,任何拿到 NKey 的人都繞過 group);
   hangar 的「加同事」runbook 只發 relay secret。NATS 主題分 group 是另一份 plan,`docs/BACKLOG.md` 留列,
   trigger =「第一個需要 NATS lane 的非 fleet 成員出現」。
@@ -56,7 +56,7 @@ group 的成員。不同 group 的成員彼此**看不見、送不到、列不�
   一個 handle 只能在一個 team;cookys 的 `cuda` 要同時在自家 fleet 和某個共同專案 group 就得開第二把
   secret、第二個 handle。跟 §0「multi-membership 是唯一互通方式」衝突。
 - **C(採用)group overlay**:`team_id` 維持 `'hangar'`(它代表「這個 relay 安裝」),新增 `group` /
-  `group_member` 兩張表,handle ↔ group 多對多。所有既有 row 回填到一個 `fleet` group,行為 100% 等同
+  `group_member` 兩張表,handle ↔ group 多對多。所有既有 row 回填到一個 `cookys` group,行為 100% 等同
   今天;隔離只在第二個 group 出現時才「長出來」。
 
 ### 2.1.2 ⭐ 每則訊息一個 group,relay 蓋章,sender 不能選它不屬於的
@@ -258,15 +258,15 @@ peers.json 裡消失的 handle**(只在 secret 變更時 revoke 舊 token)。gro
   一個 group、`default_group` 必填且 ∈ memberships,否則 fail(寧可不起也不要靜默把人放進 `fleet`)。
 
 **schema v10**:`schema.sql` 升到 v10 形狀作為 fresh DB 的 canonical(`peer_group` / `group_member`
-`CREATE TABLE IF NOT EXISTS`、`message` / `reply_route` 帶 `group_id … DEFAULT 'fleet'`、`claim` 新 PK);
+`CREATE TABLE IF NOT EXISTS`、`message` / `reply_route` 帶 `group_id … DEFAULT 'cookys'`、`claim` 新 PK);
 schema.sql 先於 migration 執行(`db.ts:15-16`),所以 `migrateV9ToV10(db)` **逐步 guard**(照現碼慣例,不是單一
 version guard):
 
 0. 整體 `BEGIN … COMMIT`。
 1. `peer_group` / `group_member` 用 `IF NOT EXISTS`(**不能叫 `group`——SQLite 保留字**);索引 `idx_group_member_handle(handle)`。
 2. **資料回填只跑一次**:以 `SELECT 1 FROM schema_version WHERE version=10` 缺席作 run-once guard(照 `db.ts:38-41` v9
-   資料回填慣例;DDL 步驟仍逐物件 guard)。guard 內:`INSERT OR IGNORE peer_group('fleet','hangar','migrated single group','all')`;
-   每個 `human` `INSERT INTO group_member('fleet', handle, <全 caps>, now, '0') … WHERE NOT EXISTS (SELECT 1 FROM group_member gm
+   資料回填慣例;DDL 步驟仍逐物件 guard)。guard 內:`INSERT OR IGNORE peer_group('cookys','hangar','migrated single group','all')`;
+   每個 `human` `INSERT INTO group_member('cookys', handle, <全 caps>, now, '0') … WHERE NOT EXISTS (SELECT 1 FROM group_member gm
    WHERE gm.handle = human.handle)`。理由:serve 啟動先 open+seed+close(`index.ts:39-43`)再 open 一次(`serve.ts:61`),
    若回填每次 open 都跑,strict seed 剛把 guest 從 fleet 移除、第二次 open 又把它塞回 fleet(全 caps)——正是本節要防的
    「靜默把人放進 fleet」。**分工**:回填只搬 v9 影像那一次;之後 `peer_group` / `group_member` 的唯一權威是每次 load 的
@@ -300,7 +300,7 @@ version guard):
 
 | 檔案 | 責任 |
 |---|---|
-| `packages/shared/src/constants.ts` | `GROUP_BROADCAST_HANDLE='@group'`、`GROUP_ID_REGEX`(= HANDLE_REGEX)、`MEMBER_CAPS` 常數、`DEFAULT_GROUP_ID='fleet'`、`isBroadcastHandle()` |
+| `packages/shared/src/constants.ts` | `GROUP_BROADCAST_HANDLE='@group'`、`GROUP_ID_REGEX`(= HANDLE_REGEX)、`MEMBER_CAPS` 常數、`DEFAULT_GROUP_ID='cookys'`、`isBroadcastHandle()` |
 | `packages/shared/src/envelope.ts` | Envelope 加 `group: string`(relay 側 NOT NULL;client 送件 schema 為 optional);`to` 接受 `@group`;`@team` 別名判定 |
 | `packages/relay/src/db/schema.sql` + `db/db.ts` | schema.sql 升到 v10 形狀(fresh DB 的 canonical);`migrateV9ToV10` 逐步 guard |
 | `packages/relay/src/auth/peers-file.ts` | `PeersFileSchema` 加頂層 `groups`、peer 級 `default_group`;`seedPeers` 同步 `group` / `group_member`(含 since_msg_id 只在**新**成員時寫);legacy 判定 |
@@ -330,7 +330,7 @@ version guard):
 ### P0 — 型別、schema v10、peers-file、groups.ts(size L;純 relay 內部,無 route 行為改變)
 
 1. `packages/shared`:常數 + Envelope 型別 + `isBroadcastHandle`;`envelope.test.ts` 加 `@group` / `@team` 別名 / `group` regex / `isBroadcastHandle`(`@team` / `@group` / 其他)案例(先紅)。
-2. `db/schema.sql` v10 + `migrateV9ToV10`;`db.test.ts`:(a) 對一份 v9 fixture DB 跑 migration → `fleet` group 存在、每個 human 一列 member、message.group_id 全 `fleet`、claim PK 遷移後 count 不變、`idx_claim_expires` 存在、schema_version 含 10;(b) **重跑 idempotent**;(c) fresh DB 直接 `openDatabase` → 不拋、schema_version 含 10、表形狀正確;(d) fresh DB 開兩次 idempotent;(e) guest 只在 guest-lab 的 v10 DB open 兩次 → `(fleet, guest)` 仍為空。
+2. `db/schema.sql` v10 + `migrateV9ToV10`;`db.test.ts`:(a) 對一份 v9 fixture DB 跑 migration → `cookys` group 存在、每個 human 一列 member、message.group_id 全 `fleet`、claim PK 遷移後 count 不變、`idx_claim_expires` 存在、schema_version 含 10;(b) **重跑 idempotent**;(c) fresh DB 直接 `openDatabase` → 不拋、schema_version 含 10、表形狀正確;(d) fresh DB 開兩次 idempotent;(e) guest 只在 guest-lab 的 v10 DB open 兩次 → `(fleet, guest)` 仍為空。
 3. `peers-file.ts`:schema 擴充 + legacy 判定 + `seedPeers` 同步 group 表。測試:(a) 在已 v10 的 DB 上 load legacy 檔(含一個 DB 裡沒有的新 handle)→ 全員(含新 handle)fleet/all/caps 全開/since '0' + WARN;(b) 顯式檔缺 `default_group` → throw;(c) `default_group ∉ memberships` → throw;(d1) 既有成員再 seed **不改** `since_msg_id`;(d2) `since_join` group 的新成員寫入值符合 `^msg_[0-9A-HJKMNP-TV-Z]{26}$`;(d3) `history: all` group 的新成員寫 `'0'`;(a) 同時斷言 legacy 全員 since='0';(e) 移出 group → `group_member` 列刪除;(f) 從檔案消失的 handle(嚴格模式)→ `disabled_at` 與 token `revoked_at` 皆非 null,legacy 模式不動;(g) legacy 檔啟動後 reload strict 檔 → `group_member` 與檔案一致、差集撤銷生效;(h1) strict 後 SIGHUP reload 無 groups 段 → 拒絕、DB 不變、舊 roster 續用;(h2) strict DB(有非 fleet group)以 legacy 檔啟動 → exit 1;(h3) strict DB 只有 fleet 但 `a.caps=[chat]` 以 legacy 檔啟動 → exit 1(不得靜默放寬);(i) 扁平檔含一個叫 `groups` 的 handle → 仍照 legacy 解析;v2 檔頂層多餘鍵 → fail。
 4. `groups.ts` + 單元測試:`loadMemberships` / `members` / `requireCap` / `readerScope` 產生的 SQL 在 `:memory:` DB 上直接執行驗證;另一條 grep 測試斷言 `store.ts` 五個 fetch* 不含後置 `.filter(`(§2.5-3;subject ACL 在 route 層的既有 JS filter 允許)。
 
@@ -338,7 +338,7 @@ version guard):
 
 ### P1 — relay 端全面 enforcement(size L;本 plan 的安全核心)
 
-1. `routes/messages.ts` POST:依 §2.1.2 / §2.1.6 順序 —— 解析 group → membership → cap → 收件人成員 → 既有 subject ACL → insert(group_id)。測試矩陣(`messages.group.test.ts`,fixture:`fleet{a,b}`、`lab{b,c}`、`c` caps=[chat];default_group:a=fleet、b=fleet、c=lab;嚴格模式):
+1. `routes/messages.ts` POST:依 §2.1.2 / §2.1.6 順序 —— 解析 group → membership → cap → 收件人成員 → 既有 subject ACL → insert(group_id)。測試矩陣(`messages.group.test.ts`,fixture:`cookys{a,b}`、`lab{b,c}`、`c` caps=[chat];default_group:a=cookys、b=cookys、c=lab;嚴格模式):
    - a→c 直送 → 404 unknown_recipient;a→不存在的 handle → **同一個** body;addressRules=on 時 a→c 不帶 all_sessions → 仍 404,body 不含 `live_instances`。
    - c 以 a 在 fleet 的 msg_id 當 `in_reply_to` 送 chat / task_result → 與 `in_reply_to` = 隨機 id 的回應 byte-equal;c 以該 id 當 `thread_root` → 403 not_in_thread 與 route 不存在同 body。
    - `idempotency-key` 重放但 body 換 group → 422;重放但 sender 已被移出該 group → 404 unknown_group;cached row 無 `group` + body 缺省 → 201 replay(`messages.ts:164` 回 201)。
@@ -404,15 +404,30 @@ P0 → P1 → P2 → P3 嚴格序;P2 的 `bin/fleet` 可與 P1 後段並行(只�
 | `seedPeers` 從不撤銷消失的 handle | §2.1.7 差集撤銷,P0-3(f) 測試 |
 | migration 的 human→fleet 回填若每次 open 都跑,會在 serve 的第二次 open 把 strict 移除的 guest 塞回 fleet | run-once guard(§2.1.10 step 2),P0-2(e) |
 | SIGHUP drop 導致所有人重連風暴 | 只 drop membership **縮小**的 handle;擴大不 drop |
-| since_join 讓 operator 自己加新機器時看不到舊廣播 | `fleet` group `history: all`;runbook 明講「自家機器進 fleet,外人進新 group」 |
+| since_join 讓 operator 自己加新機器時看不到舊廣播 | `cookys` group `history: all`;runbook 明講「自家機器進 fleet,外人進新 group」 |
 
 ## 7. Out of scope
 
 見 §1;另:group 級 retention、group 級 rate limit、跨 relay 聯邦、UI。
 
+### 2.1.11 group 與「domain / 專案」的對應(operator 2026-09-16 提問後補)
+
+operator 的預期:同事會跨域維護多個專案,而 context 限制讓一隻 agent 不太可能跨多個專案,所以切分單位
+自然是「專案(domain)」。本設計**不加第二層階層**,而是把它映成既有兩個機制的組合:
+
+- **group = domain**:一個上線專案一個 group,id 建議直接用它的 domain(`GROUP_ID_REGEX` = `HANDLE_REGEX`,
+  已允許 `.`、`-`),例如 `sikax.io`、`nikki.cookys.org`。
+- **handle = 專案 agent,不是機器**:`hangar-bridge init-project`(`docs/PROJECT_ISOLATION.md`)已能在同一台機器
+  為每個專案產一個獨立 handle(`<hostname>-<project>`,自己的 secret 與 config dir);該 handle 的
+  `default_group` = 那個專案的 group。同事的每個專案 agent 也各是一個 handle、各進自己的 group。
+- 人的圈子(`cookys`、某同事)是另一種 group,同一個 handle 可以同時在「人圈」與「專案圈」。
+
+若日後真的需要「domain 底下再分」,`peer_group` 加一個 `parent` 欄位是 additive 變更,讀取側不受影響;
+現在不做(§1)。
+
 ## 8. Open questions(只有 operator 能答)
 
-1. `fleet` 這個名字給既有圈子 OK?(替代:`cookys`)—— 它會出現在每則 channel tag 與 `fleet peers` 節標題。
+1. ~~`fleet` 還是 `cookys`~~ **已決(operator 2026-09-16):既有圈子叫 `cookys`**,外人來了才好區分;`fleet` 這個字保留給 CLI / 整個 relay。plan 內所有 `fleet` group 字樣已改。
 2. 同事預設 caps 要不要**連 `permission` 都關**(他們回不了你機器的 permission_request)?本 plan 預設關(`["chat"]`),runbook 讓 operator 逐 handle 開。
 
 ## Review log
