@@ -114,8 +114,9 @@ Requirements ledger: (a) stop the flood above a threshold → relay P2 (T3) ✔;
   by hand; then relay 408 / peer-agent 520 green), cookys-gentoo, crosshair8-hero (kimi courier
   restarted), 7840hs, twgs-revival ×3 logins (cookys via `npx pnpm`, node 18 — build only).
   Environmental, not code: 3 live-JetStream KV tests fail on hosts without `nats-server` (gentoo,
-  cuda, 7840hs); twgs logins ran no test:ci. **Not upgraded**: the itx-chatgpt courier (itx WSL
-  clone) — it keeps polling without `pending_after`.
+  cuda, 7840hs); twgs logins ran no test:ci. itx-chatgpt courier (itx WSL clone) upgraded
+  2026-09-16: `6716eb5` → `5fa9e56`, dist `1070d4f4…`, respawned by its watchdog with the persisted
+  instance `01M1X1BW…` — every roster peer now runs this build.
 - §4 live acceptance (relay side): `GET /v1/stream?since=<old>&replay_max=1` as `openclaw` with a
   fresh instance → `backlog{pending:5, by_sender:{itx-chatgpt:3, openclaw:2}}` + `backlog_end`,
   and the same cursor without `replay_max` replays exactly 5 `message` events (T6 live);
