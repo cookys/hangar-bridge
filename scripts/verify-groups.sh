@@ -7,10 +7,9 @@ cd "$(dirname "$0")/.."
 if [ ! -d node_modules ] || [ ! -d packages/relay/node_modules ]; then
   corepack pnpm install --frozen-lockfile --prefer-offline --silent
 fi
-# relay resolves @hangar-bridge/shared through its dist entry; a fresh tree has none.
-if [ ! -f packages/shared/dist/index.js ]; then
-  corepack pnpm -F @hangar-bridge/shared run build
-fi
+# relay resolves @hangar-bridge/shared through its dist entry: a fresh tree has none and a
+# long-lived checkout has a STALE one (P0 bit this: undefined ALL_MEMBER_CAPS). Always rebuild.
+corepack pnpm -F @hangar-bridge/shared run build
 corepack pnpm -F @hangar-bridge/shared exec vitest run
 corepack pnpm -F @hangar-bridge/relay exec vitest run
 corepack pnpm -F @hangar-bridge/shared run typecheck
