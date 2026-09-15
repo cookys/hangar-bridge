@@ -2,7 +2,12 @@ import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
+import {
+  ALL_MEMBER_CAPS,
+  DEFAULT_GROUP_ID,
+  HANGAR_TEAM_ID,
+  isBroadcastHandle,
+} from '@hangar-bridge/shared'
 import { logJson } from '../logger.ts'
 
 export type Db = Database.Database
@@ -22,7 +27,100 @@ export function openDatabase(path: string): Db {
   migrateV6ToV7(db)
   migrateV7ToV8(db)
   migrateV8ToV9(db)
+  migrateV9ToV10(db)
   return db
+}
+
+export function migrateV9ToV10(db: Db): void {
+  let backfilled = false
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS peer_group (
+        id TEXT PRIMARY KEY,
+        team_id TEXT NOT NULL REFERENCES team(id),
+        description TEXT NOT NULL DEFAULT '',
+        history TEXT NOT NULL CHECK(history IN ('since_join','all')),
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS group_member (
+        group_id TEXT NOT NULL REFERENCES peer_group(id) ON DELETE CASCADE,
+        handle TEXT NOT NULL,
+        caps_json TEXT NOT NULL,
+        member_since TEXT NOT NULL,
+        since_msg_id TEXT NOT NULL,
+        PRIMARY KEY (group_id, handle)
+      );
+      CREATE INDEX IF NOT EXISTS idx_group_member_handle ON group_member(handle);
+    `)
+
+    const done = db.prepare('SELECT 1 AS x FROM schema_version WHERE version=10').get()
+    if (!done) {
+      const nowIso = new Date().toISOString()
+      const capsJson = JSON.stringify(ALL_MEMBER_CAPS)
+      db.prepare(`
+        INSERT OR IGNORE INTO peer_group(id, team_id, description, history, created_at)
+        VALUES (?, ?, 'migrated single group', 'all', ?)
+      `).run(DEFAULT_GROUP_ID, HANGAR_TEAM_ID, nowIso)
+      db.prepare(`
+        INSERT INTO group_member(group_id, handle, caps_json, member_since, since_msg_id)
+        SELECT ?, h.handle, ?, ?, '0'
+        FROM human h
+        WHERE NOT EXISTS (
+          SELECT 1 FROM group_member gm WHERE gm.handle = h.handle
+        )
+      `).run(DEFAULT_GROUP_ID, capsJson, nowIso)
+      backfilled = true
+    }
+
+    const msgCols = db.pragma('table_info(message)') as Array<{ name: string }>
+    if (!msgCols.some(c => c.name === 'group_id')) {
+      db.exec(`ALTER TABLE message ADD COLUMN group_id TEXT NOT NULL DEFAULT '${DEFAULT_GROUP_ID}'`)
+    }
+    const routeCols = db.pragma('table_info(reply_route)') as Array<{ name: string }>
+    if (!routeCols.some(c => c.name === 'group_id')) {
+      db.exec(`ALTER TABLE reply_route ADD COLUMN group_id TEXT NOT NULL DEFAULT '${DEFAULT_GROUP_ID}'`)
+    }
+
+    const claimRow = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='claim'"
+    ).get() as { sql: string } | undefined
+    if (claimRow && !claimRow.sql.includes('group_id')) {
+      const before = db.prepare('SELECT COUNT(*) AS n FROM claim').get() as { n: number }
+      db.exec(`
+        CREATE TABLE claim_v10 (
+          team_id      TEXT NOT NULL REFERENCES team(id),
+          group_id     TEXT NOT NULL DEFAULT '${DEFAULT_GROUP_ID}',
+          claim_key    TEXT NOT NULL,
+          owner_handle TEXT NOT NULL,
+          owner_label  TEXT,
+          note         TEXT,
+          created_at   TEXT NOT NULL,
+          expires_at   TEXT NOT NULL,
+          PRIMARY KEY (team_id, group_id, claim_key)
+        )
+      `)
+      db.exec(`
+        INSERT INTO claim_v10(team_id, group_id, claim_key, owner_handle, owner_label, note, created_at, expires_at)
+        SELECT team_id, '${DEFAULT_GROUP_ID}', claim_key, owner_handle, owner_label, note, created_at, expires_at
+        FROM claim
+      `)
+      const after = db.prepare('SELECT COUNT(*) AS n FROM claim_v10').get() as { n: number }
+      if (before.n !== after.n) {
+        throw new Error(`claim v10 row count mismatch: before=${before.n} after=${after.n}`)
+      }
+      db.exec('DROP TABLE claim')
+      db.exec('ALTER TABLE claim_v10 RENAME TO claim')
+    }
+
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_claim_expires ON claim(team_id, expires_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_legacy_unique ON claim(team_id, claim_key);
+      CREATE INDEX IF NOT EXISTS idx_message_group_id ON message(team_id, group_id, id);
+      CREATE INDEX IF NOT EXISTS idx_message_group_to ON message(team_id, group_id, to_handle, id);
+      INSERT OR IGNORE INTO schema_version(version) VALUES (10);
+    `)
+  })()
+  if (backfilled) logJson('info', 'migrate.v9_to_v10', { group: DEFAULT_GROUP_ID })
 }
 
 /**
@@ -135,9 +233,9 @@ function backfillReplyRoutes(db: Db): BackfillResult {
  */
 function classifyLegacyWidth(toHandle: string, toFilterJson: string | null): string {
   if (toFilterJson == null) {
-    return toHandle === TEAM_BROADCAST_HANDLE ? 'team-not-sender' : 'handle'
+    return isBroadcastHandle(toHandle) ? 'team-not-sender' : 'handle'
   }
-  if (toHandle === TEAM_BROADCAST_HANDLE) {
+  if (isBroadcastHandle(toHandle)) {
     try {
       const filter = JSON.parse(toFilterJson) as Record<string, unknown>
       const keys = Object.keys(filter)

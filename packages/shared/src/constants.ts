@@ -23,6 +23,18 @@ export const MAX_CLAIM_NOTE_LENGTH = 512
 // path-like keys (colon + slash) so callers can name e.g. "repo:foo:configs/bar.toml".
 export const CLAIM_KEY_REGEX = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/
 export const TEAM_BROADCAST_HANDLE = '@team' as const
+export const GROUP_BROADCAST_HANDLE = '@group' as const
+export const GROUP_ID_REGEX = /^[a-z][a-z0-9._-]{0,63}$/
+export const DEFAULT_GROUP_ID = 'cookys' as const
+export const MEMBER_CAPS = ['chat', 'broadcast', 'dispatch', 'permission', 'claim'] as const
+export type MemberCap = typeof MEMBER_CAPS[number]
+export const ALL_MEMBER_CAPS: readonly MemberCap[] = MEMBER_CAPS
+export const GROUP_HISTORY = ['since_join', 'all'] as const
+export type GroupHistory = typeof GROUP_HISTORY[number]
+export const SINCE_ALL = '0' as const
+export function isBroadcastHandle(to: string): boolean {
+  return to === TEAM_BROADCAST_HANDLE || to === GROUP_BROADCAST_HANDLE
+}
 export const HANDLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/
 export const META_KEY_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/
 export const CHANNEL_SOURCE_PEERS = 'hangar-bridge' as const

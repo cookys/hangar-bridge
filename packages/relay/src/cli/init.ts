@@ -1,5 +1,5 @@
 import type { Db } from '../db/db.ts'
-import { loadPeersFile, seedPeers } from '../auth/peers-file.ts'
+import { loadPeersFile, seedPeers, type SeedDiff } from '../auth/peers-file.ts'
 
 export interface InitFromFileOpts {
   peers_file: string
@@ -8,6 +8,8 @@ export interface InitFromFileOpts {
 
 export interface InitFromFileResult {
   seeded: string[]
+  mode: 'legacy' | 'strict'
+  diff: SeedDiff
 }
 
 /**
@@ -19,7 +21,7 @@ export interface InitFromFileResult {
  * changed) is handled by `seedPeers` (old token revoked, new one inserted).
  */
 export function initRelayFromPeersFile(db: Db, opts: InitFromFileOpts): InitFromFileResult {
-  const peers = loadPeersFile(opts.peers_file)
-  seedPeers(db, peers, opts.now?.() ?? new Date())
-  return { seeded: peers.map(p => p.handle) }
+  const loaded = loadPeersFile(opts.peers_file)
+  const diff = seedPeers(db, loaded, opts.now?.() ?? new Date())
+  return { seeded: loaded.peers.map(p => p.handle), mode: loaded.mode, diff }
 }

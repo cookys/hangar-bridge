@@ -1,4 +1,4 @@
--- hangar-bridge relay schema v7
+-- hangar-bridge relay schema v10
 --
 -- D10 stub posture: single-tenant. `team_id` is constant `'hangar'` everywhere
 -- in application code. Schema retains the column + FK for minimal churn vs
@@ -50,6 +50,24 @@ CREATE TABLE IF NOT EXISTS token (
 );
 CREATE INDEX IF NOT EXISTS idx_token_human ON token(human_id);
 
+CREATE TABLE IF NOT EXISTS peer_group (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES team(id),
+  description TEXT NOT NULL DEFAULT '',
+  history TEXT NOT NULL CHECK(history IN ('since_join','all')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_member (
+  group_id TEXT NOT NULL REFERENCES peer_group(id) ON DELETE CASCADE,
+  handle TEXT NOT NULL,
+  caps_json TEXT NOT NULL,
+  member_since TEXT NOT NULL,
+  since_msg_id TEXT NOT NULL,
+  PRIMARY KEY (group_id, handle)
+);
+CREATE INDEX IF NOT EXISTS idx_group_member_handle ON group_member(handle);
+
 CREATE TABLE IF NOT EXISTS message (
   id TEXT PRIMARY KEY,
   v INTEGER NOT NULL,
@@ -64,7 +82,8 @@ CREATE TABLE IF NOT EXISTS message (
   sent_at TEXT NOT NULL,
   delivered_at TEXT,
   subject TEXT,              -- dotted routing key, NULL = legacy fan-out (v5)
-  to_filter_json TEXT        -- presence-backed audience narrowing {instance?,repo?}, NULL = none (v8)
+  to_filter_json TEXT,       -- presence-backed audience narrowing {instance?,repo?}, NULL = none (v8)
+  group_id TEXT NOT NULL DEFAULT 'cookys'
 );
 CREATE INDEX IF NOT EXISTS idx_message_team_id ON message(team_id, id);
 CREATE INDEX IF NOT EXISTS idx_message_to_handle ON message(team_id, to_handle, id);
@@ -93,15 +112,17 @@ CREATE INDEX IF NOT EXISTS idx_audit_team_at ON audit_log(team_id, at);
 -- roster-cooperative lock, NOT namespace-ACL-gated (any authenticated peer may claim).
 CREATE TABLE IF NOT EXISTS claim (
   team_id      TEXT NOT NULL REFERENCES team(id),
+  group_id     TEXT NOT NULL DEFAULT 'cookys',
   claim_key    TEXT NOT NULL,
   owner_handle TEXT NOT NULL,
   owner_label  TEXT,
   note         TEXT,
   created_at   TEXT NOT NULL,
   expires_at   TEXT NOT NULL,
-  PRIMARY KEY (team_id, claim_key)
+  PRIMARY KEY (team_id, group_id, claim_key)
 );
 CREATE INDEX IF NOT EXISTS idx_claim_expires ON claim(team_id, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_legacy_unique ON claim(team_id, claim_key);
 
 -- Reply routing (REPLY_ROUTING_SPEC.md §3.1, schema v9). A route is stamped for
 -- every accepted user-authored message so a later reply can resolve who may
@@ -114,6 +135,7 @@ CREATE TABLE IF NOT EXISTS reply_route (
   sender_instance  TEXT,               -- relay-stamped; NULL only on pre-rollout rows
   return_selector  TEXT,               -- from x-hangar-return-selector header; courier panes only
   to_handle        TEXT NOT NULL,      -- '@team', a handle, or '@mailbox:<handle>'
+  group_id         TEXT NOT NULL DEFAULT 'cookys',
   to_filter_json   TEXT,
   thread_root      TEXT NOT NULL,      -- effective root, never NULL (§3.3)
   legacy_width     TEXT,               -- NULL | 'handle' | 'team-not-sender' | 'unreplyable' (§5.3)
