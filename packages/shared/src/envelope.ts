@@ -1,10 +1,11 @@
 import { z } from 'zod'
 import {
+  DEFAULT_GROUP_ID, GROUP_BROADCAST_HANDLE, GROUP_ID_REGEX,
   HANDLE_REGEX, META_KEY_REGEX, MAX_CONTENT_BYTES,
   MAX_META_KEY_LENGTH, MAX_META_VALUE_LENGTH,
   PROTOCOL_VERSION, TEAM_BROADCAST_HANDLE,
   SUBJECT_REGEX, MAX_SUBJECT_LENGTH,
-  isMailboxHandle, RESERVED_CLI_INSTANCE
+  isBroadcastHandle, isMailboxHandle, RESERVED_CLI_INSTANCE
 } from './constants.ts'
 import { isValidInstanceId } from './ulid.ts'
 
@@ -48,7 +49,7 @@ function refineToFilter(
   // single instance (repo could match >1 session → one command, many results on
   // one correlation_id). Mirrors the "commands are direct DMs" rule (R1).
   if (e.kind === 'task_dispatch') {
-    if (e.to === TEAM_BROADCAST_HANDLE) {
+    if (isBroadcastHandle(e.to)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to_filter'],
         message: 'task_dispatch with to_filter must target a concrete handle, not @team' })
     }
@@ -58,7 +59,7 @@ function refineToFilter(
     }
   }
   // @team + to_filter is a fan-out narrowing → only chat (mirrors subjected-@team).
-  if (e.to === TEAM_BROADCAST_HANDLE && e.kind !== 'chat') {
+  if (isBroadcastHandle(e.to) && e.kind !== 'chat') {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to_filter'],
       message: 'to_filter on @team is allowed only for chat' })
   }
@@ -73,6 +74,7 @@ function refineToFilter(
 export const AddressSchema = z.union([
   z.string().regex(HANDLE_REGEX, 'handle'),
   z.literal(TEAM_BROADCAST_HANDLE),
+  z.literal(GROUP_BROADCAST_HANDLE),
   z.string().refine(isMailboxHandle, 'mailbox handle')
 ])
 
@@ -92,6 +94,7 @@ const ContentSchema = z.string().refine(
 )
 
 const MessageIdSchema = z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/)
+const GroupIdSchema = z.string().regex(GROUP_ID_REGEX)
 
 export const EnvelopeSchema = z.object({
   id: MessageIdSchema,
@@ -99,6 +102,7 @@ export const EnvelopeSchema = z.object({
   team: z.string().min(1).max(64),
   from: z.string().regex(HANDLE_REGEX),
   to: AddressSchema,
+  group: GroupIdSchema.default(DEFAULT_GROUP_ID),
   // Required-but-nullable on the stored envelope (like in_reply_to). `.default(null)`
   // lets pre-subject rows / legacy constructors omit it (parses to null = legacy
   // fan-out); the relay always stamps it explicitly at publish (§4 / store.insert).
@@ -137,7 +141,7 @@ export const EnvelopeSchema = z.object({
   // inherits @team's broadcast delivery model (id-cursor redelivery; delivered_at is an
   // ambient first-delivery flag), so it does NOT reintroduce a per-recipient delivery
   // table. Nullish guard (B2): fire only when subject is set.
-  if (e.subject != null && e.to === TEAM_BROADCAST_HANDLE && e.kind !== 'chat') {
+  if (e.subject != null && isBroadcastHandle(e.to) && e.kind !== 'chat') {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['subject'],
@@ -159,6 +163,7 @@ export type Envelope = z.infer<typeof EnvelopeSchema>
 
 export const OutboundMessageSchema = z.object({
   to: AddressSchema,
+  group: GroupIdSchema.optional(),
   // .default(null) normalizes an omitted subject to null so the nullish guards
   // below (and the publish-gate null short-circuit) behave; without it an omitted
   // subject would be `undefined` and `!= null` would still be correct, but the
@@ -201,7 +206,7 @@ export const OutboundMessageSchema = z.object({
     })
   }
   if (e.all_sessions !== undefined) {
-    const concreteHandle = e.to !== TEAM_BROADCAST_HANDLE && !e.to.startsWith('@')
+    const concreteHandle = !isBroadcastHandle(e.to) && !e.to.startsWith('@')
     if (e.kind !== 'chat' || !concreteHandle || e.fleet_wide === true) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom, path: ['all_sessions'],
@@ -213,7 +218,7 @@ export const OutboundMessageSchema = z.object({
   // guards (B2): outbound subject is optional, so `!= null` would misfire on
   // every omitted-subject send (acks, null-subject @team broadcasts) → 400.
   // Subjected @team is allowed only for chat (#3); other kinds (task_dispatch) → 400 R1.
-  if (e.subject != null && e.to === TEAM_BROADCAST_HANDLE && e.kind !== 'chat') {
+  if (e.subject != null && isBroadcastHandle(e.to) && e.kind !== 'chat') {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['subject'],
@@ -236,6 +241,7 @@ export interface EnvelopeRow {
   team_id: string
   from_handle: string
   to_handle: string
+  group_id?: string
   subject: string | null
   in_reply_to: string | null
   thread_root: string | null
@@ -250,7 +256,7 @@ export interface EnvelopeRow {
 export function envelopeToRow(e: Envelope): EnvelopeRow {
   return {
     id: e.id, v: e.v, team_id: e.team,
-    from_handle: e.from, to_handle: e.to, subject: e.subject,
+    from_handle: e.from, to_handle: e.to, group_id: e.group, subject: e.subject,
     in_reply_to: e.in_reply_to, thread_root: e.thread_root,
     kind: e.kind, content: e.content,
     meta_json: JSON.stringify(e.meta),
@@ -262,7 +268,7 @@ export function envelopeToRow(e: Envelope): EnvelopeRow {
 export function envelopeFromRow(row: EnvelopeRow): Envelope {
   return EnvelopeSchema.parse({
     id: row.id, v: row.v, team: row.team_id,
-    from: row.from_handle, to: row.to_handle, subject: row.subject,
+    from: row.from_handle, to: row.to_handle, group: row.group_id ?? DEFAULT_GROUP_ID, subject: row.subject,
     in_reply_to: row.in_reply_to, thread_root: row.thread_root,
     kind: row.kind, content: row.content,
     meta: JSON.parse(row.meta_json) as Record<string, string>,

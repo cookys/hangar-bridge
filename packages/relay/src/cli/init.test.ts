@@ -22,6 +22,8 @@ describe('initRelayFromPeersFile', () => {
     })
     const r = initRelayFromPeersFile(db, { peers_file: path })
     expect(r.seeded.sort()).toEqual(['gentoo', 'openclaw'])
+    expect(r.mode).toBe('legacy')
+    expect(r.diff.mode).toBe('legacy')
     const teams = db.prepare("SELECT id FROM team").all() as Array<{ id: string }>
     expect(teams).toEqual([{ id: HANGAR_TEAM_ID }])
     const handles = db.prepare("SELECT handle FROM human ORDER BY handle").all() as Array<{ handle: string }>

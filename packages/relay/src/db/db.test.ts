@@ -3,14 +3,15 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import { openDatabase, getSchemaVersion, type Db } from './db.ts'
+import { ALL_MEMBER_CAPS } from '@hangar-bridge/shared'
+import { openDatabase, getSchemaVersion, migrateV9ToV10, type Db } from './db.ts'
 
 describe('openDatabase', () => {
   let db: Db
   beforeEach(() => { db = openDatabase(':memory:') })
 
   it('applies schema and reports latest version', () => {
-    expect(getSchemaVersion(db)).toBe(9)
+    expect(getSchemaVersion(db)).toBe(10)
   })
 
   it('human table has last_active_at column (v2)', () => {
@@ -111,7 +112,7 @@ describe('migrateV3ToV4 (rebuild path)', () => {
 
   it('rebuilds message table to accept new kinds and preserves existing rows', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(9)
+    expect(getSchemaVersion(upgraded)).toBe(10)
     const legacy = upgraded.prepare("SELECT content FROM message WHERE id='msg_legacy_chat'").get() as { content: string } | undefined
     expect(legacy?.content).toBe('pre-migration')
     expect(() =>
@@ -125,9 +126,9 @@ describe('migrateV3ToV4 (rebuild path)', () => {
   it('is idempotent: second open does not rebuild again', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(9)
+    expect(getSchemaVersion(second)).toBe(10)
     const versions = second.prepare("SELECT version FROM schema_version ORDER BY version").all() as Array<{ version: number }>
-    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
+    expect(versions.map(r => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     second.close()
   })
 })
@@ -160,7 +161,7 @@ describe('migrateV5ToV6 (claim table)', () => {
 
   it('adds the claim table to an existing v5 DB and records version 6', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(9)
+    expect(getSchemaVersion(upgraded)).toBe(10)
     const has = upgraded.prepare(
       "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='claim'"
     ).get()
@@ -177,7 +178,7 @@ describe('migrateV5ToV6 (claim table)', () => {
   it('is idempotent: re-open keeps version 6 and one claim table', () => {
     openDatabase(dbPath).close()
     const second = openDatabase(dbPath)
-    expect(getSchemaVersion(second)).toBe(9)
+    expect(getSchemaVersion(second)).toBe(10)
     second.close()
   })
 })
@@ -219,7 +220,7 @@ describe('migrateV6ToV7 (legacy attribution scrub)', () => {
 
   it('removes newly reserved routing meta before recording v7', () => {
     const upgraded = openDatabase(dbPath)
-    expect(getSchemaVersion(upgraded)).toBe(9)
+    expect(getSchemaVersion(upgraded)).toBe(10)
     const row = upgraded.prepare(
       "SELECT meta_json FROM message WHERE id='msg_legacy_attribution'"
     ).get() as { meta_json: string }
@@ -237,7 +238,7 @@ describe('migrateV6ToV7 (legacy attribution scrub)', () => {
 describe('migrateV8ToV9 (reply routing tables, REPLY_ROUTING_SPEC §3.1)', () => {
   it('a fresh DB ends at version 9 with all four tables + the correlation index', () => {
     const db = openDatabase(':memory:')
-    expect(getSchemaVersion(db)).toBe(9)
+    expect(getSchemaVersion(db)).toBe(10)
     const names = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'reply_%' ORDER BY name"
     ).all().map((r: any) => r.name)
@@ -254,7 +255,7 @@ describe('migrateV8ToV9 (reply routing tables, REPLY_ROUTING_SPEC §3.1)', () =>
       .map(c => c.name)
     expect(cols).toEqual([
       'msg_id', 'team_id', 'from_handle', 'sender_instance', 'return_selector',
-      'to_handle', 'to_filter_json', 'thread_root', 'legacy_width',
+      'to_handle', 'group_id', 'to_filter_json', 'thread_root', 'legacy_width',
       'correlation_id', 'created_at', 'expires_at', 'unaddressable_at',
     ])
   })
@@ -298,7 +299,7 @@ describe('migrateV8ToV9 (reply routing tables, REPLY_ROUTING_SPEC §3.1)', () =>
     try {
       openDatabase(dbPath).close()
       const second = openDatabase(dbPath)
-      expect(getSchemaVersion(second)).toBe(9)
+      expect(getSchemaVersion(second)).toBe(10)
       const tableCount = second.prepare(
         "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='reply_route'"
       ).get() as { n: number }
@@ -370,7 +371,7 @@ describe('migrateV8ToV9 backfill (REPLY_ROUTING_SPEC.md §5.3)', () => {
     const before = Date.now()
     const upgraded = openDatabase(dbPath)
     const after = Date.now()
-    expect(getSchemaVersion(upgraded)).toBe(9)
+    expect(getSchemaVersion(upgraded)).toBe(10)
 
     const routes = upgraded.prepare(
       'SELECT msg_id, legacy_width, sender_instance, thread_root, correlation_id, created_at, expires_at FROM reply_route ORDER BY msg_id'
@@ -460,7 +461,7 @@ describe('migrateV8ToV9 backfill (REPLY_ROUTING_SPEC.md §5.3)', () => {
     expect(() => openDatabase(dbPath)).not.toThrow()
 
     const reopened = openDatabase(dbPath)
-    expect(getSchemaVersion(reopened)).toBe(9)
+    expect(getSchemaVersion(reopened)).toBe(10)
     const count = reopened.prepare('SELECT COUNT(*) AS n FROM reply_route').get() as { n: number }
     expect(count.n).toBe(5)
     reopened.close()
@@ -528,5 +529,124 @@ describe('migrateV8ToV9 backfill — legacy correlation_id collisions (REPLY_ROU
     ).get() as { n: number }
     expect(count.n).toBe(2)
     second.close()
+  })
+})
+
+function createV9Fixture(db: Db): void {
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+    CREATE TABLE team(id TEXT PRIMARY KEY, name TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 7, created_at TEXT NOT NULL);
+    CREATE TABLE human(id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id), handle TEXT NOT NULL, display_name TEXT NOT NULL, public_key BLOB, created_at TEXT NOT NULL, disabled_at TEXT, last_active_at TEXT, subjects TEXT, UNIQUE(team_id, handle));
+    CREATE TABLE token(id TEXT PRIMARY KEY, human_id TEXT NOT NULL REFERENCES human(id), token_hash BLOB NOT NULL UNIQUE, label TEXT NOT NULL, tier TEXT NOT NULL CHECK(tier IN ('human','admin')), created_at TEXT NOT NULL, revoked_at TEXT);
+    CREATE TABLE message(id TEXT PRIMARY KEY, v INTEGER NOT NULL, team_id TEXT NOT NULL REFERENCES team(id), from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, in_reply_to TEXT, thread_root TEXT, kind TEXT NOT NULL CHECK(kind IN ('chat','presence_update','permission_request','permission_verdict','task_dispatch','task_result')), content TEXT NOT NULL, meta_json TEXT NOT NULL DEFAULT '{}', sent_at TEXT NOT NULL, delivered_at TEXT, subject TEXT, to_filter_json TEXT);
+    CREATE TABLE idempotency_key(key_hash BLOB PRIMARY KEY, token_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL REFERENCES team(id), at TEXT NOT NULL, actor_human_id TEXT, event TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
+    CREATE TABLE claim(team_id TEXT NOT NULL REFERENCES team(id), claim_key TEXT NOT NULL, owner_handle TEXT NOT NULL, owner_label TEXT, note TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(team_id, claim_key));
+    CREATE INDEX idx_claim_expires ON claim(team_id, expires_at);
+    CREATE TABLE reply_route(msg_id TEXT PRIMARY KEY, team_id TEXT NOT NULL, from_handle TEXT NOT NULL, sender_instance TEXT, return_selector TEXT, to_handle TEXT NOT NULL, to_filter_json TEXT, thread_root TEXT NOT NULL, legacy_width TEXT, correlation_id TEXT, created_at TEXT NOT NULL, expires_at TEXT, unaddressable_at TEXT);
+    CREATE UNIQUE INDEX reply_route_correlation ON reply_route(correlation_id) WHERE correlation_id IS NOT NULL;
+    INSERT INTO schema_version(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9);
+    INSERT INTO team(id,name,retention_days,created_at) VALUES ('hangar','hangar',7,'2026-05-17T00:00:00Z');
+    INSERT INTO human(id,team_id,handle,display_name,created_at,last_active_at) VALUES ('h_a','hangar','alice','alice','2026-05-17T00:00:00Z','2026-05-17T00:00:00Z'),('h_b','hangar','bob','bob','2026-05-17T00:00:00Z','2026-05-17T00:00:00Z');
+    INSERT INTO message(id,v,team_id,from_handle,to_handle,kind,content,meta_json,sent_at) VALUES
+      ('msg_01HRK7Y0000000000000000000',2,'hangar','alice','bob','chat','one','{}','2026-05-17T00:00:00Z'),
+      ('msg_01HRK7Y0000000000000000001',2,'hangar','bob','@team','chat','two','{}','2026-05-17T00:00:01Z'),
+      ('msg_01HRK7Y0000000000000000002',2,'hangar','alice','bob','task_dispatch','three','{}','2026-05-17T00:00:02Z');
+    INSERT INTO reply_route(msg_id,team_id,from_handle,to_handle,thread_root,created_at) VALUES ('msg_01HRK7Y0000000000000000000','hangar','alice','bob','msg_01HRK7Y0000000000000000000','2026-05-17T00:00:00Z');
+    INSERT INTO claim(team_id,claim_key,owner_handle,created_at,expires_at) VALUES ('hangar','asset','alice','2026-05-17T00:00:00Z','2026-05-17T01:00:00Z');
+  `)
+}
+
+describe('migrateV9ToV10 (relay groups)', () => {
+  it('migrates a v9 fixture to cookys group rows and the v10 claim PK/index', () => {
+    const db = new Database(':memory:')
+    createV9Fixture(db)
+    migrateV9ToV10(db)
+
+    expect(db.prepare("SELECT id, history FROM peer_group WHERE id='cookys'").get())
+      .toEqual({ id: 'cookys', history: 'all' })
+    const members = db.prepare('SELECT handle, caps_json, since_msg_id FROM group_member ORDER BY handle').all() as Array<{
+      handle: string; caps_json: string; since_msg_id: string
+    }>
+    expect(members.map(m => ({ handle: m.handle, caps: JSON.parse(m.caps_json), since_msg_id: m.since_msg_id }))).toEqual([
+      { handle: 'alice', caps: ALL_MEMBER_CAPS, since_msg_id: '0' },
+      { handle: 'bob', caps: ALL_MEMBER_CAPS, since_msg_id: '0' },
+    ])
+    expect(db.prepare("SELECT DISTINCT group_id FROM message").all()).toEqual([{ group_id: 'cookys' }])
+    expect(db.prepare("SELECT DISTINCT group_id FROM reply_route").all()).toEqual([{ group_id: 'cookys' }])
+    expect(db.prepare('SELECT COUNT(*) AS n FROM claim').get()).toEqual({ n: 1 })
+    expect(db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type='index' AND name='idx_claim_expires'").get()).toBeTruthy()
+    expect(db.prepare('SELECT 1 AS x FROM schema_version WHERE version=10').get()).toBeTruthy()
+  })
+
+  it('does not backfill a disabled human into cookys (depth-0 repair after MiniMax r1)', () => {
+    const db = new Database(':memory:')
+    createV9Fixture(db)
+    db.prepare("UPDATE human SET disabled_at='2026-05-18T00:00:00Z' WHERE handle='bob'").run()
+    migrateV9ToV10(db)
+    expect(db.prepare('SELECT handle FROM group_member ORDER BY handle').all()).toEqual([{ handle: 'alice' }])
+  })
+
+  it('is idempotent when run twice', () => {
+    const db = new Database(':memory:')
+    createV9Fixture(db)
+    migrateV9ToV10(db)
+    const before = {
+      peerGroups: db.prepare('SELECT COUNT(*) AS n FROM peer_group').get(),
+      groupMembers: db.prepare('SELECT COUNT(*) AS n FROM group_member').get(),
+      claims: db.prepare('SELECT COUNT(*) AS n FROM claim').get(),
+      versions: db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version=10').get(),
+    }
+    migrateV9ToV10(db)
+    expect({
+      peerGroups: db.prepare('SELECT COUNT(*) AS n FROM peer_group').get(),
+      groupMembers: db.prepare('SELECT COUNT(*) AS n FROM group_member').get(),
+      claims: db.prepare('SELECT COUNT(*) AS n FROM claim').get(),
+      versions: db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version=10').get(),
+    }).toEqual(before)
+  })
+
+  it('fresh openDatabase creates the canonical v10 shape', () => {
+    const db = openDatabase(':memory:')
+    expect(getSchemaVersion(db)).toBe(10)
+    expect((db.pragma('table_info(message)') as Array<{ name: string }>).some(c => c.name === 'group_id')).toBe(true)
+    const pk = (db.pragma('table_info(claim)') as Array<{ name: string; pk: number }>)
+      .filter(c => c.pk > 0)
+      .sort((a, b) => a.pk - b.pk)
+      .map(c => c.name)
+    expect(pk).toEqual(['team_id', 'group_id', 'claim_key'])
+  })
+
+  it('opening the same fresh DB twice is idempotent', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v10-'))
+    const dbPath = join(tmpDir, 'fresh.db')
+    try {
+      openDatabase(dbPath).close()
+      const second = openDatabase(dbPath)
+      expect(getSchemaVersion(second)).toBe(10)
+      expect(second.prepare("SELECT COUNT(*) AS n FROM peer_group WHERE id='cookys'").get()).toEqual({ n: 1 })
+      second.close()
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not re-admit a strict-removed guest to cookys on later openDatabase', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'hangar-bridge-v10-strict-'))
+    const dbPath = join(tmpDir, 'strict.db')
+    try {
+      const db = openDatabase(dbPath)
+      db.prepare("INSERT INTO human(id,team_id,handle,display_name,created_at,last_active_at) VALUES ('h_guest','hangar','guest','guest','2026-05-17T00:00:00Z','2026-05-17T00:00:00Z')").run()
+      db.prepare("INSERT INTO peer_group(id,team_id,description,history,created_at) VALUES ('guest-lab','hangar','lab','since_join','2026-05-17T00:00:00Z')").run()
+      db.prepare("INSERT INTO group_member(group_id,handle,caps_json,member_since,since_msg_id) VALUES ('guest-lab','guest',?,'2026-05-17T00:00:00Z','msg_01HRK7Y0000000000000000000')").run(JSON.stringify(ALL_MEMBER_CAPS))
+      db.close()
+
+      const reopened = openDatabase(dbPath)
+      expect(reopened.prepare("SELECT 1 AS x FROM group_member WHERE group_id='cookys' AND handle='guest'").get()).toBeUndefined()
+      reopened.close()
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 })

@@ -5,11 +5,11 @@ import {
   envelopeFromRow, envelopeToRow,
   type Envelope, type OutboundMessage
 } from './envelope.ts'
-import { PROTOCOL_VERSION, MAX_CONTENT_BYTES } from './constants.ts'
+import { DEFAULT_GROUP_ID, PROTOCOL_VERSION, MAX_CONTENT_BYTES } from './constants.ts'
 
 const validChatEnvelope = (): Envelope => ({
   id: 'msg_01HRK7Y0000000000000000000', v: PROTOCOL_VERSION,
-  team: 'team_abc', from: 'alice', to: 'bob',
+  team: 'team_abc', from: 'alice', to: 'bob', group: DEFAULT_GROUP_ID,
   subject: null,
   in_reply_to: null, thread_root: null,
   kind: 'chat', content: 'hello',
@@ -39,6 +39,14 @@ describe('EnvelopeSchema', () => {
   })
   it('accepts `to: "@team"` for broadcast', () => {
     expect(EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@team' })).toBeDefined()
+  })
+  it('accepts `to: "@group"` for group broadcast', () => {
+    expect(EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@group' })).toBeDefined()
+  })
+  it('defaults legacy envelope rows without group to cookys', () => {
+    const legacy = validChatEnvelope() as Record<string, unknown>
+    delete legacy.group
+    expect(EnvelopeSchema.parse(legacy).group).toBe(DEFAULT_GROUP_ID)
   })
   it('accepts a mailbox recipient (§8.2 operator mailbox row)', () => {
     const e = EnvelopeSchema.parse({ ...validChatEnvelope(), to: '@mailbox:cuda' })
@@ -112,6 +120,13 @@ describe('OutboundMessageSchema', () => {
     const m: OutboundMessage = { to: 'bob', kind: 'chat', content: 'hi' }
     expect(OutboundMessageSchema.parse(m)).toBeDefined()
   })
+  it('accepts outbound group broadcast and valid group ids', () => {
+    expect(OutboundMessageSchema.parse({ to: '@group', kind: 'chat', content: 'hi' }).to).toBe('@group')
+    expect(OutboundMessageSchema.parse({ to: 'bob', kind: 'chat', content: 'hi', group: 'sikax.io' }).group).toBe('sikax.io')
+  })
+  it('rejects invalid outbound group ids', () => {
+    expect(() => OutboundMessageSchema.parse({ to: 'bob', kind: 'chat', content: 'hi', group: 'Bad Group' })).toThrow()
+  })
   it('rejects outbound with id (server assigns)', () => {
     expect(() => OutboundMessageSchema.parse({
       to: 'bob', kind: 'chat', content: 'hi', id: 'msg_x'
@@ -141,7 +156,8 @@ describe('row <-> envelope conversion', () => {
       v: fc.constant(PROTOCOL_VERSION),
       team: fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/),
       from: fc.constantFrom('alice', 'bob', 'charlie'),
-      to: fc.constantFrom('alice', 'bob', '@team'),
+      to: fc.constantFrom('alice', 'bob', '@team', '@group'),
+      group: fc.constant(DEFAULT_GROUP_ID),
       subject: fc.constant(null),
       in_reply_to: fc.constant(null),
       thread_root: fc.constant(null),

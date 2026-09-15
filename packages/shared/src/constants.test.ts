@@ -1,9 +1,39 @@
 import { describe, it, expect } from 'vitest'
 import {
+  ALL_MEMBER_CAPS, DEFAULT_GROUP_ID, GROUP_BROADCAST_HANDLE, GROUP_ID_REGEX,
+  isBroadcastHandle, MEMBER_CAPS,
   MAILBOX_PREFIX, isMailboxHandle, RESERVED_CLI_INSTANCE,
   REPLY_ERROR_CODES, REPLY_ERROR_HTTP_STATUS, REPLY_ERROR_RETRYABLE,
   REPLY_LIMITER_DEFAULTS, EPHEMERAL_ROUTE_TTL_MS, LEGACY_ROUTE_TTL_MS
 } from './constants.ts'
+
+describe('group constants', () => {
+  it('defines the group broadcast handle and default group', () => {
+    expect(GROUP_BROADCAST_HANDLE).toBe('@group')
+    expect(DEFAULT_GROUP_ID).toBe('cookys')
+  })
+
+  it('recognizes both broadcast handles and rejects non-broadcast addresses', () => {
+    expect(isBroadcastHandle('@team')).toBe(true)
+    expect(isBroadcastHandle('@group')).toBe(true)
+    expect(isBroadcastHandle('openclaw')).toBe(false)
+    expect(isBroadcastHandle('@mailbox:x')).toBe(false)
+  })
+
+  it('GROUP_ID_REGEX accepts project/domain group ids and rejects invalid ids', () => {
+    expect(GROUP_ID_REGEX.test('cookys')).toBe(true)
+    expect(GROUP_ID_REGEX.test('guest-lab')).toBe(true)
+    expect(GROUP_ID_REGEX.test('nikki.cookys.org')).toBe(true)
+    expect(GROUP_ID_REGEX.test('@x')).toBe(false)
+    expect(GROUP_ID_REGEX.test('-x')).toBe(false)
+    expect(GROUP_ID_REGEX.test('a'.repeat(65))).toBe(false)
+  })
+
+  it('ALL_MEMBER_CAPS aliases the complete member cap list', () => {
+    expect(ALL_MEMBER_CAPS).toBe(MEMBER_CAPS)
+    expect(MEMBER_CAPS).toEqual(['chat', 'broadcast', 'dispatch', 'permission', 'claim'])
+  })
+})
 
 describe('isMailboxHandle (§6.5)', () => {
   it('is true for a mailbox-prefixed handle with a name after the prefix', () => {
