@@ -580,6 +580,14 @@ describe('migrateV9ToV10 (relay groups)', () => {
     expect(db.prepare('SELECT 1 AS x FROM schema_version WHERE version=10').get()).toBeTruthy()
   })
 
+  it('does not backfill a disabled human into cookys (depth-0 repair after MiniMax r1)', () => {
+    const db = new Database(':memory:')
+    createV9Fixture(db)
+    db.prepare("UPDATE human SET disabled_at='2026-05-18T00:00:00Z' WHERE handle='bob'").run()
+    migrateV9ToV10(db)
+    expect(db.prepare('SELECT handle FROM group_member ORDER BY handle').all()).toEqual([{ handle: 'alice' }])
+  })
+
   it('is idempotent when run twice', () => {
     const db = new Database(':memory:')
     createV9Fixture(db)

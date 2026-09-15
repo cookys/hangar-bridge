@@ -65,10 +65,10 @@ export function migrateV9ToV10(db: Db): void {
         INSERT INTO group_member(group_id, handle, caps_json, member_since, since_msg_id)
         SELECT ?, h.handle, ?, ?, '0'
         FROM human h
-        WHERE NOT EXISTS (
+        WHERE h.team_id = ? AND h.disabled_at IS NULL AND NOT EXISTS (
           SELECT 1 FROM group_member gm WHERE gm.handle = h.handle
         )
-      `).run(DEFAULT_GROUP_ID, capsJson, nowIso)
+      `).run(DEFAULT_GROUP_ID, capsJson, nowIso, HANGAR_TEAM_ID)
       backfilled = true
     }
 
@@ -114,6 +114,8 @@ export function migrateV9ToV10(db: Db): void {
 
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_claim_expires ON claim(team_id, expires_at);
+      -- P0 bridge: claims/store.ts still upserts ON CONFLICT(team_id, claim_key); P1 rescopes claims per group
+      -- and drops this index (plan §2.1.4). Until then it keeps legacy single-group behaviour byte-identical.
       CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_legacy_unique ON claim(team_id, claim_key);
       CREATE INDEX IF NOT EXISTS idx_message_group_id ON message(team_id, group_id, id);
       CREATE INDEX IF NOT EXISTS idx_message_group_to ON message(team_id, group_id, to_handle, id);
