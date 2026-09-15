@@ -1,0 +1,192 @@
+{
+  "generation": 1,
+  "plan": "docs/plans/2026-09-16-relay-groups.md",
+  "artifact": "docs/plans/2026-09-16-relay-groups.g1-artifact.json",
+  "depth0_verified": [
+    "messages.ts:158-165 idem before all checks",
+    "messages.ts:250 thread_root, :269-300 addressRules, :310 subject order",
+    "peers.ts:6,18-22,52 global 2s cache",
+    "presence.ts:65-71 heartbeat to @team via fanout",
+    "peers-file.ts:57-97 no revoke of missing handles",
+    "app.ts:23 /metrics outside bearer",
+    "store.ts:84-88 unknown recipient throws → 400"
+  ],
+  "dispositions": [
+    {
+      "id": "F1",
+      "severity": "Critical",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.2 / §2.5-1 / P1-1",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F2",
+      "severity": "Critical",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.8 / P1-1 / P1-7",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F3",
+      "severity": "Critical",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.4 / §2.1.8 / P1-1",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F4",
+      "severity": "Critical",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.4 / §3 (routes/peers.ts)",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F5",
+      "severity": "Major",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.4 (reply routing) / §7 thread_root 續串",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F6",
+      "severity": "Critical",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.4 (presence) / §2.1.3 Fanout / §3 (routes/presence.ts 未列)",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F7",
+      "severity": "Major",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.3 / P1-1",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F8",
+      "severity": "Critical",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.4 (reply routing) / §2.1.8 / P1-5",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F9",
+      "severity": "Critical",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.6 / §6 / P3-2",
+      "note": "保留 /v1/peers 陣列形狀、entry 加 groups(additive);分節顯示移到 client;§2.6 與 §6 改寫,全 peer 重建降為建議。"
+    },
+    {
+      "id": "F10",
+      "severity": "Major",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.1 / §2.1.2",
+      "note": "採命中時比 group + 驗 membership(422 idempotency_mismatch / 404 unknown_group),不改 key_hash。"
+    },
+    {
+      "id": "F11",
+      "severity": "Major",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.5 / P0-3",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F12",
+      "severity": "Major",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.3 / §2.1.7 / §3 (connections.ts / serve.ts / fanout.ts)",
+      "note": "dropHandle 落在 Fanout;deliverable 改每則現查(per-reload-epoch memo);owned-set 維持連線時讀一次。"
+    },
+    {
+      "id": "F13",
+      "severity": "Major",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.6",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F14",
+      "severity": "Major",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.8 (metrics)",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F15",
+      "severity": "Major",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.2 / §2.5-4 / P1-1",
+      "note": "採 A:legacy 模式維持 400 invalid_message 原 body(KR2 逐位元),嚴格模式 404 unknown_recipient;P1-7 harness 只在嚴格模式跑。"
+    },
+    {
+      "id": "F16",
+      "severity": "Major",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.10 / P3-2",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F17",
+      "severity": "Critical",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.7 / P0-3(e) / P3-3",
+      "note": "嚴格模式差集撤銷(disabled_at + revoked_at + group_member 刪除 + dropHandle + audit);legacy 模式不撤。"
+    },
+    {
+      "id": "F18",
+      "severity": "Major",
+      "blocker": true,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.2 / §2.1.10 / §3 (shared/constants.ts, envelope.ts)",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F19",
+      "severity": "Suggestion",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§1 / P3-4 BACKLOG",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F20",
+      "severity": "Minor",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2 KR3 / §3 / §4 P1-7",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F21",
+      "severity": "Minor",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.5-6 / P1-6",
+      "note": "折入 plan r1 對應段落。"
+    },
+    {
+      "id": "F22",
+      "severity": "Suggestion",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.2 broadcast gate",
+      "note": "折入 plan r1 對應段落。"
+    }
+  ]
+}

@@ -1,0 +1,300 @@
+{
+  "generation": 1,
+  "reviewer": "claude-fable-5-1",
+  "verdict": "FIX-THEN-SHIP",
+  "reviewed": {
+    "plan": "docs/plans/2026-09-16-relay-groups.md (status DRAFT r0)",
+    "rubric": "docs/plans/2026-09-16-relay-groups.rubric.md",
+    "branch": "feat/relay-groups @ 0e6f993",
+    "live_relay": "http://192.168.101.6:8443 build 5fa9e56, HANGAR_RELAY_ADDRESS_RULES=on (systemd drop-in 20-address-rules.conf)",
+    "method": "每個現碼斷言都實際開檔驗證;未開檔的寫「未驗證」。行號以 packages/relay/src 為根,peer-agent 檔案另註。"
+  },
+  "rubric": [
+    {
+      "id": "R1",
+      "result": "PASS",
+      "evidence": "§0 四項與源碼一致:(1) routes/messages.ts:310 `if (data.subject != null)` 之外的 chat 不經任何 per-recipient ACL,buildEnvelope 只查 human 存在(messages/store.ts:84-89);(2) routes/peers.ts:24-50 對任何 bearer 回整份 human roster + presence sessions(cwd/branch/repo);(3) db/schema.sql:102 `PRIMARY KEY (team_id, claim_key)`,claims/store.ts:33-37 live() 只以 (team_id, claim_key) 查;(4) messages/store.ts:170-187 fetchPendingSince 母體含 `to_handle='@team' AND from_handle != ?`,無任何 handle 分組條件。現碼沒有 plan 漏看的人員分組機制:docs/PROJECT_ISOLATION.md 是同機跨專案的 client 端 MCP 註冊隔離,tests/integration/cross-project-isolation.test.ts 測的是 to_filter{repo},acl.ts 是 namespace ACL。唯一描述失準在 §2.1.8(非 §0):`/metrics` 現在完全無認證(app.ts:23 直接 mount,routes/metrics.ts:4-6 無 bearerAuth;live curl 無 bearer 回 200),不是「既有 admin tier」—— 列為 F14。"
+    },
+    {
+      "id": "R2",
+      "result": "FAIL",
+      "evidence": "選 C 的理由成立:db/schema.sql:39 `UNIQUE(team_id, handle)` 確實讓一個 handle 無法同時屬兩個 team,multi-membership 是 plan 唯一互通機制(§1、§2.1.1)。但 C 有 plan 未提的結構缺陷:routes/messages.ts:158-165 `idempotency_key` 的 key_hash = hashToken(`${tokenId}:${idemKey}`),**不含 group**,且 replay 發生在 body 解析與任何 membership 檢查之前(:160-164 直接回 cached 201)。多 group 成員以同一 key 對不同 group 重送,會拿到另一 group 的 cached 回應且訊息不會落到目標 group;membership 縮小後同 key 仍 replay 201。`reply_idem`(routes/replies.ts:61-65)因 request_digest 含 in_reply_to 而間接綁 group,無此問題。見 F10。"
+    },
+    {
+      "id": "R3",
+      "result": "FAIL",
+      "evidence": "插入點存在:`from` 蓋章 = buildEnvelope(HANGAR_TEAM_ID, peer.handle, data)(routes/messages.ts:422、:505);B1 meta 剝除在 :179-181(plan 寫 :175,近似)。但 plan 的順序「group → membership → cap → recipient → subject ACL」漏了三個**先於 subject ACL(:310)執行且會洩漏**的既有步驟:(a) :250-263 `resolveThreadContinuation` 先於一切;(b) :269-300 addressRules 區塊在 prod 為 on,:281-290 `handle_needs_all_sessions` 回 `live_instances`(fanout.instanceCounts(data.to))—— 非成員可得知任一 handle 的線上 instance 數與 id;(c) buildEnvelope 內的 `in_reply_to` 父訊息查詢(messages/store.ts:92-97)無 group 條件,201/400 差異是跨 group 訊息存在性 oracle。見 F1、F2、F3。"
+    },
+    {
+      "id": "R4",
+      "result": "FAIL",
+      "evidence": "依 rubric 指定 grep 實跑。store.ts prepare( 清單:85(recipient 存在)、93(in_reply_to 父訊息)、120(persist)、152/177/205/229(四個 fetch*,plan 有列)、239、252、268、300/305(getRoute/getRouteByCorrelation)、321、325(hasGrant)、347-371(finalizeGrant)、387(fetchMailboxSince,plan 有列)。routes/fanout/purge grep 命中:metrics.ts:7-8、inbox.ts:37、permission.ts:31-36、stream.ts:166-167、peers.ts:25、replies.ts:100/246、purge.ts:57-62/85。plan §2.1.3 表**漏列**且會回訊息資料或計數/存在性給 client 的點:(1) store.ts:93 in_reply_to 父查詢(存在性);(2) routes/permission.ts:31-36 permission_request SELECT(以 to_handle=me,無 group);(3) routes/replies.ts:238-243 resolveParentRoute → getRoute/getRouteByCorrelation(跨 group route 存在 → 403 not_a_recipient,不存在 → 404 unknown_parent,可區分);(4) routes/messages.ts:603 resolveThreadContinuation(同碼 403,但允許跨 group 續串,見 F5);(5) routes/messages.ts:282 fanout.instanceCounts(live_instances);(6) routes/messages.ts:560-562 onlineHandles/isOnline 決定 delivered_at —— `@group` 廣播若沿用 `onlineHandles(team).some(h => h !== from)` 會因**非成員**在線就蓋 delivered_at,成員 cold start(delivered_at IS NULL)永遠拿不到(F7);(7) routes/presence.ts:64-71 presence_update 經 fanout.deliver 全 team 廣播(F6);(8) routes/grants.ts:69 finalizeGrant(以 grant 存在性回 404,grant 只給成員故無洩漏,但須列入 harness);(9) routes/stream.ts:282 superseded queue 經 fanout.deliver 重投(需 fanout group-aware)。"
+    },
+    {
+      "id": "R5",
+      "result": "FAIL",
+      "evidence": "可區分「存在但無權」與「不存在」的路徑:(1) routes/peers.ts:18-23 全域 `cached` body(TTL 2s)不分讀者 —— 若不改,guest 在 2s 內拿到 fleet 成員剛觸發的整份 roster(F4);(2) :281-290 live_instances(F2);(3) in_reply_to oracle(F3);(4) replies 404 unknown_parent vs 403 not_a_recipient(F8),且 plan 的 `unknown_message` 不在 shared/constants.ts:72-93 的 REPLY_ERROR_CODES 詞彙裡;(5) presence_update 廣播讓非成員收到 cwd/branch/repo(F6);(6) 多 group 成員以 thread_root 續串把 fleet 的 msg_id 帶進 lab 訊息的 thread_root(F5)。已驗證無洩漏的:rate-limit 429 以 token 為 key(middleware/rate-limit.ts:11-27)無目標資訊;reply_idem 以 (team, handle, key) 雜湊(replies.ts:61-65);SSE reauth 只送給被縮小的 handle 本人;/v1/whoami 只回自己;not_in_thread 對「route 不存在」與「無 grant」同碼 403(messages.ts:254-260、:604/:627);claim_conflict 的 owner 欄位在 PK 含 group 後只會是同 group 成員。"
+    },
+    {
+      "id": "R6",
+      "result": "FAIL",
+      "evidence": "message id 確為 relay 產生的單調 ULID:shared/ulid.ts:5 `monotonicFactory()`、:9 newMessageId() 前綴 `msg_`;store.ts:101 insert 路徑用它,replies.ts:402 亦同。同毫秒內 monotonicFactory 嚴格遞增,plan §2.1.5 已定 `>`。但 plan 寫「relay 產一個 ULID 水位」而 P0-3 寫「新成員寫入 now 的 ULID」,未指定格式;auth/peers-file.ts:3 目前 import 的是非單調的裸 `ulid`(用於 h_ id)。若 since_msg_id 存成裸 26 字元 ULID,`'msg_…' > '01J…'` 恆真(node 實測 true)—— since_join 靜默失效,新成員看到全部歷史。另 init CLI 是另一個行程、另一個 factory 狀態,同毫秒排序不保證。見 F11。"
+    },
+    {
+      "id": "R7",
+      "result": "FAIL",
+      "evidence": "「按 handle 關閉所有連線」在現碼無對應機制,且 plan 新增的位置錯:presence/connections.ts:13-47 ConnectionRegistry 只是 (team,handle,label)→count 的 refcount Map,不持有 socket 或 subscriber;它是 streamRoute 的區域變數(routes/stream.ts:30),不在 Deps(deps.ts:7-13)上;serve.ts:40 reloadRoster(db, peersFile) 拿不到 fanout。能關流的是 Fanout:Subscriber.close(fanout.ts:28)由 stream route 設為 `superseded = true`(stream.ts:137),evictSuperseded(fanout.ts:252-264)已示範按 handle 集合關閉。另 §2.1.3「membership 連線時讀一次 + deliverable 加 group 條件」與 §2.1.7「擴大不掉線、Fanout 每則現查所以新成員即刻收到」矛盾:stream.ts:81-113 的 deliverable 是連線時閉包,若在其中以連線時快取的 membership 過濾 group,新加入 group 的既有 stream 會被自己的 accept 擋掉,Fanout 現查無用。見 F12。"
+    },
+    {
+      "id": "R8",
+      "result": "FAIL",
+      "evidence": "schema.sql:61 kind CHECK 六值:chat/presence_update/permission_request/permission_verdict/task_dispatch/task_result。§2.1.6 表覆蓋五值,**漏 presence_update**(POST /v1/messages 接受此 kind,OutboundMessageSchema KindSchema envelope.ts:79-82)。寫入端點:`/v1/replies`(replies.ts:412、:469 產生的 envelope kind 恆為 chat,但 plan 未定回覆 task_dispatch 需 chat 還是 dispatch)、`/v1/grants/finalize`、`/v1/presence` 三者 cap 行為未定義。`/v1/permission/respond` 有定;但實際 peer-agent 的 verdict 走 POST /v1/messages kind permission_verdict(peer-agent tools.ts:790-797),plan §2.1.4 指向 permission.ts 的 ask_team 語意其實在 peer-agent approval-routing.ts:23。見 F13。"
+    },
+    {
+      "id": "R9",
+      "result": "FAIL",
+      "evidence": "(1) 逐位元相同不成立:現碼 unknown recipient 是 buildEnvelope throw(store.ts:88)→ 400 `invalid_message`(messages.ts:424、:508),tests/integration/messages.test.ts:58 `'400 on unknown recipient'` 與 store.test.ts:44-47 明確斷言;plan §2.1.2 改為 404 unknown_recipient 但未說 legacy 模式是否維持 400。(2) 舊 peer-agent 打新 relay 的行為比 plan §2.6「list_peers 解析失敗」嚴重得多:outbound.ts:185-190 `await res.json() as PeerSummary[]` 無形狀檢查;index.ts:529-530 roster refresh `peers.map(...)` 對物件 throw TypeError → 被 catch 只記 warn → gate.setRoster 永不執行 → gate.ts:10-12 roster 為空集合 → **所有 inbound 被 SenderGate 靜默拒絕**(peer 看起來活著卻聾)。這是 existing clients break。(3) 已驗證可相容的:未知 SSE 事件 `reauth` 被舊 client 忽略(peer-agent stream.ts:248),伺服器關閉後走既有 reconnect(:116-140);401 → onAuthError 停止(:132)符合 P3-3;Envelope 多一個 `group` 欄位對舊 client 被 z.object 剝除不報錯;`@team` 別名保留。SQL 退化:單一 fleet、since '0'、caps 全開下 `group_id IN ('fleet') AND id > '0'` 恆真(`'msg_' > '0'` 實測 true)。見 F9、F15。"
+    },
+    {
+      "id": "R10",
+      "result": "FAIL",
+      "evidence": "已驗證:openDatabase 依序跑 migrateV1ToV2…migrateV8ToV9(db/db.ts:13-25),`migrateV9ToV10` 接在 :24 之後即會於啟動執行;v8→v9 的 transaction+guard 模式(db.ts:38-41、:100-126)可照抄;claim 重建同 migrateV3ToV4 的 BEGIN/COMMIT 模式(db.ts:280-316)。**未通過的三點**:(1) `CREATE TABLE group(...)` 在 SQLite 是 syntax error(better-sqlite3 實測:`near \"group\": syntax error`;加引號或改名 `peer_group` 才過);(2) packages/operations/systemd/install-relay.sh **沒有任何 DB 備份步驟**(全文 grep 只命中 :11 的註解「backups + permissions stay simple」),rubric 要求 backup 在 migration 之前;(3) claim 表重建後 `idx_claim_expires`(schema.sql:104)須重建,plan 未列。見 F16。"
+    },
+    {
+      "id": "R11",
+      "result": "FAIL",
+      "evidence": "對應表:GC1 → P1-1「meta 帶 group → 剝除」✓;GC2 → P1-1 同 body、P1-7 byte-equal ✓;GC4 → P0 acceptance 既有測試零改動 ✓(但與 R9 的 400→404 衝突);GC5 → P1-3 SIGHUP 測試 + KR4 ✓;GC7 無測試需求;GC8 流程。**缺**:GC3(過濾寫在 SQL 不在 JS)無任何機械檢查 —— 建議 P0-4 加一條「readerScope 產生的 SQL 對 :memory: 三 group fixture 直接執行,不經任何 JS filter 即得正確集合」+ 一條 grep 測試斷言 fetch* 沒有 `.filter(` 後置;GC6(每個拒絕進 audit_log 含 group_id)只在 P1-6 寫「audit 事件齊全」,沒有測試案例列出 unknown_group/unknown_recipient/cap_denied/unknown_parent 各一筆 audit row 斷言。P1-7 depth-0 自寫、implementer 不得改 ✓(§5 明寫)。"
+    },
+    {
+      "id": "R12",
+      "result": "PASS",
+      "evidence": "NATS lane 與 relay 不共用 message 表也不經 relay:peer-agent config.ts:10 `transport: z.enum(['sse','nats'])` 單選;nats-transport.ts:202-288 send() 直接 nc.publish/js.publish 到 NATS server,:171-172 訂閱 `fleet.*.to.<self>.>` 與 `fleet.*.to.team.>`,membership 來自 opts.roster(fleet-roster.json,architecture.md §5.1 :23-25)與 NKey 主題權限。relay-only 的 guest 沒有 NKey 就到不了 NATS lane;§1「不動 NATS」與 §2 無矛盾。建議(F19)在 §1 明寫不變量「guest group 成員永不核發 NKey / 不進 fleet-roster.json」並進 BACKLOG trigger 列,因為 NATS lane 目前是單一無分組的 fleet。"
+    },
+    {
+      "id": "R13",
+      "result": "PASS",
+      "evidence": "四個 L 與 file map(§3 共 20+ 檔、含 shared/relay/peer-agent/dotfiles/hangar)相稱;§8 兩題(group 命名、同事預設 caps)確為 operator 才能答;load-bearing 步驟無 TODO/TBD。次要:數個行號漂移(`messages.ts:175`→實際 :179-181;`stream.ts:149-151` 是 writeAndMark,drain 在 :165-167;`db/db.ts:24` ✓;`serve.ts:40` ✓;`stream.ts:81`/`:106` ✓;`store.ts:222` ✓;`peers.ts:20` ✓);§3 把 dropAll 放在 presence/connections.ts 是錯的模組(見 R7);「既有 408 個 relay 測試」未驗證數量;KR3「12 個端點」未枚舉(app.ts:20-40 實有 /health、/metrics、GET+POST /v1/messages、/v1/stream、/v1/presence、/v1/peers、/v1/permission/respond、POST /v1/claim、GET /v1/claims、POST /v1/claim/release、DELETE /v1/claim、/v1/replies、/v1/inbox、/v1/grants/finalize,加新 /v1/whoami ≥ 15)。見 F20。"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "Critical",
+      "blocker": true,
+      "section": "§2.1.2 / §2.5-1 / P1-1",
+      "title": "POST /v1/messages 的 group/membership/recipient 判定必須插在 thread_root 續串與 addressRules 區塊之前,否則兩個既有步驟在 group 判定前就回應",
+      "evidence": "routes/messages.ts:250-263 resolveThreadContinuation、:269-300 addressRules(prod 為 on:systemd drop-in 20-address-rules.conf `HANGAR_RELAY_ADDRESS_RULES=on`,`systemctl --user show` 已確認)、:310 subject ACL。plan 的順序只提到「→ 既有 subject ACL」,implementer 依字面會把 group 判定放在 :301 之後。",
+      "required_change": "§2.1.2 加一句明確的插入點:「group 解析 + membership + cap + 收件人成員判定緊接在 B1 meta 剝除(:179-181)與 x-hangar-instance 解析(:202-231)之後、`thread_root` 續串(:250)之前;addressRules 區塊(:269-300)與 subject ACL(:310)全部在其後。」P1-1 測試矩陣加:addressRules=on 時 a→c(非同 group)不帶 all_sessions → 404 unknown_recipient,而非 400 handle_needs_all_sessions。"
+    },
+    {
+      "id": "F2",
+      "severity": "Critical",
+      "blocker": true,
+      "section": "§2.1.8 / P1-1 / P1-7",
+      "title": "`handle_needs_all_sessions` 回應洩漏目標 handle 的 live_instances(存在性 + 活躍度)",
+      "evidence": "routes/messages.ts:281-290:`liveInstances = fanout.instanceCounts(HANGAR_TEAM_ID, data.to)` 直接放進 400 body 的 `live_instances`,在任何收件人檢查之前。guest 對 `to: cuda` 送 chat 不帶 all_sessions,即得 cuda 的線上 instance id 清單。",
+      "required_change": "§2.1.8 表加一列:「addressRules 的 §6.1-6.3 refusal(use_reply_verb / sender_instance_required / handle_needs_all_sessions / dispatch_needs_instance)只在收件人已通過 group 成員判定後才可回;`live_instances` 只列與 sender 共享該 group 的 instance」。P1-7 harness 加斷言:非成員目標的 400 body 不含 live_instances,且與 `to:nonexist` 的回應 byte-equal(都應是 404 unknown_recipient)。"
+    },
+    {
+      "id": "F3",
+      "severity": "Critical",
+      "blocker": true,
+      "section": "§2.1.4 / §2.1.8 / P1-1",
+      "title": "POST /v1/messages 的 `in_reply_to` 父訊息查詢無 group 條件,是跨 group 訊息存在性 oracle,且會把 thread_root 跨 group 綁定",
+      "evidence": "messages/store.ts:92-97 `SELECT thread_root, id FROM message WHERE id=? AND team_id=?` → 找不到 throw `unknown in_reply_to` → 400 invalid_message(messages.ts:424/:508);找得到 → 201 且 thread_root 繼承父訊息。addressRules=on 只對 chat/task_dispatch 擋 in_reply_to(:269-277),permission_verdict / task_result 仍必帶 in_reply_to(envelope.ts:118-131),peer-agent 的 verdict 就走這條(peer-agent tools.ts:790-797)。plan §2.1.4 只規範 /v1/replies。",
+      "required_change": "§2.1.4 加「POST /v1/messages 的 in_reply_to」一列:buildEnvelope 的父查詢改為 `WHERE id=? AND team_id=? AND group_id=?`(group_id = 本次送件解析出的 group),找不到與「父不存在」同碼同 body(沿用 400 invalid_message `unknown in_reply_to`,legacy 逐位元相同);§3 file map 的 store.ts 責任加 `buildEnvelope(team, from, msg, groupId)`。P1-1 矩陣加:c 以 a 在 fleet 的 msg_id 當 in_reply_to 送 chat/task_result → 與 in_reply_to=隨機 id 的回應 byte-equal。"
+    },
+    {
+      "id": "F4",
+      "severity": "Critical",
+      "blocker": true,
+      "section": "§2.1.4 / §3 (routes/peers.ts)",
+      "title": "GET /v1/peers 的全域 2 秒快取不分讀者,會把 fleet 的整份 roster 交給 guest",
+      "evidence": "routes/peers.ts:18 `let cached: { at, body } | null`,:21-23 任何 bearer 命中即回同一 body,:52 寫入。與讀者 membership 無關。",
+      "required_change": "§2.1.4 `/v1/peers` 一列加:「快取 key 必須是讀者的 membership 集合(排序後的 group id 串)或直接取消快取;不同 membership 永不共用 body」。P1-4 測試加:a 先打 /v1/peers,1 秒內 c 再打 → c 仍只見 lab。"
+    },
+    {
+      "id": "F5",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.4 (reply routing) / §7 thread_root 續串",
+      "title": "多 group 成員可用 `thread_root` 續串把另一 group 的 msg_id 帶進本 group 的 envelope,plan「thread_root 跨 group 不可能」不成立",
+      "evidence": "routes/messages.ts:250-263 + :596-629 resolveThreadContinuation:條件是 sent-or-granted,與送件 group 無關;成功後 :428/:512 把 continuationRoot 寫進 envelope.thread_root,:461/:531 寫進 reply_route。b∈{fleet,lab} 在 fleet 送 R,再以 group:lab、thread_root:R 送 → c(lab-only)收到 thread_root=R(fleet 訊息 id 的存在性外洩)。",
+      "required_change": "§2.1.4 加:「thread_root 續串要求 `route.group_id == 本次送件 group`,否則 403 not_in_thread(與 route 不存在同碼,messages.ts:254-260 既有 body)」;把「thread_root 跨 group 不可能」改寫為「由 in_reply_to(F3)與 thread_root 續串兩處的 group 相等檢查保證」。P1-5 加正反測試。"
+    },
+    {
+      "id": "F6",
+      "severity": "Critical",
+      "blocker": true,
+      "section": "§2.1.4 (presence) / §2.1.3 Fanout / §3 (routes/presence.ts 未列)",
+      "title": "POST /v1/presence 的 presence_update 廣播不經 group,guest 的 SSE 會收到 fleet 每台機器的 cwd/branch/repo 心跳",
+      "evidence": "routes/presence.ts:64-71 buildEnvelope(team, handle, {to:'@team', kind:'presence_update', meta:{cwd,branch,repo,…}}) → fanout.deliver(envelope);fanout.ts:186-206 對 @team 遍歷所有 handle 的 subscriber。此 envelope 不持久化、無 group_id,plan §2.1.3 Fanout 列「先由 group_id 取成員集」對它無效;§3 file map 也沒有 routes/presence.ts。",
+      "required_change": "§2.1.4 presence 一列改寫:「presence_update 心跳的即時投遞受眾 = 與 sender 共享 ≥1 個 group 的 handle 的連線(SQL:`SELECT DISTINCT handle FROM group_member WHERE group_id IN (sender memberships)`);Envelope.group 對這類多 group 心跳可為 sender 的 default_group,但 Fanout 以成員聯集投遞」。§3 加 routes/presence.ts。P1-3 加:a 心跳 → c 的 stream 零 presence_update 事件。同樣的成員聯集規則套用到 POST /v1/messages kind presence_update(F13)。"
+    },
+    {
+      "id": "F7",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.3 / P1-1",
+      "title": "`@group` 廣播的 delivered_at 若沿用 `onlineHandles(team).some(h => h !== from)`,非成員在線就會把訊息標為已投遞,成員 cold start 永遠收不到",
+      "evidence": "routes/messages.ts:559-566:null-subject 訊息 isDelivered = @team ? fanout.onlineHandles(team).some(h => h !== from) : fanout.isOnline(team, to),命中即 markDelivered;fetchPendingSince(store.ts:181)cold start 只取 delivered_at IS NULL。§2.1.3 表沒有這個寫入點。",
+      "required_change": "§2.1.3 表加一列「delivered_at 判定(messages.ts:559-566)」:@group 的 isDelivered 必須只看該 group 成員的在線 handle(`onlineHandles(team) ∩ members(group) − {from}`),直送則 isOnline(to) 已被收件人成員檢查涵蓋。P1-3 加:a 廣播 @group(lab) 時只有 fleet-only 的 x 在線 → 訊息 delivered_at 為 NULL,c 之後 cold start 收到。"
+    },
+    {
+      "id": "F8",
+      "severity": "Critical",
+      "blocker": true,
+      "section": "§2.1.4 (reply routing) / §2.1.8 / P1-5",
+      "title": "POST /v1/replies 對跨 group 父訊息會回 403 not_a_recipient(route 存在)而非 404,與「不存在」可區分;plan 的 `unknown_message` 也不在 §13 錯誤詞彙內",
+      "evidence": "routes/replies.ts:380-383 resolveParentRoute 找不到 → 404 unknown_parent;:385-388 找到但無 grant → 403 not_a_recipient。grant 只給成員,所以跨 group 的差別就是 404 vs 403。shared/constants.ts:72-93 REPLY_ERROR_CODES 沒有 unknown_message,CLI/MCP 共用此表。",
+      "required_change": "§2.1.8 第三列改為「回覆自己不在其 group 的父訊息 → 404 `unknown_parent`(沿用既有碼與 body,replies.ts:382 的 message 字串亦相同)」;§2.1.4 加「resolveParentRoute 的 route 查詢加 `AND group_id IN (replier memberships)`,在 checkAudience 之前就回 null」。writeRefusal 寫入 reply_idem 的 error row 亦同碼。P1-5 測試把 unknown_message 改 unknown_parent 並斷言 body byte-equal。"
+    },
+    {
+      "id": "F9",
+      "severity": "Critical",
+      "blocker": true,
+      "section": "§2.6 / §6 / P3-2",
+      "title": "`/v1/peers` 形狀從陣列改成 `{groups:{…}}` 會讓所有舊 peer-agent 靜默變聾(不是「解析失敗印錯誤」)",
+      "evidence": "peer-agent outbound.ts:185-190 `return await res.json() as PeerSummary[]` 無檢查;index.ts:527-536 refreshRoster 的 `peers.map(p => p.handle)` 對物件 throw → catch 只記 `peer.roster.refresh_error` → gate.setRoster 從未呼叫 → gate.ts:5-12 roster 空集合 → 每一則 inbound 都被 SenderGate 拒絕。同時 tools.ts:581 list_peers 也炸。",
+      "required_change": "§2.6 改決策:**保留 `/v1/peers` 陣列形狀**(additive),每個 entry 加 `groups: [{id, caps}]`,只列與讀者共享的 group、只含共享 group 的 handle(不共享者不出現);分節顯示由 peer-agent/`fleet` 在 client 端做。若堅持新形狀,則必須走新路徑(`GET /v1/groups/peers` 或 `?shape=groups`)並讓舊路徑維持陣列。§6 risk 表那列改寫,P3-2「同日重建」降為建議而非前提。"
+    },
+    {
+      "id": "F10",
+      "severity": "Major",
+      "blocker": false,
+      "section": "§2.1.1 / §2.1.2",
+      "title": "idempotency_key 的 key 不含 group,且 replay 在 membership 檢查之前",
+      "evidence": "routes/messages.ts:158-165:key_hash = hashToken(`${tokenId}:${idemKey}`),命中即回 cached 201,不看 body。R2 rubric 明點此項。",
+      "required_change": "§2.1.2 加一段:「idempotency_key 命中時,先解析 body 的 group(缺省 default_group),與 cached 回應的 `group` 比對;不同 → 422 `idempotency_mismatch`(沿用 replies 的語意);相同但 sender 已不在該 group → 404 unknown_group。或改 key_hash = hashToken(`${tokenId}:${group}:${idemKey}`)並在 §2.1.10 註明舊 row 只影響 legacy 期。」P1-1 加一案。"
+    },
+    {
+      "id": "F11",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.5 / P0-3",
+      "title": "since_msg_id 必須是 `msg_` 前綴、與 message id 同 factory 產生,否則 `id > since` 恆真、since_join 靜默失效",
+      "evidence": "shared/ulid.ts:5-10 newMessageId() = `msg_` + monotonicFactory();auth/peers-file.ts:3 目前 import 的是裸 `ulid`。node 實測 `'msg_01J' > '01J'` 為 true。",
+      "required_change": "§2.1.5 改為:「since_msg_id 由 `newMessageId()`(shared/ulid.ts,與 message id 同一 monotonic factory、同 `msg_` 前綴)產生;比較為嚴格 `>`;fleet migration 寫 `'0'`(仍小於任何 `msg_`)。init CLI 與 serve 是不同行程,SIGHUP 路徑在 relay 行程內產生水位為準;init 產生的水位允許同毫秒邊界模糊(記入 ADR)。」P0-3(d) 斷言寫入值符合 `^msg_[0-9A-HJKMNP-TV-Z]{26}$`。"
+    },
+    {
+      "id": "F12",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.3 / §2.1.7 / §3 (connections.ts / serve.ts / fanout.ts)",
+      "title": "revocation 機制放錯模組,且 stream `deliverable` 的連線時 membership 快取與 Fanout 每則現查互相矛盾",
+      "evidence": "presence/connections.ts:13-47 ConnectionRegistry 只有 refcount Map,無 socket;它是 stream route 區域變數(routes/stream.ts:30),Deps(deps.ts:7-13)沒有它;serve.ts:40 reloadRoster(db, peersFile) 拿不到 fanout。可關流的是 Fanout(Subscriber.close fanout.ts:28;evictSuperseded :252-264)。stream.ts:81-113 deliverable 是連線時閉包。",
+      "required_change": "§3:把 `dropAll(handle, reason)` 從 presence/connections.ts 移到 fanout.ts(`Fanout.dropHandle(team, handle, reason): number`,對 `subs.get(team).get(handle)` 每個 sub 呼叫 close(reason));stream.ts 的 close 回呼收到 reason='membership_changed' 時先 writeSSE `event: reauth` 再結束;serve.ts reloadRoster 簽名改為 (deps, peersFile) 或回傳 diff 由 startServer 呼叫 fanout.dropHandle。§2.1.3「membership 讀取時點」改為單一規則:**live 與 backlog 都以每則現查為準**(deliverable 內對 e.group 做一次 indexed lookup,或由 Fanout 在 collect 前以 members(group) 過濾且 deliverable 不再檢查 group);縮小靠 drop,擴大靠現查,兩邊一致。KR4 保留。"
+    },
+    {
+      "id": "F13",
+      "severity": "Major",
+      "blocker": false,
+      "section": "§2.1.6",
+      "title": "caps 表漏 presence_update kind 與 /v1/replies、/v1/grants/finalize、/v1/presence 三個寫入端點",
+      "evidence": "schema.sql:61 六個 kind;envelope.ts:79-82 KindSchema 允許 POST /v1/messages 送 presence_update;replies.ts:412/:469 回覆 kind 恆為 chat;grants.ts:51、presence.ts:36 為寫入端點。",
+      "required_change": "§2.1.6 表補:`presence_update`(經 /v1/presence 或 /v1/messages)→ 不需 cap(成員身分即可,受眾依 F6 成員聯集);`POST /v1/replies` → `chat`(回覆恆為 chat kind,不論父是 dispatch);`POST /v1/grants/finalize` → 不需 cap(只能對已持有 grant 的 msg 操作);`POST /v1/claim/release`、`DELETE /v1/claim` → `claim`。並把 §2.1.4 permission 一列的指向改正:ask_team 路由在 peer-agent approval-routing.ts:23,verdict 走 POST /v1/messages kind permission_verdict(tools.ts:790-797),故 group 閘門 = F3 的 in_reply_to group 檢查 + `permission` cap;/v1/permission/respond 的 SELECT(permission.ts:31-36)另加 group_id 條件。"
+    },
+    {
+      "id": "F14",
+      "severity": "Major",
+      "blocker": false,
+      "section": "§2.1.8 (metrics)",
+      "title": "`/metrics` 目前完全無認證(不是「既有 admin tier」),plan 描述失準會誤導 implementer 先加 group label 再補 auth",
+      "evidence": "app.ts:23 `app.route('/metrics', metricsRoute(deps))`,routes/metrics.ts:4-6 無 bearerAuth;live `curl http://192.168.101.6:8443/metrics` 無 bearer 回 200,body 含 mesh_messages_total 704 / mesh_tokens_live 10。",
+      "required_change": "§2.1.8 metrics 一列改為:「/metrics 現況無認證;本 plan 先加 `HANGAR_METRICS_TOKEN` bearer 閘(缺 env 則 404 整個路由),**auth 落地後**才加 group label;peer bearer 一律 401」。P1-6 加測試:無 token / peer bearer → 401;P1-7 harness 把 /metrics 列入 12+ 端點。"
+    },
+    {
+      "id": "F15",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.2 / §2.5-4 / P1-1",
+      "title": "unknown recipient 由 400 invalid_message 改 404 unknown_recipient 破壞 legacy 逐位元相同與既有測試",
+      "evidence": "store.ts:84-89 throw → messages.ts:424/:508 回 400 `{error:'invalid_message', message:'unknown recipient: x'}`;tests/integration/messages.test.ts:58 `'400 on unknown recipient'`、store.test.ts:44-47 斷言。",
+      "required_change": "二選一並寫進 §2.1.2 與 §2.5-4:(A) legacy 模式(無 groups 段)維持 400 invalid_message 原 body,嚴格模式才回 404 unknown_recipient(P1-7 harness 只在嚴格模式跑);(B) 全面改 404 並在 §5 disposition 明列 messages.test.ts:58 / store.test.ts:44 兩處改動理由(違反 KR2「零改動」,須把 KR2 措辭改為「除列出的 N 處」)。reviewer 建議 A。"
+    },
+    {
+      "id": "F16",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.10 / P3-2",
+      "title": "`CREATE TABLE group` 是 SQLite 保留字語法錯誤;install-relay.sh 沒有 DB 備份;claim 重建漏索引",
+      "evidence": "better-sqlite3 實測 `CREATE TABLE group(id TEXT PRIMARY KEY)` → `near \"group\": syntax error`,`\"group\"` 或 `group_member` 可過。packages/operations/systemd/install-relay.sh 全文無 backup/cp 資料庫步驟(只有 :11 註解與 :246/:266 的 unit cp)。schema.sql:104 `idx_claim_expires`。",
+      "required_change": "§2.1.10:表名改 `peer_group`(避免每處 SQL 都要引號);claim 重建步驟加 `CREATE INDEX idx_claim_expires`,並在 transaction 內 count 前後 assert(§6 已提,寫進步驟 3);migration 整體以 BEGIN/COMMIT 包住並以 `schema_version=10` 存在為 guard(照 db.ts:38-41 模式)。P3-2 加:install-relay.sh 在停 relay 後、啟動前執行 `sqlite3 relay.db \".backup relay.db.bak.<ts>\"`(或 cp 三檔 .db/.db-wal/.db-shm),DEPLOYMENT.md 寫 rollback = 還原 .bak + 回舊 revision。"
+    },
+    {
+      "id": "F17",
+      "severity": "Critical",
+      "blocker": true,
+      "section": "§2.1.7 / P0-3(e) / P3-3",
+      "title": "seedPeers 從不停用或撤銷 peers.json 裡消失的 handle,plan 的「移除 guest → 重連 401」與「移出 group」沒有現碼基礎",
+      "evidence": "auth/peers-file.ts:57-97 seedPeers 只對檔內 peer upsert(:78 還會把 disabled_at 設回 NULL),沒有對檔外 handle 做 disabled_at / token revoke / group_member 刪除;cli/init.ts:21-25 只呼叫 seedPeers;bearerAuth 只在 disabled_at/revoked_at 非 NULL 時 401(auth/middleware.ts:81-82)。",
+      "required_change": "§2.1.7 加明確步驟:「reload 計算 `DB human ∖ peers.json`,對差集:UPDATE human SET disabled_at=now、UPDATE token SET revoked_at=now、DELETE FROM group_member WHERE handle=?,並 fanout.dropHandle(reason='removed');audit `peer.removed`」。P0-3(e) 測試改為同時斷言 disabled_at 與 token revoked。若 operator 想保留「reload 不撤 peer」的舊行為給 legacy 模式,必須寫明:legacy 模式沿用,嚴格模式(有 groups 段)才撤 —— 但 guest 場景一定是嚴格模式。"
+    },
+    {
+      "id": "F18",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.2 / §2.1.10 / §3 (shared/constants.ts, envelope.ts)",
+      "title": "`@team` → `@group` 未定義儲存正規化;所有 `to_handle='@team'` SQL 與 envelope refinement 都硬編 TEAM_BROADCAST_HANDLE",
+      "evidence": "store.ts:158/:183/:211/:233 `to_handle='@team'`;fanout.ts:186;stream.ts:328(by_sender key);messages.ts:281/:325/:357/:398/:560/:638;replies.ts 無;db.ts:137/:139 classifyLegacyWidth;envelope.ts:51/:61/:75/:140/:204/:216 refineToFilter/AddressSchema;peer-agent nats-transport.ts:75 TEAM_RECIPIENT_TOKEN;reply_route.to_handle 存 '@team'(schema.sql:116)。",
+      "required_change": "§2.1.2 加決策:「wire 上 `@team` 是別名;relay 在 chokepoint 正規化為 `@group` 後才 build/persist(message.to_handle、reply_route.to_handle 一律存 `@group`);所有讀取 SQL 用 `to_handle IN ('@team','@group')` 相容 migration 前的舊 row;shared 的 AddressSchema / refineToFilter / durableReport / classifyLegacyWidth 以 `isBroadcastHandle(to)` 單一 helper 取代字面比較」。§3 shared 責任加 `isBroadcastHandle`。P0-1 測試加 helper 案例。"
+    },
+    {
+      "id": "F19",
+      "severity": "Suggestion",
+      "blocker": false,
+      "section": "§1 / P3-4 BACKLOG",
+      "title": "把「guest 永不核發 NKey、永不進 fleet-roster.json」寫成不變量",
+      "evidence": "NATS lane 是獨立 transport(peer-agent config.ts:10 單選、nats-transport.ts:171-172 訂閱 fleet.*.to.team.>),membership 授權在 NKey + fleet-roster.json,無 group 概念。",
+      "required_change": "§1 第 4 點補一句不變量並在 hangar runbook「加同事」寫明只發 relay secret;BACKLOG 的 NATS 分 group 列加 trigger:「第一個需要 NATS lane 的非 fleet group 成員出現時」。"
+    },
+    {
+      "id": "F20",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2 KR3 / §3 / §4 P1-7",
+      "title": "行號漂移、模組指向錯誤、端點數未枚舉",
+      "evidence": "`messages.ts:175` 實為 :179-181;`stream.ts:149-151` 是 writeAndMark,drain 在 :165-167;§3 dropAll 指向 connections.ts(見 F12);KR3「12 個端點」對照 app.ts:20-40 實有 ≥15(含 /health、/metrics、DELETE /v1/claim、POST /v1/claim/release、新 /v1/whoami);「408 個 relay 測試」未驗證。",
+      "required_change": "P0 開工第一步就把 P1-7 要枚舉的端點清單(method + path)寫進 plan §4 P1-7 逐項列出(rubric R4/§6 也要求 fetch* 清單寫進 plan);修正上述行號;測試數在 P0 acceptance 以 `pnpm -F @hangar-bridge/relay test` 實跑數字取代。"
+    },
+    {
+      "id": "F21",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.5-6 / P1-6",
+      "title": "GC3(SQL 不 JS)與 GC6(每個拒絕 audit 含 group_id)缺測試對應",
+      "evidence": "P1-6 只寫「audit 事件齊全」;§4 無任何案例斷言 audit_log row;readerScope 的 SQL-only 性質沒有機械檢查。",
+      "required_change": "P1-5/P1-6 加:每種拒絕(unknown_group / unknown_recipient / cap_denied / unknown_parent / not_in_thread 跨 group)各一條斷言 `SELECT detail_json FROM audit_log WHERE event=?` 含 group_id;P0-4 加 readerScope SQL 直接執行測試 + 一條 grep 測試斷言 store.ts 四個 fetch* 與 fetchInboxIdsAfter 不含後置 `.filter(`(subject ACL 的既有 JS filter 在 route 層,允許)。"
+    },
+    {
+      "id": "F22",
+      "severity": "Suggestion",
+      "blocker": false,
+      "section": "§2.1.2 broadcast gate",
+      "title": "`unqualified_broadcast` / `fleet_wide` 對 `@group` 的語意與訊息文字要重述",
+      "evidence": "routes/messages.ts:356-377 對 @team+chat 無 fleet_wide 記 audit、enforce 模式 400,訊息文字寫「every session on every host」。",
+      "required_change": "§2.1.2 加一句:`fleet_wide: true` 在 `@group` 語意為「該 group 的每一台」,enforce 訊息文字改為以 group 命名;audit event 帶 group_id(GC6)。"
+    }
+  ],
+  "summary": {
+    "blocker_count": 15,
+    "blockers": [
+      "F1",
+      "F2",
+      "F3",
+      "F4",
+      "F5",
+      "F6",
+      "F7",
+      "F8",
+      "F9",
+      "F11",
+      "F12",
+      "F15",
+      "F16",
+      "F17",
+      "F18"
+    ],
+    "note": "blockers 陣列列 15 個 id(F1-F9、F11、F12、F15-F18);上方 blocker_count 以陣列長度為準。"
+  }
+}
