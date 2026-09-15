@@ -1,0 +1,109 @@
+{
+  "generation": 4,
+  "reviewer": "claude-fable-5-1",
+  "verdict": "SHIP-AS-IS",
+  "review_target": "docs/plans/2026-09-16-relay-groups.md @ ee42a45 (r3)",
+  "growth_rail": "確認 pass:只核對 H1..H6 是否被 r3 文本解決;只重判 gen-3 FAIL 的 R10 與 r3 delta 觸及的列(R5 / R7 / R9 / R11 / R13);新 finding 限於 r3 delta 引入的 blocker 或與已接受決策矛盾。不重開 group overlay / since_join / 404 同碼 / 逐步 guard / 每次 load 判模式 / Fanout 注入 (A)。",
+  "rubric": [
+    {
+      "id": "R10",
+      "result": "PASS",
+      "evidence": "§2.1.10:258-270:step 0 整體 BEGIN…COMMIT(現碼先例 db.ts:280/:311);step 2 資料回填以 `SELECT 1 FROM schema_version WHERE version=10` 缺席作 run-once guard(照 db.ts:38-41 v9 慣例,實讀確認),guard 內 `INSERT … WHERE NOT EXISTS` 作 defence in depth;DDL 步驟 1/3/4/5 維持逐物件 guard(db.ts:163-166 pragma、:272-278 sqlite_master 先例實讀);step 6 stamp 10 在同一 transaction → crash-safe 與 v9 相同(db.ts:56-60 註解)。gen-3 H1 的雙 open 時序(index.ts:39-43 open+seed+close → serve.ts:61 第二次 open,實讀屬實)在 run-once guard 下:第一次 open 回填 v9 影像 → seed 依檔案調整 → 第二次 open guard 命中跳過 → guest 不會被塞回 fleet。fresh DB:schema.sql:157-162 只 stamp 1-6 → 第一次 open 跑 step 2(此時 0 個 human)→ stamp 10 → seed 寫 group 表 → 再開跳過;P0-2(c)(d)(e):325 三案覆蓋。claim 重建 count assert + idx_claim_expires 重建(step 4);backup 在 migration 前(§3:312 + P3-2:365);openDatabase 啟動即跑(§3:298 + P3-2:365;db.ts:13-26 鏈式呼叫實讀,v10 接 :24 之後)。重跑 idempotent 在 strict DB 上成立(P0-2(e))。"
+    },
+    {
+      "id": "R7",
+      "result": "PASS",
+      "evidence": "r3 delta 觸及(H4、H6):§3:303 stream.ts 列改為「cold/resume 的 readerScope 連線時算一次(只給 backlog drain,不是 live 快取);deliverable 每則現查」,與 §2.1.3:119-121 單一規則一致(stream.ts:165-167 drain 綁定於連線,實讀確認)。§3:310 fanout.ts 注入 (A):fanout.ts:69-71 無 ctor 參數、serve.ts:63 `new Fanout()`、`grep -rl 'new Fanout(' packages/relay` = 27 檔,皆實讀屬實;不採 (B) 的理由(deliverFromSnapshot 不過 accept、不做 sender 自排除)對照 fanout.ts:209-214 註解「Ignores accept/self-exclusion gates a second time」屬實。縮小靠 drop、擴大靠現查,兩邊一致。"
+    },
+    {
+      "id": "R5",
+      "result": "PASS",
+      "evidence": "r3 delta 觸及(H3):P1-1:335 改為 201 replay,messages.ts:164 `c.body(row.response_json, 201, …)` 實讀屬實;重放與首次同碼,replay 本身不再是可觀測差異。無新的存在性 oracle 路徑。"
+    },
+    {
+      "id": "R9",
+      "result": "PASS",
+      "evidence": "r3 delta 觸及(H2):§2.1.10:244-245 legacy 判定改為「頂層無 `peers` 鍵」唯一判別;HANDLE_REGEX(constants.ts:26 `/^[a-z][a-z0-9_-]{0,31}$/`)確認 `groups` 是合法 handle,扁平檔含該 handle 仍走 legacy,與 P0-3(i):326 相容。legacy 路徑逐位元不受影響。殘留:§2.5-4:278 / §2.1.2:71 仍以「有 / 沒有 `groups` 段」措辭,與新判別字面不一致(J4,Suggestion,不影響行為)。"
+    },
+    {
+      "id": "R11",
+      "result": "PASS",
+      "evidence": "r3 delta 加的測試案:P0-2(e):325 strict DB open 兩次 `(fleet, guest)` 仍空(H1 對應);P0-3(h1)(h2):326 SIGHUP 拒絕 / 啟動 exit 1 分案(H5 對應);P1-1:335 201 replay(H3)。§6:397 風險列與 P0-2(e) 互指。每條 fold 都有對應案例。"
+    },
+    {
+      "id": "R13",
+      "result": "PASS",
+      "evidence": "無 TODO/TBD;§8 只含 operator 問題。r3 delta 在 §2.1.10:247 引入 `initRelayFromPeersFile 回傳 {seeded, mode} → startServer → Deps.groupsMode`,但 §3 file map 無 `cli/init.ts` / `index.ts` / `deps.ts` 列(deps.ts 現有 Deps 介面實讀,加 `groupsMode` 是新欄位);§3:312 `bin/install-relay.sh` 路徑不存在,實檔在 `packages/operations/systemd/install-relay.sh`(gen-1/gen-2 artifact 引用的是正確路徑,r1 起就寫錯,非 r3 引入)。皆為漂移,不影響 size 判定 → J4。"
+    }
+  ],
+  "gen3_resolution": [
+    {
+      "id": "H1",
+      "status": "resolved",
+      "note": "§2.1.10:261-266 step 2 run-once guard(schema_version=10 缺席)+ `WHERE NOT EXISTS` 防禦;P0-2(e):325;§6:397 風險列。分工:migration 只在 v9→v10 那一次把既有 human 影像塞進 fleet;之後新 handle 進 group 表全靠 seedPeers —— §3:299「seedPeers 同步 group / group_member(since 只在新成員時寫)」、§2.1.10:251「legacy 模式 = 所有 peer 在 fleet」、P0-3(a)(d)(g) 都指向 seedPeers 是每次 load 的權威同步,guard 不會擋它(guard 在 migrateV9ToV10 內,seedPeers 是另一條路徑,init.ts:21-25 實讀)。分工**可從各段拼出**,但 §2.1.10 step 2 本身沒有一句話講明「回填不是 membership 的來源」→ J3(Suggestion)。另外 seedPeers 對 `history: all` group 的新成員該寫什麼 since 值,plan 兩處字面相斥 → J2(Minor)。"
+    },
+    {
+      "id": "H2",
+      "status": "resolved",
+      "note": "§2.1.10:244-245 唯一判別 = 無 `peers` 鍵;有 `peers` 無 `groups` → fail-closed;P0-3(i):326 對齊。HANDLE_REGEX 實讀確認 `groups` 為合法 handle。§2.5-4:278、§2.1.2:71 措辭未同步(J4)。"
+    },
+    {
+      "id": "H3",
+      "status": "resolved",
+      "note": "P1-1:335「201 replay(messages.ts:164 回 201)」,實讀屬實。"
+    },
+    {
+      "id": "H4",
+      "status": "resolved",
+      "note": "§3:310 擇 (A):選填 ctor 參數 `sharedAudience?`,serve.ts 注入 `groups.sharedAudience(db)`,27 處測試建構不動;不採 (B) 的理由與 fanout.ts:209-214 相符。"
+    },
+    {
+      "id": "H5",
+      "status": "resolved",
+      "note": "§2.1.10:247-250:`{seeded, mode}` → `Deps.groupsMode`;SIGHUP 翻轉拒絕保留舊 roster;啟動翻轉 exit 1;P0-3(h1)(h2):326 分案。啟動判定用的「曾是 strict」heuristic 覆蓋 group 集合與 membership 兩個維度,但漏 caps / history / since 三個維度,且未寫明它是 heuristic、未寫明判定必須在 seedPeers 任何寫入之前 → J1(Minor,非 blocker)。§3 未加 index.ts 列(J4)。"
+    },
+    {
+      "id": "H6",
+      "status": "resolved",
+      "note": "§3:303 stream.ts 列已改寫,與 §2.1.3:119-121 一致。"
+    }
+  ],
+  "findings": [
+    {
+      "id": "J1",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.1.10:249-250 / P0-3(h2):326",
+      "title": "啟動時「曾是 strict」heuristic 只看 group 集合與 membership,漏 caps / history / since;strict-但-只有-fleet 的 DB 以 legacy 檔啟動會靜默放寬 caps",
+      "evidence": "§2.1.10:250 判定式 = 「`peer_group` 已有非 `fleet` 列或任一 `human` 不在 fleet」。反例(plan 自己允許的形狀):strict 檔 `groups: { fleet: { history: all, members: { a: {caps:[chat]}, b: {} } } }`(只有 fleet、全員在 fleet、a 只有 chat cap)→ DB 影像:peer_group 只有 fleet、每個 human 都在 fleet → 判定式為 false → 以 legacy 檔啟動被放行 → §2.1.10:251「legacy 模式 = 所有 peer 在 fleet、history all、caps 全開」→ seedPeers 把 a 的 caps 改寫成全開。同理 fleet `history: since_join` 或任一 fleet 成員 `since_msg_id ≠ '0'` 都會被 legacy 啟動改寫成 all / '0'。這與 §2.1.10:252「寧可不起也不要靜默把人放進 fleet」同一類(這裡是靜默放寬),雖需要 operator 主動把 strict 檔換回 legacy 檔再重啟(SIGHUP 路徑已 fail-closed),但 plan 目前沒說這個判定是 heuristic、也沒說哪些狀態它看不出來。另外 :249-250 沒寫明判定必須在 seedPeers 任何寫入之前執行 —— 若 implementer 先 seed(legacy 模式會把所有人寫進 fleet)再判定,判定式永遠 false。非 blocker:不洩漏存在性 / 內容,受影響的是已在 fleet 的成員的 cap 寬度,且觸發需 operator 手動回退檔案。",
+      "required_change": "§2.1.10:250 判定式改為「DB 影像 ≠ legacy 影像」四維度:(i) `peer_group` 有非 `fleet` 列;(ii) 任一未 disabled 的 `human` 不在 fleet;(iii) `peer_group('fleet').history ≠ 'all'`;(iv) 任一 `group_member` 列 caps ≠ 全 caps 或 `since_msg_id ≠ '0'`。任一成立 → exit 1(`relay.roster.load_failed reason=groups_section_removed`)。加一句:「四項皆否 = DB 恰好是 legacy 影像,此時 legacy 與 strict 語意相同,無法區分也不需要區分(legacy load 是 no-op 改寫)」;再加一句「判定在 `initRelayFromPeersFile` 內、`seedPeers` 任何寫入之前、同一 transaction 內執行」。P0-3 加 (h3):strict 檔只有 fleet、一名成員 caps=[chat] → 以 legacy 檔啟動 → exit 1、DB 不變。"
+    },
+    {
+      "id": "J2",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.1.5:157-163 / P0-3(d):326 / §2.1.10:251 / §3:300",
+      "title": "`history: all` group 的**新**成員該寫什麼 `since_msg_id`,plan 兩處字面相斥;影響 legacy 模式新 handle 的 v9 逐位元(§2.5-4)",
+      "evidence": "§2.1.5:157「`since_msg_id` 由 `newMessageId()` 產生」+ P0-3(d):326「新成員寫入值符合 `^msg_…`」(無條件);§2.1.5:163「migration 時 fleet 寫 all,所有**既有**成員 `since_msg_id = '0'`」只講 migration 那一次;§2.1.10:251「legacy 模式 = … history all」;§6:399 把「operator 自己加新機器看不到舊廣播」的緩解寫成「fleet history: all」。但 §3:300 `loadMemberships → Map<groupId,{caps,since_msg_id}>` 與 `readerScope(memberships)` 產生 `(group_id, since)` 對,**沒有 history 欄位**,§2.1.3 表也只說「加 group + since 條件」。若 implementer 照 P0-3(d) 字面對 legacy 模式的新 handle 寫 `msg_` ULID、且 readerScope 不看 history,則該 handle 的 cold start(stream.ts:165-167 fetchPendingSince)少掉加入前的 pending `@team` 列 —— v9 對新 handle 會回放(§0:14-15 itx-chatgpt 148 則正是這個行為)→ §2.5-4 逐位元在「legacy + 新 peer」這一格未驗證。rubric R9 的退化條件明列「since '0'」,plan 對 legacy 模式只寫了「history all」沒寫「since '0'」。此為 r1 起既有的措辭(非 r3 引入),但正落在 caller 要求核對的 seedPeers 分工點上,故列出;非 blocker:兩種一致實作都存在,plan 意圖(§6:399)明確。",
+      "required_change": "擇一寫死(建議 (i),不改 loadMemberships / readerScope 形狀):(i) §2.1.5:157 改「`since_msg_id`:group `history=all` → 恆寫 `'0'`(migration 與 seedPeers、任一模式、新舊成員皆同);`history=since_join` → 新成員寫 `newMessageId()`,既有成員不改」;P0-3(d) 改為「since_join group 新成員符合 `^msg_…`;all group 新成員為 `'0'`」;P0-3(a) 加斷言「legacy 檔的每列 `since_msg_id = '0'`」;§2.1.10:251 legacy 模式定義補「since '0'」與 rubric R9 對齊。或 (ii) `loadMemberships` 帶 `history`,readerScope 對 `all` 省略 since 條件 —— 則 §3:300 簽名與 §2.1.3 表要改。"
+    },
+    {
+      "id": "J3",
+      "severity": "Suggestion",
+      "blocker": false,
+      "section": "§2.1.10:261-266 step 2 / P0-3(a):326",
+      "title": "migration 回填與 seedPeers 的分工可以從四處拼出,但 step 2 本身沒有一句話講明「回填不是 membership 的來源」",
+      "evidence": "分工證據散在 §3:299(seedPeers 同步 group / group_member)、§2.1.10:251(legacy = 所有 peer 在 fleet)、P0-3(a)(d)(g)。step 2 的 run-once guard 只擋 migrateV9ToV10 內的回填,seedPeers 是 init.ts:21-25 的另一條路徑(實讀),不受影響 —— v10 之後 peers.json 出現的新 handle 由 seedPeers 寫 group_member(legacy → fleet;strict → 檔案指定)。但 implementer 讀 step 2 時看不到這句,而 P0-3(a) 若在 fresh DB 上跑,會經過 step 2(0 個 human)再 seed,分不出「fleet 列是 migration 寫的還是 seedPeers 寫的」。",
+      "required_change": "§2.1.10 step 2 末尾加一句:「回填只把 v9 影像搬進 fleet 那一次;之後 `peer_group` / `group_member` 的唯一權威是每次成功 load 的 `seedPeers`(兩種模式皆同:legacy 把檔案裡每個 peer upsert 進 fleet,strict 照 `groups` 段),seedPeers 不得依賴 step 2 已跑過。」P0-3(a) 改為在**已是 v10** 的 DB 上以含一個新 handle 的 legacy 檔 seed → 新 handle 在 fleet、全 caps。"
+    },
+    {
+      "id": "J4",
+      "severity": "Suggestion",
+      "blocker": false,
+      "section": "§2.5-4:278 / §2.1.2:71 / §3:292-318",
+      "title": "r3 delta 後的三處漂移:模式判別措辭、file map 缺 init.ts / index.ts / deps.ts、install-relay.sh 路徑",
+      "evidence": "(a) §2.1.10:244 判別已改為「無 `peers` 鍵」,但 §2.5-4:278「沒有 `groups` 段的 peers.json … 有 `groups` 段則 fail-closed」與 §2.1.2:71「嚴格模式(peers.json 有 `groups` 段)」仍用舊措辭;有 `peers` 無 `groups` 的檔在 :244 是 fail、在 :278 字面上是「沒有 groups 段 → 逐位元相同」。(b) §2.1.10:247 引入 `initRelayFromPeersFile 回傳 {seeded, mode}`(init.ts:9-11 現回 `{seeded}`)→ `startServer`(index.ts:45)→ `Deps.groupsMode`(deps.ts 現無此欄位),三個檔都要動,§3 無對應列。(c) §3:312 `bin/install-relay.sh` 不存在;實檔 `packages/operations/systemd/install-relay.sh`(gen-1 F16 / gen-2 R10 evidence 引用的正確路徑;r1 起即寫錯,非 r3 引入)。",
+      "required_change": "(a) §2.5-4:278 與 §2.1.2:71 改為「legacy(頂層無 `peers` 鍵)… v2(有 `peers` 鍵)則 strict、缺 `groups` fail-closed」。(b) §3 加三列:`cli/init.ts`(回傳 `{seeded, mode}`、啟動翻轉判定)、`index.ts`(mode 傳入 startServer)、`deps.ts`(`groupsMode: 'legacy'|'strict'`)。(c) §3:312 路徑改 `packages/operations/systemd/install-relay.sh`。"
+    }
+  ]
+}
