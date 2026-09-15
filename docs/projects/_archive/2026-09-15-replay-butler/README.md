@@ -98,3 +98,28 @@ Requirements ledger: (a) stop the flood above a threshold → relay P2 (T3) ✔;
   develop; doc-sync scoped: Layer 1 gate failures are pre-existing (`.claude/review-loop-config.md`
   autopilot-relative links, ignored `.codeforge/` store) — none in the touched docs; Layer 2: one STALE
   wording (architecture "at most 10 000 rows") fixed.
+
+## Deploy record (2026-09-15, relay-first)
+
+- Admission §1 on the hub: fetch parity, clean tree, install, build, `audit --audit-level high` exit 0
+  (moderate only), `git diff --check`; typecheck/test:ci green earlier in the session.
+- §2.1 backup `~/.local/state/hangar-bridge/backups/20260915T033233Z-6dc62da…/` (sqlite quick_check ok,
+  peers.json, installer + unit, metadata previous=`6dc62da` candidate=`5fa9e56`); `relay.env` backed up.
+- §2.2 `install-relay.sh --revision 5fa9e56… --enable`: unit active, `/health.build_revision` = candidate,
+  MainPID cwd bound to `~/projects/hangar-bridge`, authenticated `/v1/messages` 200 (own token, no curl
+  conf → runbook's "NOT RUN" probe replaced by a direct bearer call), 10/10 handles back online, no relay
+  warn/error.
+- §3 peers (dist sha256 `1070d4f48f7d638d` on every host = hub):
+  aimax395 (better-sqlite3 binding was built for node 24 ABI on a node 22 host → `prebuild-install`
+  by hand; then relay 408 / peer-agent 520 green), cookys-gentoo, crosshair8-hero (kimi courier
+  restarted), 7840hs, twgs-revival ×3 logins (cookys via `npx pnpm`, node 18 — build only).
+  Environmental, not code: 3 live-JetStream KV tests fail on hosts without `nats-server` (gentoo,
+  cuda, 7840hs); twgs logins ran no test:ci. **Not upgraded**: the itx-chatgpt courier (itx WSL
+  clone) — it keeps polling without `pending_after`.
+- §4 live acceptance (relay side): `GET /v1/stream?since=<old>&replay_max=1` as `openclaw` with a
+  fresh instance → `backlog{pending:5, by_sender:{itx-chatgpt:3, openclaw:2}}` + `backlog_end`,
+  and the same cursor without `replay_max` replays exactly 5 `message` events (T6 live);
+  `relay.stream.backlog_summarized` logged; poll from the same cursor reports `pending_after:12`
+  (superset, as documented). **Peer-agent side pending**: running Claude sessions still hold the
+  old dist until they restart; the `[backlog:N]` presence suffix and the synthetic notification will
+  first be observed on the next session start with a > 10 chat backlog.
