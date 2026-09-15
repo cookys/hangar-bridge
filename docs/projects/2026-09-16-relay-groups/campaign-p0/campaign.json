@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "ticket": "relay-groups-p0b",
+  "profile": "internal-pilot",
+  "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "8a68351e26c9485e301e0514701e77d020113f68",
+  "branch": "feat/relay-groups-p0",
+  "vertical_acceptance": [
+    "shared: GROUP_BROADCAST_HANDLE / GROUP_ID_REGEX / DEFAULT_GROUP_ID / MEMBER_CAPS / isBroadcastHandle exist; envelope accepts @group and optional group; rows without group parse as cookys",
+    "relay db: schema v10 shape on fresh open; migrateV9ToV10 backfills once (run-once guard), per-object guards, claim PK rebuilt with idx_claim_expires, idempotent on re-run, does not re-admit a strict-removed guest",
+    "peers-file: legacy (no peers key) loads byte-identical + one cookys group; v2 {peers,groups} strict validation; seedPeers syncs peer_group/group_member, revokes vanished handles in strict mode, refuses legacy-over-strict (groups_section_removed), returns SeedDiff",
+    "groups.ts: loadMemberships / members / sharedAudience / requireCap / readerScope with executed-SQL tests; scripts/verify-groups.sh exits 0 with all pre-existing 557 tests unchanged"
+  ],
+  "allowed_path_prefixes": [
+    "packages/shared/src/constants.ts",
+    "packages/shared/src/constants.test.ts",
+    "packages/shared/src/envelope.ts",
+    "packages/shared/src/envelope.test.ts",
+    "packages/relay/src/db/",
+    "packages/relay/src/auth/peers-file.ts",
+    "packages/relay/src/auth/peers-file.test.ts",
+    "packages/relay/src/groups.ts",
+    "packages/relay/src/groups.test.ts",
+    "packages/relay/src/cli/init.ts",
+    "packages/relay/src/cli/init.test.ts"
+  ],
+  "max_changed_files": 13,
+  "baseline_churn": 1600,
+  "max_growth_ratio": 1.5,
+  "max_extra_churn": 800,
+  "max_repair_generations": 2,
+  "max_wall_seconds": 5400,
+  "unit_class": "mechanical",
+  "verify_cmd": "scripts/verify-groups.sh",
+  "rubric_ids": ["GROUPS-SHARED-1", "GROUPS-SCHEMA-2", "GROUPS-PEERS-3", "GROUPS-HELPERS-4"]
+}
