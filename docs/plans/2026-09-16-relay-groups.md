@@ -61,7 +61,7 @@ group 的成員。不同 group 的成員彼此**看不見、送不到、列不�
 
 ### 2.1.2 ⭐ 每則訊息一個 group,relay 蓋章,sender 不能選它不屬於的
 
-- POST `/v1/messages` 接受選填 `group`(regex 同 `HANDLE_REGEX`)。缺省 = sender 的 `default_group`
+- POST `/v1/messages` 接受選填 `group`(regex 同 `HANDLE_REGEX`)。預設 = sender 的 `default_group`
   (peers.json 每個 peer 必填,且必須是它的 membership 之一,否則 relay 啟動 fail)。
 - **插入點(必須在所有會回應的既有步驟之前)**:group 解析 → membership → cap → 收件人成員判定,緊接在
   B1 meta 剝除(`messages.ts:175-181`)與 `x-hangar-instance` 解析之後、**`thread_root` 續串(`:250`)之前**;
@@ -77,7 +77,7 @@ group 的成員。不同 group 的成員彼此**看不見、送不到、列不�
   跨 group 的存在性 oracle 與 `thread_root` 跨 group 綁定 —— `permission_verdict` / `task_result` 都走這條。
 - **`thread_root` 續串**(`resolveThreadContinuation`,`:250-260`)要求 `route.group_id == 本次送件 group`,否則
   403 `not_in_thread`(與 route 不存在同碼、既有 body)。
-- **`idempotency_key` 命中**(`:158-165`,key 只含 tokenId)早於一切判定 → 命中時先解析 body 的 group(缺省
+- **`idempotency_key` 命中**(`:158-165`,key 只含 tokenId)早於一切判定 → 命中時先解析 body 的 group(預設
   default_group),與 cached 回應中的 `group` 比對:不同 → 422 `idempotency_mismatch`;相同但 sender 已不在該
   group → 404 `unknown_group`。cached 回應的 `group` 欄位由本 plan 新增;**pre-v10 的 cached row 缺 `group` 視為
   `DEFAULT_GROUP_ID`**。**legacy 模式命中路徑維持現行「不解析 body 直接回 cached」**(逐位元),只有嚴格模式才比對。
@@ -137,7 +137,7 @@ group 的成員。不同 group 的成員彼此**看不見、送不到、列不�
   `to_filter.repo` 比對(`stream.ts:106`)只在同 group 內成立。
 - **claims**(`claims/store.ts`):PK 從 `(team_id, claim_key)` 改為 `(team_id, group_id, claim_key)`;
   `POST /v1/claim`、`POST /v1/claim/release`、`DELETE /v1/claim`(`claims.ts:21,56-71` 目前不接任何 group)都接選填
-  `group`(缺省 default_group,非成員 → 404 `unknown_group`);`GET /v1/claims` 回讀者所有 group 的聯集、每列帶
+  `group`(預設 default_group,非成員 → 404 `unknown_group`);`GET /v1/claims` 回讀者所有 group 的聯集、每列帶
   `group_id`;release 只能 release 該 group 內自己的。
 - **reply routing**(`reply_route` / `reply_grant`,`replies.ts`、`grants.ts`):`reply_route` 加 `group_id`
   (= 父訊息的);`POST /v1/replies` 的 route 查詢加 `AND group_id IN (replier memberships)`,在 `checkAudience`
@@ -169,7 +169,7 @@ group 的成員。不同 group 的成員彼此**看不見、送不到、列不�
 ### 2.1.6 每個成員的能力集(caps)
 
 peers.json 的 membership 是 `{"handle": {"caps": [...]}}`,caps ⊆ `chat | broadcast | dispatch |
-permission | claim`,**缺省 = 全部**(既有 fleet 成員零改變)。relay 在 POST `/v1/messages` /
+permission | claim`,**預設 = 全部**(既有 fleet 成員零改變)。relay 在 POST `/v1/messages` /
 `/v1/claim` / `/v1/permission/respond` 依 kind 查表:
 
 | 動作 | 需要的 cap |
@@ -231,7 +231,7 @@ peers.json 裡消失的 handle**(只在 secret 變更時 revoke 舊 token)。gro
   `<channel source="hangar-bridge" from="…" group="…" msg_id="…">`,讓收件 Claude 知道語境。
 - dotfiles `bin/fleet`:`fleet send --group <g>`、`fleet peers` 分 group 印、`fleet whoami` 印
   memberships + default;`@team` 用法印 deprecation 提示。
-- peer-agent config 新增 `default_group`(選填;缺省信 relay 回的 `/v1/whoami`——本 plan 新增這個唯讀端點,
+- peer-agent config 新增 `default_group`(選填;預設信 relay 回的 `/v1/whoami`——本 plan 新增這個唯讀端點,
   回 `{handle, groups:[{id, caps, history}], default_group}`,同時是 §5 驗收工具)。
 
 ### 2.1.10 Migration(schema v9 → v10)與 peers.json v2
@@ -240,7 +240,7 @@ peers.json 裡消失的 handle**(只在 secret 變更時 revoke 舊 token)。gro
 所以不能直接塞 `groups` 鍵):
 
 ```json
-{ "peers":  { "<handle>": { "secret_sha256_hex": "…", "display_name": "…", "subjects": {…}, "default_group": "fleet" } },
+{ "peers":  { "<handle>": { "secret_sha256_hex": "…", "display_name": "…", "subjects": {…}, "default_group": "cookys" } },
   "groups": { "<gid>": { "description": "…", "history": "since_join|all", "members": { "<handle>": { "caps": ["chat", …] } } } } }
 ```
 
@@ -268,8 +268,8 @@ version guard):
    資料回填慣例;DDL 步驟仍逐物件 guard)。guard 內:`INSERT OR IGNORE peer_group('cookys','hangar','migrated single group','all')`;
    每個 `human` `INSERT INTO group_member('cookys', handle, <全 caps>, now, '0') … WHERE NOT EXISTS (SELECT 1 FROM group_member gm
    WHERE gm.handle = human.handle)`。理由:serve 啟動先 open+seed+close(`index.ts:39-43`)再 open 一次(`serve.ts:61`),
-   若回填每次 open 都跑,strict seed 剛把 guest 從 fleet 移除、第二次 open 又把它塞回 fleet(全 caps)——正是本節要防的
-   「靜默把人放進 fleet」。**分工**:回填只搬 v9 影像那一次;之後 `peer_group` / `group_member` 的唯一權威是每次 load 的
+   若回填每次 open 都跑,strict seed 剛把 guest 從 cookys 移除、第二次 open 又把它塞回 cookys(全 caps)——正是本節要防的
+   「靜默把人放進 cookys」。**分工**:回填只搬 v9 影像那一次;之後 `peer_group` / `group_member` 的唯一權威是每次 load 的
    `seedPeers`(兩模式皆同),新 handle 的 group 列由 seedPeers 寫,不靠 migration。
 3. `message.group_id` / `reply_route.group_id`:`pragma table_info` 缺欄才 `ALTER TABLE ADD COLUMN`(照 `db.ts:163-166`)。
 4. `claim` 重建(SQLite 不能改 PK):只在 `sqlite_master.sql` 不含 `group_id` 時做(照 `db.ts:272-278`):
@@ -331,7 +331,7 @@ version guard):
 
 1. `packages/shared`:常數 + Envelope 型別 + `isBroadcastHandle`;`envelope.test.ts` 加 `@group` / `@team` 別名 / `group` regex / `isBroadcastHandle`(`@team` / `@group` / 其他)案例(先紅)。
 2. `db/schema.sql` v10 + `migrateV9ToV10`;`db.test.ts`:(a) 對一份 v9 fixture DB 跑 migration → `cookys` group 存在、每個 human 一列 member、message.group_id 全 `cookys`、claim PK 遷移後 count 不變、`idx_claim_expires` 存在、schema_version 含 10;(b) **重跑 idempotent**;(c) fresh DB 直接 `openDatabase` → 不拋、schema_version 含 10、表形狀正確;(d) fresh DB 開兩次 idempotent;(e) guest 只在 guest-lab 的 v10 DB open 兩次 → `(cookys, guest)` 仍為空。
-3. `peers-file.ts`:schema 擴充 + legacy 判定 + `seedPeers` 同步 group 表。測試:(a) 在已 v10 的 DB 上 load legacy 檔(含一個 DB 裡沒有的新 handle)→ 全員(含新 handle)fleet/all/caps 全開/since '0' + WARN;(b) 顯式檔缺 `default_group` → throw;(c) `default_group ∉ memberships` → throw;(d1) 既有成員再 seed **不改** `since_msg_id`;(d2) `since_join` group 的新成員寫入值符合 `^msg_[0-9A-HJKMNP-TV-Z]{26}$`;(d3) `history: all` group 的新成員寫 `'0'`;(a) 同時斷言 legacy 全員 since='0';(e) 移出 group → `group_member` 列刪除;(f) 從檔案消失的 handle(嚴格模式)→ `disabled_at` 與 token `revoked_at` 皆非 null,legacy 模式不動;(g) legacy 檔啟動後 reload strict 檔 → `group_member` 與檔案一致、差集撤銷生效;(h1) strict 後 SIGHUP reload 無 groups 段 → 拒絕、DB 不變、舊 roster 續用;(h2) strict DB(有非 fleet group)以 legacy 檔啟動 → exit 1;(h3) strict DB 只有 fleet 但 `a.caps=[chat]` 以 legacy 檔啟動 → exit 1(不得靜默放寬);(i) 扁平檔含一個叫 `groups` 的 handle → 仍照 legacy 解析;v2 檔頂層多餘鍵 → fail。
+3. `peers-file.ts`:schema 擴充 + legacy 判定 + `seedPeers` 同步 group 表。測試:(a) 在已 v10 的 DB 上 load legacy 檔(含一個 DB 裡沒有的新 handle)→ 全員(含新 handle)cookys/all/caps 全開/since '0' + WARN;(b) 顯式檔缺 `default_group` → throw;(c) `default_group ∉ memberships` → throw;(d1) 既有成員再 seed **不改** `since_msg_id`;(d2) `since_join` group 的新成員寫入值符合 `^msg_[0-9A-HJKMNP-TV-Z]{26}$`;(d3) `history: all` group 的新成員寫 `'0'`;(a) 同時斷言 legacy 全員 since='0';(e) 移出 group → `group_member` 列刪除;(f) 從檔案消失的 handle(嚴格模式)→ `disabled_at` 與 token `revoked_at` 皆非 null,legacy 模式不動;(g) legacy 檔啟動後 reload strict 檔 → `group_member` 與檔案一致、差集撤銷生效;(h1) strict 後 SIGHUP reload 無 groups 段 → 拒絕、DB 不變、舊 roster 續用;(h2) strict DB(有非 cookys group)以 legacy 檔啟動 → exit 1;(h3) strict DB 只有 cookys 但 `a.caps=[chat]` 以 legacy 檔啟動 → exit 1(不得靜默放寬);(i) 扁平檔含一個叫 `groups` 的 handle → 仍照 legacy 解析;v2 檔頂層多餘鍵 → fail。
 4. `groups.ts` + 單元測試:`loadMemberships` / `members` / `requireCap` / `readerScope` 產生的 SQL 在 `:memory:` DB 上直接執行驗證;另一條 grep 測試斷言 `store.ts` 五個 fetch* 不含後置 `.filter(`(§2.5-3;subject ACL 在 route 層的既有 JS filter 允許)。
 
 **Acceptance**:`pnpm -F @hangar-bridge/relay test` 新增測試全綠;既有 relay 測試(數字以 P0 開工時實跑為準,寫進 ledger)零改動仍綠(legacy 路徑逐位元相同,§2.5-4)。
@@ -341,13 +341,13 @@ version guard):
 1. `routes/messages.ts` POST:依 §2.1.2 / §2.1.6 順序 —— 解析 group → membership → cap → 收件人成員 → 既有 subject ACL → insert(group_id)。測試矩陣(`messages.group.test.ts`,fixture:`cookys{a,b}`、`lab{b,c}`、`c` caps=[chat];default_group:a=cookys、b=cookys、c=lab;嚴格模式):
    - a→c 直送 → 404 unknown_recipient;a→不存在的 handle → **同一個** body;addressRules=on 時 a→c 不帶 all_sessions → 仍 404,body 不含 `live_instances`。
    - c 以 a 在 fleet 的 msg_id 當 `in_reply_to` 送 chat / task_result → 與 `in_reply_to` = 隨機 id 的回應 byte-equal;c 以該 id 當 `thread_root` → 403 not_in_thread 與 route 不存在同 body。
-   - `idempotency-key` 重放但 body 換 group → 422;重放但 sender 已被移出該 group → 404 unknown_group;cached row 無 `group` + body 缺省 → 201 replay(`messages.ts:164` 回 201)。
-   - b `@team` → 落 fleet;b `to:@group, group:lab` → lab;b `to:@group` 不帶 group → fleet。
+   - `idempotency-key` 重放但 body 換 group → 422;重放但 sender 已被移出該 group → 404 unknown_group;cached row 無 `group` + body 預設 → 201 replay(`messages.ts:164` 回 201)。
+   - b `@team` → 落 cookys;b `to:@group, group:lab` → lab;b `to:@group` 不帶 group → cookys。
    - a 指定 `group: lab` → 404 unknown_group;b 指定 `lab` 給 c → 200。
    - c `to:@group` → 403 cap_denied;c `task_dispatch` 給 b → 403 cap_denied;c chat 給 b → 200。
    - `@team` 從 a → 落在 `cookys`,audit 有 `deprecated_team_alias`。
    - meta 帶 `group` → 剝除。
-2. `messages/store.ts` + `routes/messages.ts` GET + `routes/inbox.ts` + replay butler 計數:readerScope。測試:b 在兩個 group,poll 回兩邊;c 只回 lab;c 加入 lab 前的 lab 訊息(`since_msg_id`)不回;`pending` / `by_sender` 只含可見;migration 前的 `to_handle='@team'` 舊 row 仍被 fleet 成員讀到。
+2. `messages/store.ts` + `routes/messages.ts` GET + `routes/inbox.ts` + replay butler 計數:readerScope。測試:b 在兩個 group,poll 回兩邊;c 只回 lab;c 加入 lab 前的 lab 訊息(`since_msg_id`)不回;`pending` / `by_sender` 只含可見;migration 前的 `to_handle='@team'` 舊 row 仍被 cookys 成員讀到。
 3. `routes/stream.ts` + `fanout.ts` + `routes/presence.ts`:cold start / resume / live 三路都過 group;`@group` 只 fan 給成員;presence 心跳只到共享 group;`delivered_at` 只看成員;`reauth` 事件。測試(SSE 整合,沿用 `stream-superseded.test.ts` 的 harness):a 廣播 → b 收到、c 沒有;b 在 lab 廣播 → c 收到、a 沒有;a 心跳 → c 的 stream **零** `presence_update` 事件;b(fleet+lab)心跳 → c 收到 presence_update;a 廣播 lab 時只有 fleet-only 的 x 在線 → `delivered_at` NULL,c 之後 cold start 收到;SIGHUP 把 b 移出 lab → b 的 stream 收到 `reauth` 並關閉,重連後 lab 廣播不再到;SIGHUP 把 c 從檔案移除 → `reauth`,重連 401;SIGHUP 把 x 加進 lab(x 的 stream 不斷)→ 下一則 lab 廣播 x 即刻收到。
 4. `routes/peers.ts` + `/v1/whoami`:c 看 peers 只見 b、c(各帶 `groups:[lab]`),看不到 a 的存在;a 看不到 c;b 看到 a、c 且自己的 entry 帶兩個 group;a 先打 `/v1/peers` 後 1 秒內 c 再打 → c 仍只見 lab(快取不共用)。
 5. claims / replies / grants / permission:各一組正反測試(§2.1.4)。特別是 **reply 跨 group**:c 拿到 b 在 lab 的 msg_id 回覆 → 200;c 猜到 a 在 fleet 的 msg_id 回覆 → 404 unknown_parent,body 與隨機 id byte-equal。claims:b 在 lab 取 claim 後以 `group:lab` 釋放 → released:true;不帶 group → released:false(fleet 無此 key)。每種拒絕(unknown_group / unknown_recipient / cap_denied / unknown_parent / 跨 group not_in_thread / peer.removed)各一條 `SELECT detail_json FROM audit_log WHERE event=?` 斷言含 `group_id`(§2.5-6)。
@@ -369,7 +369,7 @@ version guard):
 
 ### P3 — migration 工具、rollout、live 驗收、hangar 文件(size L;operator 閘門)
 
-1. `bin/peers-groups-init.js`:讀 legacy peers.json → 寫出顯式 `groups.fleet`(全員、history all、caps 全開)+ 每 peer `default_group: fleet`;dry-run 預設,`--write` 才動,原檔 `.bak.<ts>`。
+1. `bin/peers-groups-init.js`:讀 legacy peers.json → 寫出顯式 `groups.cookys`(全員、history all、caps 全開)+ 每 peer `default_group: cookys`;dry-run 預設,`--write` 才動,原檔 `.bak.<ts>`。
 2. `docs/DEPLOYMENT.md` 加「§X groups」:`install-relay.sh` 在停 relay 後、啟動前備份 DB(`.backup` 或三檔 cp),`openDatabase` 啟動即跑 `migrateV9ToV10`;**rollback = 還原 `.bak` + 回舊 revision**;rollout 順序:`peers-groups-init.js --write`(relay 以 strict 啟動)→ systemd drop-in 設 `HANGAR_METRICS_TOKEN`(目前 hangar tower/fleet 無 scraper,亦可明寫「接受 /metrics 404」)→ relay → peer 重建(建議同日,非前提)→ courier 重啟。P3-3 從 strict 出發。
 3. **Live 驗收(hub 上,operator 在場)**:
    - 加一個 `guest` handle(新 secret)只進 `guest-lab` group,`caps:["chat"]`;`openclaw` 同時加進 `guest-lab`。SIGHUP。
