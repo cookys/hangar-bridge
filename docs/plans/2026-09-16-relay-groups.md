@@ -1,6 +1,6 @@
 # Plan — Relay groups:同一個 hub 上多個互不可見的圈子,訊息安全由 relay 逐則裁決
 
-status: DRAFT r2 — gen-1 22/22 + gen-2 10/10 折入;待 gen-3 確認
+status: DRAFT r3 — gen-3 6/6 折入(H1 blocker:human 回填 run-once guard);待 gen-4 確認
 owner: cookys
 branch: `feat/relay-groups`(base `develop`)
 scope: `packages/shared`(envelope / constants)、`packages/relay`(schema v10、peers-file、acl、每條 route、fanout、presence、claims、purge、SIGHUP reload)、`packages/peer-agent`(config、tools、channel tag)、dotfiles `bin/fleet`(送件 / peers 顯示)、hangar docs(ADR + runbook + tower)
@@ -241,11 +241,13 @@ peers.json 裡消失的 handle**(只在 secret 變更時 revoke 舊 token)。gro
   "groups": { "<gid>": { "description": "…", "history": "since_join|all", "members": { "<handle>": { "caps": ["chat", …] } } } } }
 ```
 
-- **legacy 判定 = 頂層無 `peers` 且無 `groups`**(扁平 record;一個恰好叫 `groups` 的 handle 仍走 legacy,向後相容)。
-  v2 檔頂層多餘鍵 → 啟動 fail。`peers-groups-init.js` 輸出 v2。
+- **legacy 判定 = 頂層無 `peers` 鍵**(唯一判別;扁平 record 裡一個恰好叫 `groups` 的 handle 仍走 legacy)。有 `peers`
+  無 `groups` → fail-closed;v2 檔頂層多餘鍵 → fail。`peers-groups-init.js` 輸出 v2。
 - **模式是「每一次成功 load」的屬性**,啟動與 SIGHUP 走同一條路徑、同一套 fail-closed 驗證(不是只在啟動時判定
-  一次)。**legacy → strict 翻轉允許**,並對 DB 現況跑完整嚴格 diff(§2.1.7 差集撤銷 + membership diff → dropHandle);
-  **strict → legacy 翻轉一律拒絕**(`relay.roster.reload_failed reason=groups_section_removed`,保留舊 roster)。
+  一次)。`initRelayFromPeersFile` 回傳 `{seeded, mode}` → `startServer` → `Deps.groupsMode`。**legacy → strict 翻轉允許**,
+  並對 DB 現況跑完整嚴格 diff(§2.1.7 差集撤銷 + membership diff → dropHandle);**strict → legacy 翻轉一律拒絕**:SIGHUP
+  時 `relay.roster.reload_failed reason=groups_section_removed`、保留記憶體內舊 roster;**啟動時**(`index.ts:41` 先於
+  Deps、無舊 roster 可保留)以 DB 內 `peer_group` 已有非 `fleet` 列或任一 `human` 不在 fleet 判定為「曾是 strict」→ exit 1。
 - legacy 模式 = 所有 peer 在 `fleet`、history all、caps 全開,啟動印一行 WARN;strict 模式每個 peer 必須至少在
   一個 group、`default_group` 必填且 ∈ memberships,否則 fail(寧可不起也不要靜默把人放進 `fleet`)。
 
@@ -256,8 +258,12 @@ version guard):
 
 0. 整體 `BEGIN … COMMIT`。
 1. `peer_group` / `group_member` 用 `IF NOT EXISTS`(**不能叫 `group`——SQLite 保留字**);索引 `idx_group_member_handle(handle)`。
-2. `INSERT OR IGNORE peer_group('fleet','hangar','migrated single group','all')`;每個 `human` `INSERT OR IGNORE
-   group_member('fleet', handle, <全 caps>, now, '0')`。
+2. **資料回填只跑一次**:以 `SELECT 1 FROM schema_version WHERE version=10` 缺席作 run-once guard(照 `db.ts:38-41` v9
+   資料回填慣例;DDL 步驟仍逐物件 guard)。guard 內:`INSERT OR IGNORE peer_group('fleet','hangar','migrated single group','all')`;
+   每個 `human` `INSERT INTO group_member('fleet', handle, <全 caps>, now, '0') … WHERE NOT EXISTS (SELECT 1 FROM group_member gm
+   WHERE gm.handle = human.handle)`。理由:serve 啟動先 open+seed+close(`index.ts:39-43`)再 open 一次(`serve.ts:61`),
+   若回填每次 open 都跑,strict seed 剛把 guest 從 fleet 移除、第二次 open 又把它塞回 fleet(全 caps)——正是本節要防的
+   「靜默把人放進 fleet」。
 3. `message.group_id` / `reply_route.group_id`:`pragma table_info` 缺欄才 `ALTER TABLE ADD COLUMN`(照 `db.ts:163-166`)。
 4. `claim` 重建(SQLite 不能改 PK):只在 `sqlite_master.sql` 不含 `group_id` 時做(照 `db.ts:272-278`):
    `claim_v10(team_id, group_id, claim_key, …)` → 搬資料 → 前後 `COUNT(*)` assert → rename → **重建 `idx_claim_expires`**。
@@ -294,14 +300,14 @@ version guard):
 | `packages/relay/src/groups.ts`(新) | `loadMemberships(db, handle) → Map<groupId,{caps,since_msg_id}>`、`members(db, groupId) → Set<handle>`、`requireCap()`、SQL 片段產生器 `readerScope(memberships)`(給 store 用的 `(group_id, since)` 對) |
 | `packages/relay/src/messages/store.ts` | 所有 fetch*(`fetchSince` / `fetchPendingSince` / `fetchInboxSince` / `fetchInboxIdsAfter` / `fetchMailboxSince`)接 `readerScope`;`buildEnvelope(team, from, msg, groupId)` 的父查詢加 group;`insert` 帶 group_id;route 存取回傳 `group_id` |
 | `packages/relay/src/routes/messages.ts` | POST:group 解析 + 成員 / 收件人 / cap 驗證(§2.1.2、§2.1.6);GET:readerScope |
-| `packages/relay/src/routes/stream.ts` | 連線時讀 memberships;`deliverable` 加 group 條件;cold/resume 用 readerScope;`reauth` 事件 |
+| `packages/relay/src/routes/stream.ts` | cold/resume 的 readerScope 在連線時算一次(只給 backlog drain 用,**不是** live 快取);`deliverable` 對每則現查 group(presence_update 跳過);`reauth` 事件 |
 | `packages/relay/src/routes/peers.ts` | entry 加 `groups`,只列共享;快取 key = 讀者 membership |
 | `packages/relay/src/routes/presence.ts` | 心跳受眾 = 成員聯集 |
 | `packages/relay/src/routes/inbox.ts`、`replies.ts`、`grants.ts`、`permission.ts`、`claims.ts` | 各自的 group 檢查(§2.1.4) |
 | `packages/relay/src/claims/store.ts` | PK 含 group_id |
 | `packages/relay/src/routes/whoami.ts`(新) | `GET /v1/whoami` |
 | `packages/relay/src/routes/metrics.ts` | 改用 `HANGAR_METRICS_TOKEN`;group label |
-| `packages/relay/src/fanout.ts` | `dropHandle(team, handle, reason)`;`@group` 展開為成員連線;`presence_update` 的 group 判定在此層(成員聯集 ∩ 連線),其他 kind 交給 `deliverable` |
+| `packages/relay/src/fanout.ts` | `dropHandle(team, handle, reason)`;`@group` 展開為成員連線;`presence_update` 的 group 判定在此層(成員聯集 ∩ 連線),其他 kind 交給 `deliverable`。**注入方式(A)**:`Fanout` 加選填 ctor 參數 `sharedAudience?: (team, handle) => Set<handle>`(`fanout.ts:69-71` 目前無建構參數、`serve.ts:63 new Fanout()`、測試裡 27 處建構不傳 → 行為不變);`serve.ts` 注入 `groups.sharedAudience(db)`。不採 (B) `deliverDetailed(e, snapshot)`(`fanout.ts:214-218` 不過 accept、不做 sender 自排除) |
 | `packages/relay/src/cli/serve.ts` | `reloadRoster(deps, peersFile)`:差集撤銷 + membership diff → `dropHandle`;清 memo |
 | `bin/install-relay.sh` | 停 relay 後、啟動前 `sqlite3 <db> ".backup <db>.bak.<ts>"`(或 cp .db/.db-wal/.db-shm 三檔) |
 | `packages/relay/src/purge.ts` | purge 不分 group(沿用),但 `group_member` 不 purge |
@@ -316,8 +322,8 @@ version guard):
 ### P0 — 型別、schema v10、peers-file、groups.ts(size L;純 relay 內部,無 route 行為改變)
 
 1. `packages/shared`:常數 + Envelope 型別 + `isBroadcastHandle`;`envelope.test.ts` 加 `@group` / `@team` 別名 / `group` regex / `isBroadcastHandle`(`@team` / `@group` / 其他)案例(先紅)。
-2. `db/schema.sql` v10 + `migrateV9ToV10`;`db.test.ts`:(a) 對一份 v9 fixture DB 跑 migration → `fleet` group 存在、每個 human 一列 member、message.group_id 全 `fleet`、claim PK 遷移後 count 不變、`idx_claim_expires` 存在、schema_version 含 10;(b) **重跑 idempotent**;(c) fresh DB 直接 `openDatabase` → 不拋、schema_version 含 10、表形狀正確;(d) fresh DB 開兩次 idempotent。
-3. `peers-file.ts`:schema 擴充 + legacy 判定 + `seedPeers` 同步 group 表。測試:(a) legacy 檔 → 全員 fleet/all/caps 全開 + WARN;(b) 顯式檔缺 `default_group` → throw;(c) `default_group ∉ memberships` → throw;(d) 既有成員再 seed **不改** `since_msg_id`,新成員寫入值符合 `^msg_[0-9A-HJKMNP-TV-Z]{26}$`;(e) 移出 group → `group_member` 列刪除;(f) 從檔案消失的 handle(嚴格模式)→ `disabled_at` 與 token `revoked_at` 皆非 null,legacy 模式不動;(g) legacy 檔啟動後 reload strict 檔 → `group_member` 與檔案一致、差集撤銷生效;(h) strict 後 reload 無 groups 段 → 拒絕、DB 不變;(i) 扁平檔含一個叫 `groups` 的 handle → 仍照 legacy 解析;v2 檔頂層多餘鍵 → fail。
+2. `db/schema.sql` v10 + `migrateV9ToV10`;`db.test.ts`:(a) 對一份 v9 fixture DB 跑 migration → `fleet` group 存在、每個 human 一列 member、message.group_id 全 `fleet`、claim PK 遷移後 count 不變、`idx_claim_expires` 存在、schema_version 含 10;(b) **重跑 idempotent**;(c) fresh DB 直接 `openDatabase` → 不拋、schema_version 含 10、表形狀正確;(d) fresh DB 開兩次 idempotent;(e) guest 只在 guest-lab 的 v10 DB open 兩次 → `(fleet, guest)` 仍為空。
+3. `peers-file.ts`:schema 擴充 + legacy 判定 + `seedPeers` 同步 group 表。測試:(a) legacy 檔 → 全員 fleet/all/caps 全開 + WARN;(b) 顯式檔缺 `default_group` → throw;(c) `default_group ∉ memberships` → throw;(d) 既有成員再 seed **不改** `since_msg_id`,新成員寫入值符合 `^msg_[0-9A-HJKMNP-TV-Z]{26}$`;(e) 移出 group → `group_member` 列刪除;(f) 從檔案消失的 handle(嚴格模式)→ `disabled_at` 與 token `revoked_at` 皆非 null,legacy 模式不動;(g) legacy 檔啟動後 reload strict 檔 → `group_member` 與檔案一致、差集撤銷生效;(h1) strict 後 SIGHUP reload 無 groups 段 → 拒絕、DB 不變、舊 roster 續用;(h2) strict DB 以 legacy 檔啟動 → exit 1;(i) 扁平檔含一個叫 `groups` 的 handle → 仍照 legacy 解析;v2 檔頂層多餘鍵 → fail。
 4. `groups.ts` + 單元測試:`loadMemberships` / `members` / `requireCap` / `readerScope` 產生的 SQL 在 `:memory:` DB 上直接執行驗證;另一條 grep 測試斷言 `store.ts` 五個 fetch* 不含後置 `.filter(`(§2.5-3;subject ACL 在 route 層的既有 JS filter 允許)。
 
 **Acceptance**:`pnpm -F @hangar-bridge/relay test` 新增測試全綠;既有 relay 測試(數字以 P0 開工時實跑為準,寫進 ledger)零改動仍綠(legacy 路徑逐位元相同,§2.5-4)。
@@ -327,7 +333,7 @@ version guard):
 1. `routes/messages.ts` POST:依 §2.1.2 / §2.1.6 順序 —— 解析 group → membership → cap → 收件人成員 → 既有 subject ACL → insert(group_id)。測試矩陣(`messages.group.test.ts`,fixture:`fleet{a,b}`、`lab{b,c}`、`c` caps=[chat];default_group:a=fleet、b=fleet、c=lab;嚴格模式):
    - a→c 直送 → 404 unknown_recipient;a→不存在的 handle → **同一個** body;addressRules=on 時 a→c 不帶 all_sessions → 仍 404,body 不含 `live_instances`。
    - c 以 a 在 fleet 的 msg_id 當 `in_reply_to` 送 chat / task_result → 與 `in_reply_to` = 隨機 id 的回應 byte-equal;c 以該 id 當 `thread_root` → 403 not_in_thread 與 route 不存在同 body。
-   - `idempotency-key` 重放但 body 換 group → 422;重放但 sender 已被移出該 group → 404 unknown_group;cached row 無 `group` + body 缺省 → 200 replay。
+   - `idempotency-key` 重放但 body 換 group → 422;重放但 sender 已被移出該 group → 404 unknown_group;cached row 無 `group` + body 缺省 → 201 replay(`messages.ts:164` 回 201)。
    - b `@team` → 落 fleet;b `to:@group, group:lab` → lab;b `to:@group` 不帶 group → fleet。
    - a 指定 `group: lab` → 404 unknown_group;b 指定 `lab` 給 c → 200。
    - c `to:@group` → 403 cap_denied;c `task_dispatch` 給 b → 403 cap_denied;c chat 給 b → 200。
@@ -388,6 +394,7 @@ P0 → P1 → P2 → P3 嚴格序;P2 的 `bin/fleet` 可與 P1 後段並行(只�
 | `/v1/peers` 若改形狀,舊 peer-agent 的 roster 變空 → `SenderGate` 靜默拒收(不是 crash) | 形狀維持陣列、additive(§2.1.4);peer-agent 對缺 `groups` 欄位的舊 relay 也要能跑 |
 | `group` 是 SQLite 保留字 | 表名 `peer_group`(§2.1.10) |
 | `seedPeers` 從不撤銷消失的 handle | §2.1.7 差集撤銷,P0-3(f) 測試 |
+| migration 的 human→fleet 回填若每次 open 都跑,會在 serve 的第二次 open 把 strict 移除的 guest 塞回 fleet | run-once guard(§2.1.10 step 2),P0-2(e) |
 | SIGHUP drop 導致所有人重連風暴 | 只 drop membership **縮小**的 handle;擴大不 drop |
 | since_join 讓 operator 自己加新機器時看不到舊廣播 | `fleet` group `history: all`;runbook 明講「自家機器進 fleet,外人進新 group」 |
 
@@ -402,6 +409,7 @@ P0 → P1 → P2 → P3 嚴格序;P2 的 `bin/fleet` 可與 P1 後段並行(只�
 
 ## Review log
 
+- R3(2026-09-16)gen-3 Fable 5.1 → **FIX-THEN-SHIP**(H1 blocker + H2–H6;R7 PASS、R10 FAIL;G1–G10 8 resolved / 2 partial),artifact `.g3-artifact.json`;disposition `.g3-disposition.json`:**6/6 accept-and-fold**。H1 的根因是 gen-2 G4 建議的 `INSERT OR IGNORE` 回填,reviewer 自己指出;depth-0 核對 `index.ts:39-43` + `serve.ts:61` 的雙 open 屬實。
 - R2(2026-09-16)gen-2 Fable 5.1 → **FIX-THEN-SHIP**(10 findings / 3 blockers G1 G2 G4;R7、R10 FAIL;F1–F22 17 resolved / 5 partial),artifact `.g2-artifact.json`;disposition `.g2-disposition.json`:**10/10 accept-and-fold**。
 - R1(2026-09-16)gen-1 Fable 5.1 → **FIX-THEN-SHIP**,artifact `2026-09-16-relay-groups.g1-artifact.json`(13 rubric:10 FAIL / 3 PASS;22 findings / 15 blockers)。disposition `2026-09-16-relay-groups.g1-disposition.json`:**22/22 accept-and-fold**(F15 採 A:legacy 400 逐位元、嚴格 404)。depth-0 自驗過的 reshaping claims:messages.ts 判定順序(:158 idem → :250 thread_root → :269 addressRules → :310 subject)、`/v1/peers` 2 秒全域快取、`presence.ts:65` 心跳走 `@team`、`seedPeers` 無差集撤銷、`/metrics` 掛在 bearer 之外、`store.ts:88` unknown recipient 為 Error→400。
 - R0(2026-09-16)author:本 session(Opus 5)。logical_plan_id `relay-groups-2026-09-16`;manifest
