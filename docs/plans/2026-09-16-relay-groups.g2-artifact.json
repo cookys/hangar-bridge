@@ -1,0 +1,278 @@
+{
+  "generation": 2,
+  "reviewer": "claude-fable-5-1",
+  "verdict": "FIX-THEN-SHIP",
+  "review_target": "docs/plans/2026-09-16-relay-groups.md @ bdd7424 (r1)",
+  "growth_rail": "只重審 gen-1 disposition 改動處 + 逐條核對 F1..F22;新 finding 限於 fold 引入的 blocker 或 group 邊界上 gen-1 漏掉的 blocker。不重開 group overlay / since_join / 404 同碼 / F15-A / F9 陣列 / F12 逐則查表。",
+  "rubric": [
+    {
+      "id": "R1",
+      "result": "PASS",
+      "evidence": "r1 §0 未改;gen-1 已驗 routes/messages.ts:310 subject-null chat 不過 per-recipient ACL、peers.ts:24-50 整份 roster、schema.sql:102 claim PK (team_id, claim_key)。本輪重開 routes/peers.ts:18-53 與 messages/store.ts:84-89 再確認,無新分組機制。"
+    },
+    {
+      "id": "R2",
+      "result": "PASS",
+      "evidence": "F10 已折入 §2.1.2(idem 命中先比 group 再驗 membership)。routes/messages.ts:158-165 現碼確為 body 解析前直接回 cached;r1 要求命中時解析 body 再比對,結構缺陷已補。殘留:pre-v10 的 idempotency_key row 無 `group`(schema.sql:73-78;purge.ts 不清此表)→ G3(Minor)。"
+    },
+    {
+      "id": "R3",
+      "result": "PASS",
+      "evidence": "r1 §2.1.2 明定插入點:B1 剝除(messages.ts:179-181)與 x-hangar-instance(:202-206)之後、thread_root 續串(:250-263)之前;addressRules(:269-300)與 subject ACL(:310)在後。對照現碼順序成立;to_filter 分支(:384 起)與非 to_filter 分支(:475 起)都在插入點之後,兩條 buildEnvelope 路徑皆受判定。`live_instances`(:281-283)只在收件人成員判定後才可能回。"
+    },
+    {
+      "id": "R4",
+      "result": "PASS",
+      "evidence": "實跑 `grep -n 'prepare(' messages/store.ts`:85(收件人)、93(in_reply_to 父)、152/177/205/229/387(五個 fetch*)、300/305(getRoute/ByCorrelation)、325(hasGrant)、347-371(finalizeGrant)。r1 §2.1.3 表已列全部回傳 row / 計數 / 投遞決定的點,含 gen-1 補的 permission.ts:31-36、delivered_at(messages.ts:559-566)、replay butler fetchInboxIdsAfter、stream scanBacklog(stream.ts:307-340 走同一 drain+deliverable)。metrics.ts:7-8 兩個 COUNT 由 §2.1.8 token 閘涵蓋。"
+    },
+    {
+      "id": "R5",
+      "result": "PASS",
+      "evidence": "逐條核對 rubric 點名的路徑:rate-limit 429 由 middleware/rate-limit.ts:24 依 token 自身計,無跨 group 資訊;reply_idem 重放(replies.ts:346-352)只回同 handle 自己先前拿到的結果;idempotency_key 命中 §2.1.2 已補;SSE reauth 只發給被縮小的 handle 自己;/v1/whoami 只回自身 memberships;/v1/peers 快取 key 改讀者 membership(§2.1.4);/metrics 加 token 閘(§2.1.8)。無可區分「存在但無權」與「不存在」的殘留路徑。"
+    },
+    {
+      "id": "R6",
+      "result": "PASS",
+      "evidence": "shared/ulid.ts:5 monotonicFactory、:9-11 newMessageId 加 msg_ 前綴;r1 §2.1.5 明定 since_msg_id 由 newMessageId() 產生、嚴格 `>`、migration 寫 '0'、init 跨行程邊界記入 ADR;P0-3(d) 斷言格式。F11 已解。"
+    },
+    {
+      "id": "R7",
+      "result": "FAIL",
+      "evidence": "F12 本身已解(fanout.ts:71 `subs: Map<team, Map<handle, Set<Subscriber>>>` 可按 handle 關流;Subscriber.close 於 fanout.ts:28;stream.ts:191/204 證明 writeSSE 支援自訂 event 名 → reauth 可行;§2.1.3 改為逐則現查 + memo)。但 fold 之間出現新的不一致:§2.1.3:116-118 說 `deliverable(e)` 對 `e.group` 查表,而 §2.1.4:130-132 說 presence_update 的 Envelope.group 記 default_group、Fanout 以成員聯集投遞 —— 現碼 fanout.ts:181 對每個候選 sub 都呼叫 `sub.accept(e)`(= stream 的 deliverable),聯集會被 deliverable 的 e.group 檢查再砍掉,lab-only 的 c 永遠收不到 b(default fleet)的心跳。plan 必須說清楚哪一邊為準 → G1。另 §2.1.10 說 legacy/strict「啟動時」判定,但 §2.1.7 的差集撤銷只在嚴格模式做、P3-3 又靠 SIGHUP 加 guest group —— reload 時模式是否可翻轉未定義 → G2。"
+    },
+    {
+      "id": "R8",
+      "result": "PASS",
+      "evidence": "schema.sql:61 六個 kind 全部在 §2.1.6 表內(presence_update 不需 cap);六個寫入端點(/v1/messages、/v1/replies=chat、/v1/claim + release + DELETE=claim、/v1/permission/respond=permission、/v1/grants/finalize 不需 cap、/v1/presence 不需 cap)皆定義。F13 已解。"
+    },
+    {
+      "id": "R9",
+      "result": "PASS",
+      "evidence": "退化檢查:legacy = 單一 fleet、since '0'、caps 全開;store.ts:152-233 五個 fetch* 加 `group_id IN ('fleet') AND id > '0'` 恆真;migration 對所有 human 回填 group_member(§2.1.10-2)使 `to ∈ members(fleet)` 等價於 store.ts:85-88 的 human 存在檢查;F15-A 保留 400 invalid_message 原 body(tests/integration/messages.test.ts:58、store.test.ts:44-47 不動);/v1/peers 陣列 additive(peer-agent outbound.ts:185-190 `as PeerSummary[]` 不會炸);§2.6 逐端點列出舊 peer-agent 行為。措辭殘留:GC4「逐位元相同」與 /metrics 缺 env → 404、新 /v1/whoami 兩個 mode-independent 改動衝突 → G7(Minor)。"
+    },
+    {
+      "id": "R10",
+      "result": "FAIL",
+      "evidence": "已驗:db/db.ts:13-25 openDatabase 依序跑 migrate*,v10 接 :24 之後即啟動執行;install-relay.sh 現無 DB 備份(grep 只有 :246/:266 unit cp),r1 P3-2/§3 已補。未通過:r1 §2.1.10 步驟 0 的 guard 是「`SELECT 1 FROM schema_version WHERE version=10`」(照 db.ts:38-41 v9 模式),但 v9 模式成立的前提是 v9 的表全由 schema.sql `CREATE TABLE IF NOT EXISTS` 建立、migration 只做 backfill;v10 有三個 `ALTER TABLE ADD COLUMN` + claim 重建。現碼加欄位的 migration 一律以 `pragma table_info` 逐欄 guard(db.ts:163-166 v8、:234-241 v5、:246-249 v2),表重建以 sqlite_master 的 sql 內容 guard(db.ts:272-278 v4)。schema.sql 執行在 migration 之前(db.ts:15-16),若 schema.sql 也升到 v10 形狀(有 group_id 欄),fresh DB(含所有 :memory: 測試)跑 ALTER 會撞 duplicate column;若 schema.sql 不升,則 fresh DB 的表形狀靠 migration 拼出,與現有慣例相反。plan 未定 schema.sql 是否升版、也未指定逐步 guard;P0-2 只測「v9 fixture → v10」與「重跑 idempotent」,沒有「fresh DB 直接 open」案例 → G4。"
+    },
+    {
+      "id": "R11",
+      "result": "PASS",
+      "evidence": "GC1→P1-1 meta group 剝除;GC2→P1-1 同 body + P1-7 byte-equal;GC3→P0-4 readerScope SQL 直接執行 + grep 無 .filter(;GC4→P0 acceptance 既有測試零改動 + F15-A;GC5→P1-3 SIGHUP 三案 + KR4;GC6→P1-5 每種拒絕一條 audit_log 斷言含 group_id;GC7 無測試需求;GC8 流程。P1-7 明列 15+1 端點、depth-0 自寫。F21 已解。"
+    },
+    {
+      "id": "R12",
+      "result": "PASS",
+      "evidence": "§1 已加不變量「非 fleet group 成員永不核發 NKey、永不進 fleet-roster.json」+ BACKLOG trigger(F19);gen-1 已驗 NATS lane 不經 relay message 表(peer-agent nats-transport.ts:202-288 直接 publish)。與 §2 無矛盾。"
+    },
+    {
+      "id": "R13",
+      "result": "PASS",
+      "evidence": "四個 L 與 §3 file map 相稱;§8 兩題仍為 operator 專屬;無 TODO/TBD。殘留漂移(非 load-bearing):§6 第一列仍寫「12 個 route」(KR3/P1-7 已改 15);§2.1.3 stream 列仍引 `stream.ts:149-151`(現碼 :149-155 是 writeAndMark,drain 在 :165-167);§3 `fanout.ts` 列了兩次(plan :280 與 :287);P0 步驟「1b.」排在 3 之後 → G8(Minor)。"
+    }
+  ],
+  "gen1_resolution": [
+    {
+      "id": "F1",
+      "status": "resolved",
+      "note": "§2.1.2:66-69 明定插入點在 :250 之前;P1-1 加 addressRules=on 時 a→c 仍 404 且無 live_instances。"
+    },
+    {
+      "id": "F2",
+      "status": "resolved",
+      "note": "§2.1.8:210 一列 + P1-1/P1-7 斷言。"
+    },
+    {
+      "id": "F3",
+      "status": "resolved",
+      "note": "§2.1.2:75-77 buildEnvelope 父查詢加 group_id,同碼同 body;§3 store.ts 簽名;P1-1 chat/task_result 案。"
+    },
+    {
+      "id": "F4",
+      "status": "resolved",
+      "note": "§2.1.4:127-128 快取 key = 讀者 membership;P1-4 1 秒內 c 再打案。"
+    },
+    {
+      "id": "F5",
+      "status": "resolved",
+      "note": "§2.1.2:78-79 route.group_id 相等否則 403 not_in_thread;§2.1.4:140-141 改寫為兩處相等檢查保證。"
+    },
+    {
+      "id": "F6",
+      "status": "partial",
+      "note": "§2.1.4:129-133 聯集規則、§3 加 routes/presence.ts、P1-3 零 presence_update 案都在;但與 §2.1.3:116-118 的 deliverable e.group 查表互斥,fanout.ts:181 每個 sub 都過 accept → 聯集無法落地。見 G1。"
+    },
+    {
+      "id": "F7",
+      "status": "resolved",
+      "note": "§2.1.3:112 delivered_at 一列;P1-3 x 在線時 delivered_at NULL 案。"
+    },
+    {
+      "id": "F8",
+      "status": "resolved",
+      "note": "§2.1.4:137-140 route 查詢加 group 過濾在 checkAudience 前、404 unknown_parent 既有 body;§2.1.8:208;P1-5 byte-equal。"
+    },
+    {
+      "id": "F9",
+      "status": "resolved",
+      "note": "§2.1.4:124-127 陣列 additive;§2.6、§6 改寫;P3-2 重建降為建議。"
+    },
+    {
+      "id": "F10",
+      "status": "partial",
+      "note": "§2.1.2:80-82 命中先比 group;但未處理 pre-v10 cached 回應無 `group` 欄位(schema.sql:73-78 無 TTL、purge.ts 不清)與 legacy 模式下 replay 路徑的逐位元相同。見 G3。"
+    },
+    {
+      "id": "F11",
+      "status": "resolved",
+      "note": "§2.1.5:153-157;P0-3(d) 格式斷言。"
+    },
+    {
+      "id": "F12",
+      "status": "resolved",
+      "note": "§2.1.7:192-198 dropHandle 落在 Fanout、stream close 回呼 reauth、reloadRoster 簽名;§2.1.3:116-120 單一規則逐則現查 + memo。"
+    },
+    {
+      "id": "F13",
+      "status": "resolved",
+      "note": "§2.1.6 表補齊 presence_update / replies / grants / claim release;§2.1.4:142-145 permission 指向改正。"
+    },
+    {
+      "id": "F14",
+      "status": "resolved",
+      "note": "§2.1.8:216 現況無認證、先閘後 label;P1-6/P1-7。GC4 措辭衝突另列 G7。"
+    },
+    {
+      "id": "F15",
+      "status": "resolved",
+      "note": "採 A;§2.1.2:71-74、§2.5-4、KR2;P1-7 只在嚴格模式跑。"
+    },
+    {
+      "id": "F16",
+      "status": "partial",
+      "note": "peer_group 表名、claim 重建 count assert + idx_claim_expires、install-relay.sh 備份、rollback 都已補;但步驟 0 的單一 schema_version=10 guard 與 db.ts:163-166/:234-241 的逐欄 pragma guard 慣例不符,且未定 schema.sql 升版與 fresh-DB 路徑。見 G4。"
+    },
+    {
+      "id": "F17",
+      "status": "resolved",
+      "note": "§2.1.7:188-190 差集撤銷四步 + audit;P0-3(f);P3-3 移除 guest 驗 disabled_at/revoked_at。模式判定時點的缺口另列 G2。"
+    },
+    {
+      "id": "F18",
+      "status": "resolved",
+      "note": "§2.1.2:83-88 chokepoint 正規化、IN ('@team','@group')、isBroadcastHandle;§3 constants/envelope;P0-1b。"
+    },
+    {
+      "id": "F19",
+      "status": "resolved",
+      "note": "§1:31-34 不變量 + BACKLOG trigger。"
+    },
+    {
+      "id": "F20",
+      "status": "partial",
+      "note": "KR3 端點數、P1-7 清單、測試數改實跑已補;仍殘留 §2.1.3 `stream.ts:149-151`、§6「12 個 route」、§3 fanout.ts 重複列。見 G8。"
+    },
+    {
+      "id": "F21",
+      "status": "resolved",
+      "note": "P0-4 SQL 直接執行 + grep 測試;P1-5 六種拒絕各一條 audit_log 斷言。"
+    },
+    {
+      "id": "F22",
+      "status": "resolved",
+      "note": "§2.1.2:89-90。"
+    }
+  ],
+  "findings": [
+    {
+      "id": "G1",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.3 / §2.1.4 (presence) / §3 stream.ts+fanout.ts / P1-3",
+      "title": "presence 心跳的「成員聯集」與 deliverable 的「逐則 e.group 查表」互斥;fanout 的 accept 閘會把聯集砍回單一 group",
+      "evidence": "plan §2.1.3:116-118「`deliverable(e)` 對 `e.group` 做一次 indexed lookup」;§2.1.4:130-132「Envelope.group 記 sender 的 default_group,但 Fanout 以成員聯集投遞」;§3:279「stream.ts `deliverable` 加 group 條件」。現碼 fanout.ts:173-185 `collect` 對每個候選 sub 執行 `if (sub.accept && !sub.accept(e)) continue`(:181),accept 就是 stream.ts:81-113 的 deliverable。b∈{fleet,lab}(default fleet)心跳 → Fanout 聯集含 c(lab-only)→ c 的 deliverable 查 e.group='fleet' ∉ c memberships → 丟棄。§2.1.4 的規則在這個架構下不可能成立,P1-3 也沒有「b 心跳 c 應收到」的正向案例,實作者會照 §2.1.3 做而讓 §2.1.4 靜默失效。另 presence_update 經 POST /v1/messages 走非 to_filter 分支時 `persistMessage: true`(messages.ts:499-501),row 的 group_id 是 default_group,cold start 時 c 讀不到 —— live 與 backlog 對同一 kind 的可見性不同,plan 未言明。",
+      "required_change": "§2.1.3 加一條例外並寫進 §3 stream.ts 與 fanout.ts 的責任:`kind='presence_update'` 的 group 判定在 Fanout 層做(受眾 = `SELECT DISTINCT handle FROM group_member WHERE group_id IN (sender memberships)` ∩ 連線),`deliverable` 對 presence_update 跳過 e.group 檢查(或 Envelope.group 對 presence 允許為 null,deliverable 遇 null 視為「Fanout 已 scope」)。其他 kind 維持 deliverable 逐則查表。明寫:經 /v1/messages 持久化的 presence_update row 仍以 default_group 入庫,不追求 backlog 可見(心跳非 durable 契約,沿用 presence.ts:57-63 的理由)。P1-3 加正向案例:b(fleet+lab,default fleet)心跳 → c 的 stream 收到 presence_update;a(fleet-only)心跳 → c 零事件(既有案)。"
+    },
+    {
+      "id": "G2",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.10 / §2.1.7 / P3-2 / P3-3 / P0-3",
+      "title": "legacy/strict 模式只在「啟動時」判定,但差集撤銷與 P3-3 的 guest 加入都靠 SIGHUP —— reload 時模式可否翻轉未定義,P3-3 依字面跑不起來",
+      "evidence": "plan §2.1.10:245-247「`peers.json` 沒有 `groups` 段 → **啟動時**視為 legacy」;§2.1.7:190「嚴格模式必做;legacy 模式沿用舊行為(不撤)」;P3-2:342 rollout 順序只寫「relay → peer 重建 → courier 重啟」,沒有「先跑 peers-groups-init.js --write 再重啟」;P3-3:344 第一步是「加 guest handle 只進 guest-lab … SIGHUP」。現碼 reloadRoster(serve.ts:40-51)每次 SIGHUP 都重新 loadPeersFile(init.ts:22),模式可以每次 load 重算,但 plan 沒說。若實作者照「啟動時」字面做:prod relay 以現行 legacy 檔啟動 → P3-3 SIGHUP 加了 groups 段的檔案,要嘛被當 legacy 忽略 groups(guest 靜默進 fleet —— 正是 §2.1.10 fail-closed 要防的),要嘛 reload 失敗。反向(strict → 拿掉 groups 段)若允許翻回 legacy,同樣把所有 guest 放進 fleet。",
+      "required_change": "§2.1.10 改為:模式是「每一次成功 load」的屬性(啟動與 SIGHUP 同一條路徑、同一套 fail-closed 驗證);legacy→strict 翻轉允許,並對 DB 現況跑完整嚴格 diff(差集撤銷 + membership diff → dropHandle);strict→legacy 翻轉一律拒絕(`relay.roster.reload_failed reason=groups_section_removed`,保留舊 roster)。P3-2 加明確步驟:重啟 relay 前先 `peers-groups-init.js --write`,relay 以 strict 啟動,P3-3 從 strict 出發。P0-3 加 (g) legacy 檔啟動後 reload strict 檔 → group_member 與檔案一致、差集撤銷生效;(h) strict 後 reload 無 groups 段 → 拒絕、DB 不變。"
+    },
+    {
+      "id": "G3",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.1.2 (idempotency_key) / §2.5-4",
+      "title": "idempotency 命中比對未處理 pre-v10 cached 回應缺 `group`,且 legacy 模式下命中路徑不再逐位元相同",
+      "evidence": "schema.sql:73-78 `idempotency_key` 無 TTL 欄;purge.ts 全文不清此表;peer-agent 每次送件都帶 idempotency-key(outbound.ts:172/:247、cli/send.ts:106)→ 升級前的 cached response_json 永久存在且沒有 `group` 欄位。plan §2.1.2:80-82「與 cached 回應中的 `group` 比對:不同 → 422」—— undefined ≠ 'fleet' 會 422。另現碼 :158-165 命中時不解析 body 就回 cached;r1 要求命中時先解析 body,legacy 模式下 body 解析失敗的重放從 201 cached 變成別的回應,違反 §2.5-4。",
+      "required_change": "§2.1.2 idempotency 段補兩句:(1) cached 回應缺 `group` 欄位(pre-v10 row)視為 `DEFAULT_GROUP_ID`;(2) legacy 模式命中路徑維持現行「不解析 body 直接回 cached」;只有嚴格模式才解析 body 比 group + 驗 membership。P1-1 的 422 / 404 兩案標明「嚴格模式」,並加一案:嚴格模式下 cached row 無 group + body 缺省 group → 200 replay。"
+    },
+    {
+      "id": "G4",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.10 / §3 schema.sql / P0-2",
+      "title": "v10 migration 的單一 schema_version guard 與現碼加欄位慣例不符;未定 schema.sql 是否升版 → fresh DB(含全部 :memory: 測試)會撞 duplicate column 或表形狀靠 migration 拼出",
+      "evidence": "plan §2.1.10:233 步驟 0「guard = `SELECT 1 FROM schema_version WHERE version=10`(照 db.ts:38-41 的 v9 模式)」。v9 模式成立是因為 reply_* 四張表全由 schema.sql `CREATE TABLE IF NOT EXISTS` 建(db.ts:27-35 註解),migration 只 backfill。v10 有 `ALTER TABLE message/reply_route ADD COLUMN group_id` 與 claim 重建。db.ts:15-16 先 `db.exec(schema)` 再跑 migration;現碼每個加欄位 migration 都用 `pragma table_info` 逐欄 guard(db.ts:163-166 to_filter_json、:234-241 subject/subjects、:246-249 last_active_at),表重建用 sqlite_master 的 sql 內容 guard(db.ts:272-278)。若 schema.sql 升到 v10(message 帶 group_id),fresh DB 的 schema_version 只有 1-6(schema.sql:157-162),v10 guard 不命中 → ALTER 撞「duplicate column name」→ openDatabase 拋錯,relay 起不來、所有以 :memory: 開庫的測試全紅;若 schema.sql 不升,fresh DB 靠 migration 拼形狀,與 schema.sql 為 canonical 的慣例相反、且 claim 重建會在空表上跑。P0-2 只有「v9 fixture → v10」與「重跑 idempotent」,沒有 fresh-DB 案。",
+      "required_change": "§2.1.10 改寫步驟 0:schema.sql 升到 v10 形狀(peer_group / group_member `CREATE TABLE IF NOT EXISTS`、message/reply_route 帶 group_id、claim 新 PK),migration 逐步 guard —— ADD COLUMN 以 `pragma table_info` 缺欄才加(照 db.ts:163-166);claim 重建以 `sqlite_master.sql` 不含 'group_id' 才做(照 db.ts:272-278);`INSERT peer_group('fleet')` 與 human 回填用 `INSERT OR IGNORE`;最後 `INSERT OR IGNORE schema_version(10)`;整體仍在 BEGIN/COMMIT 內。P0-2 加兩案:(c) fresh DB 直接 openDatabase → 不拋、schema_version 含 10、表形狀正確;(d) fresh DB 開兩次 idempotent。§3 schema.sql 列的責任改為「v10 表形狀(canonical for fresh DB)」。"
+    },
+    {
+      "id": "G5",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.1.10 / §3 auth/peers-file.ts / P0-3 / P3-1",
+      "title": "peers.json 現為 handle→entry 的扁平 record,頂層 `groups` 鍵與 handle 命名空間相撞",
+      "evidence": "auth/peers-file.ts:20 `PeersFileSchema = z.record(z.string().regex(HANDLE_REGEX), PeerEntrySchema)`;shared/constants.ts:26 `HANDLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/` —— `groups` 是合法 handle。r1 §3:275「`PeersFileSchema` 加頂層 `groups`」與 §2.1.10:245「沒有 `groups` 段」都假設檔案有「段」,但 zod record 會把 `groups: {fleet: {...}}` 當一個 peer 去驗 secret_sha256_hex → parse 失敗。",
+      "required_change": "§2.1.10 明定 v2 檔案形狀:`{ \"peers\": { <handle>: {..., default_group} }, \"groups\": { <gid>: { history, members: { <handle>: { caps } } } } }`;legacy 判定 = 頂層無 `peers` 且無 `groups`(扁平 record)。`peers-groups-init.js` 輸出 v2 形狀。P0-3 加一案:扁平檔含一個 handle 叫 `groups` → 仍照 legacy 解析(向後相容),v2 檔頂層多餘鍵 → 啟動 fail。"
+    },
+    {
+      "id": "G6",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.1.4 (claims) / §2.1.6 / P1-5",
+      "title": "claims 的 release / DELETE 未接 `group`;多 group 成員無法釋放非 default_group 的 claim",
+      "evidence": "routes/claims.ts:21 `ReleaseBody = z.object({ key }).strict()`,:56-71 release 與 DELETE 共用;claims/store.ts:89-99 release 以 (team, key) 查。r1 §2.1.4:134-136 只寫「`POST /v1/claim` 接 `group`(缺省 default_group)」,release 未提;PK 改為 (team, group, key) 後,b(default fleet)在 lab 拿的 claim 用 release 不帶 group 會打到 fleet 的 key → `released: false` 靜默無效。`GET /v1/claims`(:47-49)回 Claim[],需帶 group_id 供 client 分辨。",
+      "required_change": "§2.1.4 claims 一列補:`POST /v1/claim/release` 與 `DELETE /v1/claim` 同樣接選填 `group`(缺省 default_group,非成員 → 404 unknown_group);`GET /v1/claims` 回讀者所有 group 的聯集,每列帶 `group_id`。P1-5 加:b 在 lab 取 claim 後以 group:lab 釋放 → released:true;不帶 group → released:false(fleet 無此 key)。"
+    },
+    {
+      "id": "G7",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.5-4 / §2.1.8 (metrics) / P3-2",
+      "title": "GC4「逐位元相同」與兩個 mode-independent 改動衝突:/metrics 缺 env → 404、新 /v1/whoami",
+      "evidence": "§2.5-4「沒有 `groups` 段的 peers.json 行為必須與 v9 逐位元相同」;§2.1.8:216「缺 env → 整個路由 404」不分模式;§2.1.9:226 /v1/whoami 新端點在 legacy 亦存在。app.ts:23 /metrics 現況 200 無認證。hangar `tower/` 與 `fleet/` grep 無任何 scraper 指向 relay metrics(0 hits),故 404 無操作面影響,但 plan 文字自相矛盾,P1-7 harness 不在 legacy 跑,無人會抓。",
+      "required_change": "GC4 措辭改為「既有 peer-facing `/v1/*` 端點逐位元相同;`/metrics` token 閘與 `/v1/whoami` 為 mode-independent 的明列例外」;P3-2 rollout 加一行:重啟前在 systemd drop-in 設 `HANGAR_METRICS_TOKEN`(或明寫「目前無 scraper,接受 404」)。"
+    },
+    {
+      "id": "G8",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§6 / §2.1.3 / §3 / P0",
+      "title": "fold 後殘留的數字與行號漂移",
+      "evidence": "§6:367 第一列仍寫「枚舉**所有** 12 個 route」,KR3:44 與 P1-7:324 已是 15(+whoami);§2.1.3:102 仍引 `stream.ts:149-151`,現碼 :149-155 是 writeAndMark,drain 在 :165-167;§3 `packages/relay/src/fanout.ts` 列兩次(plan :280、:287);P0 步驟「1b.」(:304)排在 3 之後。",
+      "required_change": "§6 改「15 個端點(+whoami)」;§2.1.3 stream 列改 `stream.ts:165-167`;§3 合併兩列 fanout.ts;P0 把 1b 併入 1。"
+    },
+    {
+      "id": "G9",
+      "severity": "Suggestion",
+      "blocker": false,
+      "section": "§2.1.4 (reply routing) / §2.1.8",
+      "title": "reply_idem 重放在 membership 縮小後的行為應明寫為「接受」",
+      "evidence": "replies.ts:346-352 `reserveIdemKey` 的 replay 在 resolveParentRoute(:380)之前直接回 cached;key_hash 含 (team, handle, key)(schema.sql:146-147),重放只回同 handle 先前已拿到的結果、不觸發新投遞。rubric R5 點名此路徑,r1 只寫了 refusal row 同碼(§2.1.4:139-140),沒寫成功 row 的重放。",
+      "required_change": "§2.1.8 加一列:「`reply_idem` 重放(committed/final row)不重驗 group —— 回的是該 handle 自己已收到的結果,無新資訊、無新投遞;error row 同碼」。無測試需求。"
+    },
+    {
+      "id": "G10",
+      "severity": "Suggestion",
+      "blocker": false,
+      "section": "P1-1 fixture",
+      "title": "測試 fixture 未標 default_group,`@team` 別名案與 idem 案的預期無法唯一推出",
+      "evidence": "P1-1:311 fixture 只寫 `fleet{a,b}`、`lab{b,c}`、`c` caps=[chat];:317「`@team` 從 a → 落在 fleet」對 a 無歧義,但 b 是雙 group,idem 案(:314)與 delivered_at 案(P1-3:320)以 b 送件時缺省 group 依 default_group 而定。",
+      "required_change": "fixture 標明 `default_group`:a=fleet、b=fleet、c=lab;加一案:b `@team` → fleet,b `to:@group, group:lab` → lab,b `to:@group` 不帶 group → fleet。"
+    }
+  ]
+}

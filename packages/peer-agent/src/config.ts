@@ -2,7 +2,7 @@ import { readFileSync, existsSync, statSync, writeFileSync, chmodSync, renameSyn
 import { dirname, basename, isAbsolute, resolve, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
-import { NAMESPACE_REGEX, INTEREST_REGEX, HANDLE_REGEX, isValidInstanceId } from '@hangar-bridge/shared'
+import { NAMESPACE_REGEX, INTEREST_REGEX, HANDLE_REGEX, GROUP_ID_REGEX, isValidInstanceId } from '@hangar-bridge/shared'
 import { readTokenFile } from './cli/token-file.ts'
 import { defaultConfigPath, defaultAuditDir } from './paths.ts'
 
@@ -41,6 +41,7 @@ export const ConfigSchema = z.object({
   // outbound-permission ApprovalRouter policy is `ask_specific_peer:<self>`. The relay
   // remains the authority on identity (`from` is server-stamped); this is a local hint.
   self: z.string().regex(HANDLE_REGEX).optional(),
+  default_group: z.string().regex(GROUP_ID_REGEX).optional(),
   // Subject routing. `interest` (exact or trailing '>') is sent to the relay as the
   // narrowing filter (x-hangar-subjects header). `owned` is informational on the peer
   // side — the relay DB (human.subjects) is the authoritative ACL. Both default empty.
@@ -50,7 +51,7 @@ export const ConfigSchema = z.object({
   }).default({ owned: [], interest: [] }),
   permission_relay: z.object({
     enabled: z.boolean().default(false),
-    routing: z.enum(['never_relay','ask_thread_participants','ask_team'])
+    routing: z.enum(['never_relay','ask_thread_participants','ask_team','ask_group'])
       .or(z.string().startsWith('ask_specific_peer:'))
       .default('never_relay')
   }).default({ enabled: false, routing: 'never_relay' }),
@@ -92,11 +93,14 @@ export const ConfigSchema = z.object({
       message: "nats block is required when transport is 'nats'",
     })
   }
-  if (value.transport === 'nats' && value.permission_relay.routing === 'ask_team') {
+  if (
+    value.transport === 'nats'
+    && (value.permission_relay.routing === 'ask_team' || value.permission_relay.routing === 'ask_group')
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['permission_relay', 'routing'],
-      message: "ask_team is unavailable on NATS; choose a direct peer routing policy",
+      message: `${value.permission_relay.routing} is unavailable on NATS; choose a direct peer routing policy`,
     })
   }
   if (value.final_mile.kind === 'agent-call' && !value.final_mile.switchboard && !value.final_mile.target) {

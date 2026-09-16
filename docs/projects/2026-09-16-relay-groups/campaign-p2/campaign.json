@@ -1,0 +1,16 @@
+{
+  "schema_version": 1, "ticket": "relay-groups-p2", "profile": "internal-pilot", "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "37cfdb95bc19d4cf05f33291fd739718e3446738", "branch": "feat/relay-groups-p2",
+  "vertical_acceptance": [
+    "config default_group + startup /v1/whoami validation (404 => legacy; 200 mismatch => startup error listing ids)",
+    "send_to_peer accepts to:'@group' and group; @team warns once; list_peers grouped rendering when groups present, byte-identical otherwise; poll_inbox group suffix",
+    "claude-channel notification carries group only when the envelope has it; instructions mention groups; stream handles event: reauth via reconnect without counting a final-mile failure",
+    "permission_relay.routing ask_group; scripts/verify-groups-p2.sh exits 0 with 524 pre-existing peer-agent tests unchanged"
+  ],
+  "allowed_path_prefixes": ["packages/peer-agent/src/"],
+  "max_changed_files": 20, "baseline_churn": 1200, "max_growth_ratio": 1.5, "max_extra_churn": 600,
+  "max_repair_generations": 2, "max_wall_seconds": 5400, "unit_class": "mechanical",
+  "verify_cmd": "scripts/verify-groups-p2.sh",
+  "rubric_ids": ["GROUPS-P2-CONFIG-1", "GROUPS-P2-TOOLS-2", "GROUPS-P2-INBOUND-3", "GROUPS-P2-VERIFY-4"]
+}

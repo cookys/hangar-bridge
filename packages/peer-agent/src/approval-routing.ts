@@ -4,6 +4,7 @@ export type RoutingPolicy =
   | 'never_relay'
   | 'ask_thread_participants'
   | 'ask_team'
+  | 'ask_group'
   | `ask_specific_peer:${string}`
 
 export interface ApprovalRouterCfg { routing: RoutingPolicy }
@@ -21,6 +22,7 @@ export class ApprovalRouter {
     const r = this.cfg.routing
     if (r === 'never_relay') return null
     if (r === 'ask_team') return ['@team']
+    if (r === 'ask_group') return ['@group']
     if (r.startsWith('ask_specific_peer:')) {
       const h = r.slice('ask_specific_peer:'.length)
       return h === excludeSelf ? null : [h]

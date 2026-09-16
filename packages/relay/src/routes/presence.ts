@@ -5,6 +5,7 @@ import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
 import type { Deps } from '../deps.ts'
 import { effectiveLabel } from '../presence/label.ts'
+import { loadDefaultGroup } from '../groups.ts'
 
 const PresenceBody = z.object({
   summary: z.string().max(200),
@@ -23,6 +24,9 @@ const PresenceBody = z.object({
   delivery_state: z.enum(['unverified', 'verified', 'deaf']).optional(),
   caps: z.string().max(200).optional(),
 })
+const StrictPresenceBody = PresenceBody.extend({
+  summary: z.string().max(200).default(''),
+})
 
 export function presenceRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
@@ -34,7 +38,8 @@ export function presenceRoute(deps: Deps) {
   // is not available to middleware.
   app.use('*', rateLimit({ windowMs: 1_000, max: 4, key: c => `pres:${c.get('token').id}` }))
   app.post('/', async c => {
-    const parsed = PresenceBody.safeParse(await c.req.json().catch(() => null))
+    const bodySchema = (deps.groupsMode ?? 'legacy') === 'strict' ? StrictPresenceBody : PresenceBody
+    const parsed = bodySchema.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'invalid_body' }, 400)
     const team = HANGAR_TEAM_ID
     const handle = c.get('peer').handle
@@ -61,13 +66,13 @@ export function presenceRoute(deps: Deps) {
     // 2026-08-31: 8301 rows against 59 substantive), which buried real traffic deep
     // enough that poll_inbox could only prove the link was alive — not what it is
     // for. The registry set() above remains the authority for who is online.
-    const envelope = deps.store.buildEnvelope(team, handle, {
-      to: TEAM_BROADCAST_HANDLE,
+	    const envelope = deps.store.buildEnvelope(team, handle, {
+	      to: TEAM_BROADCAST_HANDLE,
       subject: null,
       kind: 'presence_update',
       content: parsed.data.summary,
       meta,
-    })
+	    }, loadDefaultGroup(deps.db, handle))
     deps.fanout.deliver(envelope)
     return c.json({ ok: true })
   })

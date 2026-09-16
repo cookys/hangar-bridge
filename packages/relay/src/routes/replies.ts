@@ -22,6 +22,8 @@ import type { Db } from '../db/db.ts'
 import type { ReplyRoute, ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
 import { ReplyLimiter } from '../reply-limiter.ts'
 import { parseReturnSelectorHeader, grantsFromSnapshot, durableReport } from './messages.ts'
+import { loadDefaultGroup, loadMemberships, readerScope, type ReaderScope } from '../groups.ts'
+import { envelopeForWire } from './wire.ts'
 
 // ---------------------------------------------------------------------
 // RFC 8785 (JCS) canonical JSON — small and local (no new dependency).
@@ -235,8 +237,10 @@ function replyInProgress(c: Context) {
 }
 
 /** §5.1 step 2: route lookup by id, then by correlation_id alias; expired ⇒ not found. */
-function resolveParentRoute(deps: Deps, id: string, nowIso: string): ReplyRoute | null {
-  const route = deps.store.getRoute(id) ?? deps.store.getRouteByCorrelation(id)
+function resolveParentRoute(deps: Deps, id: string, nowIso: string, scope?: ReaderScope): ReplyRoute | null {
+  const route = scope
+    ? deps.store.getRouteScoped(id, scope) ?? deps.store.getRouteByCorrelationScoped(id, scope)
+    : deps.store.getRoute(id) ?? deps.store.getRouteByCorrelation(id)
   if (!route) return null
   if (route.expires_at != null && route.expires_at < nowIso) return null
   return route
@@ -282,7 +286,7 @@ function checkAudience(
       return matches ? 'ok' : 'not_a_recipient'
     }
     return 'not_a_recipient' // unknown width, fail closed
-  }
+	  }
   if (instance === undefined) return 'not_a_recipient'
   if (deps.store.hasGrant(route.msg_id, handle, instance, '')) return 'ok'
   if (selector != null && selector !== '' && selector !== '~none' && deps.store.hasGrant(route.msg_id, handle, instance, selector)) {
@@ -310,7 +314,7 @@ export function repliesRoute(deps: Deps) {
   app.post('/', async c => {
     const peer = c.get('peer')
 
-    const idemKeyRaw = c.req.header('idempotency-key')
+	    const idemKeyRaw = c.req.header('idempotency-key')
     if (idemKeyRaw === undefined) {
       return c.json(errorBody('idempotency_key_required', 'the Idempotency-Key header is required on /v1/replies'), asStatus(REPLY_ERROR_HTTP_STATUS.idempotency_key_required!))
     }
@@ -356,10 +360,17 @@ export function repliesRoute(deps: Deps) {
 
     /** §5.1 steps 2-4/5 refusal: write reply_idem -> error under the fence (with an optional atomic tombstone), respond. */
     function writeRefusal(
-      code: ReplyErrorCode, status: number, message: string, tombstoneMsgId?: string
+      code: ReplyErrorCode, status: number, message: string, tombstoneMsgId?: string, groupId?: string
     ): Response {
       const body = errorBody(code, message, { retryWithNewKey: true })
       const json = JSON.stringify(body)
+      // plan §2.5-6: every strict-mode refusal is audited with the group it was decided in
+      // (the parent route's group when one resolved, else the replier's default group).
+      if ((deps.groupsMode ?? 'legacy') === 'strict') {
+        auditEvent(deps, peer.id, 'group.reply_refused', {
+          group_id: groupId ?? loadDefaultGroup(deps.db, peer.handle), handle: peer.handle, error: code, in_reply_to: data.in_reply_to,
+        })
+      }
       if (tombstoneMsgId === undefined) {
         const changes = fencedIdemUpdate(deps.db, keyHash, myLease, { state: 'error', result_status: status, result_json: json, error_until: null })
         if (changes === 0) return replyInProgress(c)
@@ -377,28 +388,32 @@ export function repliesRoute(deps: Deps) {
     }
 
     const nowIso = deps.now().toISOString()
-    const route = resolveParentRoute(deps, data.in_reply_to, nowIso)
-    if (!route) {
+    const parentScope = (deps.groupsMode ?? 'legacy') === 'strict'
+      ? readerScope(loadMemberships(deps.db, peer.handle), 'group_id', 'msg_id')
+      : undefined
+    const routeForReply = resolveParentRoute(deps, data.in_reply_to, nowIso, parentScope)
+    if (!routeForReply) {
       return writeRefusal('unknown_parent', REPLY_ERROR_HTTP_STATUS.unknown_parent!, 'no route for in_reply_to (never existed, expired, or a zero-match dispatch)')
     }
 
-    const audience = checkAudience(deps, route, peer.handle, declaredInstance, declaredSelector)
+    const audience = checkAudience(deps, routeForReply, peer.handle, declaredInstance, declaredSelector)
     if (audience === 'not_a_recipient') {
-      return writeRefusal('not_a_recipient', REPLY_ERROR_HTTP_STATUS.not_a_recipient!, 'you are not in this route\'s grants')
+      return writeRefusal('not_a_recipient', REPLY_ERROR_HTTP_STATUS.not_a_recipient!, 'you are not in this route\'s grants', undefined, routeForReply.group_id ?? undefined)
     }
     if (audience === 'legacy_unreplyable') {
-      return writeRefusal('legacy_unreplyable', REPLY_ERROR_HTTP_STATUS.legacy_unreplyable!, 'this backfilled row carried a to_filter and cannot be replied to')
+      return writeRefusal('legacy_unreplyable', REPLY_ERROR_HTTP_STATUS.legacy_unreplyable!, 'this backfilled row carried a to_filter and cannot be replied to', undefined, routeForReply.group_id ?? undefined)
     }
 
-    if (!isRouteAddressable(deps, route)) {
+	    if (!isRouteAddressable(deps, routeForReply)) {
       return writeRefusal(
         'parent_unaddressable', REPLY_ERROR_HTTP_STATUS.parent_unaddressable!,
         'the parent has no sender_instance, return_selector is ~none, or from_handle is disabled/removed',
-        route.msg_id
-      )
-    }
-
-    const legacyParent = route.legacy_width != null
+	        routeForReply.msg_id, routeForReply.group_id ?? undefined
+	      )
+	    }
+	
+	    const route = routeForReply
+	    const legacyParent = route.legacy_width != null
     const replyId = newMessageId()
     const meta = sanitizeReplyMeta(rawMeta)
     if (declaredInstance !== undefined) meta['sender_instance'] = declaredInstance
@@ -406,16 +421,17 @@ export function repliesRoute(deps: Deps) {
     if (route.sender_instance === RESERVED_CLI_INSTANCE) {
       // ── mailbox branch (§5.1 step 6, §8.2) ──────────────────────────
       const envelope: Envelope = EnvelopeSchema.parse({
-        id: replyId, v: PROTOCOL_VERSION, team: HANGAR_TEAM_ID,
-        from: peer.handle, to: `@mailbox:${route.from_handle}`, subject: null,
+	        id: replyId, v: PROTOCOL_VERSION, team: HANGAR_TEAM_ID,
+	        from: peer.handle, to: `@mailbox:${route.from_handle}`, subject: null,
+	        group: route.group_id,
         in_reply_to: route.msg_id, thread_root: route.thread_root,
         kind: 'chat', content: data.content, meta,
         to_filter: null, sent_at: nowIso, delivered_at: null,
       })
       const newRoute: ReplyRouteInput = {
-        msg_id: replyId, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
-        sender_instance: declaredInstance ?? null, return_selector: declaredSelector,
-        to_handle: envelope.to, to_filter_json: null,
+	        msg_id: replyId, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
+	        sender_instance: declaredInstance ?? null, return_selector: declaredSelector,
+	        to_handle: envelope.to, group_id: route.group_id, to_filter_json: null,
         thread_root: route.thread_root, correlation_id: null,
         created_at: nowIso, expires_at: null,
       }
@@ -424,7 +440,7 @@ export function repliesRoute(deps: Deps) {
       const report = { ...audienceReport([], durable), ...(legacyParent ? { legacy_parent: true as const } : {}) }
       // Stored + returned body includes the envelope: a replayed idempotent
       // response must be byte-identical to the original, not just the report.
-      const body = { ...envelope, ...report }
+      const body = { ...envelopeForWire(envelope, (deps.groupsMode ?? 'legacy') === 'strict'), ...report }
       const json = JSON.stringify(body)
 
       let outcome: 'ok' | 'storm' | 'fenced'
@@ -463,8 +479,9 @@ export function repliesRoute(deps: Deps) {
     // ── session branch (§5.1 step 6, the normal case) ────────────────
     if (route.return_selector) meta['local_target'] = route.return_selector
     const envelope: Envelope = EnvelopeSchema.parse({
-      id: replyId, v: PROTOCOL_VERSION, team: HANGAR_TEAM_ID,
-      from: peer.handle, to: route.from_handle, subject: null,
+	      id: replyId, v: PROTOCOL_VERSION, team: HANGAR_TEAM_ID,
+	      from: peer.handle, to: route.from_handle, subject: null,
+	      group: route.group_id,
       in_reply_to: route.msg_id, thread_root: route.thread_root,
       kind: 'chat', content: data.content, meta,
       to_filter: { instance: route.sender_instance! },
@@ -473,9 +490,9 @@ export function repliesRoute(deps: Deps) {
     const snap = deps.fanout.snapshotDetailed(envelope)
     const grants = grantsFromSnapshot(snap)
     const newRoute: ReplyRouteInput = {
-      msg_id: replyId, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
-      sender_instance: declaredInstance ?? null, return_selector: declaredSelector,
-      to_handle: envelope.to, to_filter_json: envelope.to_filter ? JSON.stringify(envelope.to_filter) : null,
+	      msg_id: replyId, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
+	      sender_instance: declaredInstance ?? null, return_selector: declaredSelector,
+	      to_handle: envelope.to, group_id: route.group_id, to_filter_json: envelope.to_filter ? JSON.stringify(envelope.to_filter) : null,
       thread_root: route.thread_root, correlation_id: null,
       created_at: nowIso, expires_at: new Date(deps.now().getTime() + EPHEMERAL_ROUTE_TTL_MS).toISOString(),
     }
@@ -483,7 +500,7 @@ export function repliesRoute(deps: Deps) {
     // Stored + returned body includes the envelope: a replayed idempotent
     // response must be byte-identical to the original, not just the report.
     const committedBody = {
-      ...envelope,
+      ...envelopeForWire(envelope, (deps.groupsMode ?? 'legacy') === 'strict'),
       ...audienceReport(snap.matched, durable),
       sender_state: snap.matched.length > 0 ? 'live' as const : 'offline' as const,
       ...(legacyParent ? { legacy_parent: true as const } : {}),
@@ -522,7 +539,7 @@ export function repliesRoute(deps: Deps) {
 
     const delivery = deps.fanout.deliverDetailed(envelope, snap)
     const finalBody = {
-      ...envelope,
+      ...envelopeForWire(envelope, (deps.groupsMode ?? 'legacy') === 'strict'),
       ...audienceReport(delivery.matched, durable),
       sender_state: delivery.matched.length > 0 ? 'live' as const : 'offline' as const,
       ...(legacyParent ? { legacy_parent: true as const } : {}),
@@ -531,8 +548,16 @@ export function repliesRoute(deps: Deps) {
     // no other writer could have taken over mid-transaction-to-here) leaves
     // the row at `committed`, which §5.1 calls "the honest state".
     fencedIdemUpdate(deps.db, keyHash, myLease, { state: 'final', result_status: 200, result_json: JSON.stringify(finalBody), error_until: null })
-    return c.json(finalBody, 200)
+	    return c.json(finalBody, 200)
   })
 
   return app
+}
+
+function auditEvent(
+  deps: Deps, actorHumanId: string, event: string, detail: Record<string, string>
+): void {
+  deps.db.prepare(
+    'INSERT INTO audit_log(team_id,at,actor_human_id,event,detail_json) VALUES (?,?,?,?,?)'
+  ).run(HANGAR_TEAM_ID, deps.now().toISOString(), actorHumanId, event, JSON.stringify(detail))
 }

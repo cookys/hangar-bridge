@@ -202,6 +202,10 @@ export class InboundDispatcher {
       if (rid) this.opts.permissionTracker.recordIncoming(rid, e.id, e.from)
     }
     const notification = envelopeToChannelNotification(e)
+    const group = (e as Envelope & { group?: string }).group
+    if (typeof group === 'string' && group.length > 0) {
+      notification.params.meta = { ...notification.params.meta, group }
+    }
     try {
       await this.opts.emit(notification, e)
       logJson('info', 'peer.inbound.emitted', { method: notification.method, msg_id: e.id })

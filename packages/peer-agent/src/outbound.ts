@@ -78,6 +78,19 @@ export interface PeerSummary {
   summary: string
   last_seen: string | null
   sessions: Array<{ label: string; cwd?: string; branch?: string; repo?: string }>
+  groups?: Array<{ id: string; caps: string[] }>
+}
+
+export interface WhoamiGroup {
+  id: string
+  caps: string[]
+  history?: string
+}
+
+export interface WhoamiResult {
+  handle: string
+  default_group: string
+  groups: WhoamiGroup[]
 }
 
 export interface Claim {
@@ -188,6 +201,16 @@ export class RelayClient implements PeerTransport, ClaimClient, InboxClient, Rep
     })
     if (res.status !== 200) throw new Error(`listPeers failed: ${res.status}`)
     return await res.json() as PeerSummary[]
+  }
+
+  async whoami(): Promise<WhoamiResult | null> {
+    const res = await this.request(new URL('/v1/whoami', this.opts.relayUrl), {
+      headers: { authorization: `Bearer ${this.opts.token}` },
+    })
+    const text = await res.text()
+    if (res.status === 404) return null
+    if (res.status !== 200) throw new Error(`whoami failed: ${res.status} ${text}`)
+    return JSON.parse(text) as WhoamiResult
   }
 
   async setPresence(body: PresenceReport): Promise<void> {

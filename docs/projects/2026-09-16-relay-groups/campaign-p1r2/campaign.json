@@ -1,0 +1,16 @@
+{
+  "schema_version": 1, "ticket": "relay-groups-p1r2", "profile": "internal-pilot", "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "4000f7626200e35520d2798b982546e1f34d1bed", "branch": "feat/relay-groups-p1r2",
+  "vertical_acceptance": [
+    "grants.ts / replies.ts resolve routes through SQL-scoped store methods in strict mode; inaccessible and nonexistent ids follow one identical path",
+    "POST /v1/messages strict branch checks the group-scoped in_reply_to parent before thread_root / addressRules / subject ACL, returning the existing unknown in_reply_to body",
+    "idempotency_mismatch, cross-group not_in_thread and unknown parent are audited with group_id; subject-ACL audits carry group_id; new integration test covers each",
+    "scripts/verify-groups.sh exits 0 with the depth-0 adversarial harness unmodified"
+  ],
+  "allowed_path_prefixes": ["packages/relay/src/", "packages/relay/tests/integration/"],
+  "max_changed_files": 10, "baseline_churn": 600, "max_growth_ratio": 1.5, "max_extra_churn": 300,
+  "max_repair_generations": 1, "max_wall_seconds": 3600, "unit_class": "mechanical",
+  "verify_cmd": "scripts/verify-groups.sh",
+  "rubric_ids": ["GROUPS-SQLSCOPE-1", "GROUPS-ORDER-2", "GROUPS-AUDIT-3", "GROUPS-VERIFY-4"]
+}

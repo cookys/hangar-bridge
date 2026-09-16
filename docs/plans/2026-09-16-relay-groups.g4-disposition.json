@@ -1,0 +1,35 @@
+{
+  "generation": 4,
+  "verdict": "SHIP-AS-IS",
+  "artifact": "docs/plans/2026-09-16-relay-groups.g4-artifact.json",
+  "dispositions": [
+    {
+      "id": "J1",
+      "severity": "Minor",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.10:249-250 / P0-3(h2):326"
+    },
+    {
+      "id": "J2",
+      "severity": "Minor",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.5:157-163 / P0-3(d):326 / §2.1.10:251 / §3:300"
+    },
+    {
+      "id": "J3",
+      "severity": "Suggestion",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.1.10:261-266 step 2 / P0-3(a):326"
+    },
+    {
+      "id": "J4",
+      "severity": "Suggestion",
+      "blocker": false,
+      "disposition": "accept-and-fold",
+      "folded_into": "§2.5-4:278 / §2.1.2:71 / §3:292-318"
+    }
+  ]
+}

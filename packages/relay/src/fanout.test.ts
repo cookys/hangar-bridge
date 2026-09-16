@@ -94,6 +94,14 @@ describe('Fanout', () => {
     expect(f.deliver(subjEnv('no.x'))).toBe(false)
   })
 
+  it('does not deliver presence_update when accept() rejects', () => {
+    const bob = { ...collectingSub('bob'), accept: () => false }
+    f.subscribe(bob)
+    const presence: Envelope = { ...env('A', '@team', 'alice'), kind: 'presence_update' }
+    expect(f.deliver(presence)).toBe(false)
+    expect(bob.received).toHaveLength(0)
+  })
+
   it('null-subject delivers even with no accept predicate (back-compat)', () => {
     const bob = collectingSub('bob')
     f.subscribe(bob)

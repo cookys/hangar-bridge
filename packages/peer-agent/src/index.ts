@@ -13,7 +13,10 @@ import {
 } from './config.ts'
 import { readTokenFile } from './cli/token-file.ts'
 import { loadRoster } from './subject-acl.ts'
-import { RelayClient, type ClaimClient, type InboxClient, type PeerTransport, type ReplyClient } from './outbound.ts'
+import {
+  RelayClient, type ClaimClient, type InboxClient, type PeerTransport, type ReplyClient,
+  type WhoamiResult,
+} from './outbound.ts'
 import { NatsTransport } from './nats-transport.ts'
 import { createNatsAuditWriter } from './audit-log.ts'
 import {
@@ -89,6 +92,29 @@ export function resolveCourierInstance(
     )
   }
   return minted
+}
+
+export type GroupsRuntime =
+  | { groupsMode: 'legacy' }
+  | { groupsMode: 'strict'; handle: string; default_group: string; groups: WhoamiResult['groups'] }
+
+export async function resolveStartupGroups(
+  cfg: HangarConfig,
+  client: { whoami: () => Promise<WhoamiResult | null> },
+): Promise<GroupsRuntime> {
+  const whoami = await client.whoami()
+  if (whoami === null) return { groupsMode: 'legacy' }
+  const ids = whoami.groups.map(g => g.id)
+  const defaultGroup = cfg.default_group ?? whoami.default_group
+  if (cfg.default_group !== undefined && !ids.includes(cfg.default_group)) {
+    throw new Error(`default_group ${cfg.default_group} is not one of this handle's memberships: ${ids.join(', ')}`)
+  }
+  return {
+    groupsMode: 'strict',
+    handle: whoami.handle,
+    default_group: defaultGroup,
+    groups: whoami.groups,
+  }
 }
 
 async function main(): Promise<void> {
@@ -290,6 +316,7 @@ async function main(): Promise<void> {
 
   let client: PeerTransport
   let stream: { start: () => Promise<void>; stop: () => void | Promise<void> }
+  let groupsRuntime: GroupsRuntime = { groupsMode: 'legacy' }
   // Set by the SSE branch: re-stamps presence after the butler reminder changes.
   let relayClientPresenceRefresh: (() => Promise<void>) | undefined
 
@@ -329,6 +356,7 @@ async function main(): Promise<void> {
       instance: instanceId,
       attributionVersion: 'v1',
     })
+    groupsRuntime = await resolveStartupGroups(cfg, relayClient)
     client = relayClient
     claimClient = relayClient
 
@@ -463,6 +491,7 @@ async function main(): Promise<void> {
       getBacklog: () => cursorStore.getBacklog(),
       clearBacklog: () => { cursorStore.clearBacklog(); health.setBacklog(0); void relayClientPresenceRefresh?.() },
     },
+    groupsRuntime,
   )
   // Every tool this process could serve; `tools.allow` (config) may narrow it.
   const registeredTools = () => [

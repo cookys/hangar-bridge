@@ -1,0 +1,157 @@
+{
+  "generation": 3,
+  "reviewer": "claude-fable-5-1",
+  "verdict": "FIX-THEN-SHIP",
+  "review_target": "docs/plans/2026-09-16-relay-groups.md @ 1424aa7 (r2)",
+  "growth_rail": "只核對 G1..G10 是否被 r2 文本解決;只重判 gen-2 FAIL 的 R7 / R10 與 r2 delta 觸及的列;新 finding 限於 r2 delta 引入的 blocker 或與已接受決策矛盾。不重開 group overlay / since_join / 404 同碼 / F15-A / F9 陣列 / F12 逐則查表 / G1 Fanout 例外 / G2 每次 load 判模式 / G4 逐步 guard / G5 v2 檔形狀。",
+  "rubric": [
+    {
+      "id": "R7",
+      "result": "PASS",
+      "evidence": "G1:r2 §2.1.3:112 Fanout 列明寫 presence_update 例外(Fanout 層以成員聯集 ∩ 連線判定、deliverable 對 kind='presence_update' 跳過 e.group),§2.1.3:117 明寫持久化 row 以 default_group 入庫不追求 backlog,§2.1.3:119「單一規則(presence_update 除外)」,§2.1.4:132-135 聯集規則與之相容,§3:304 fanout.ts 責任同步,P1-3:337 加了 b(fleet+lab)心跳 → c 收到的正向案。現碼 fanout.ts:181 `if (sub.accept && !sub.accept(e)) continue` 與 stream.ts:90-113 deliverable 可讀 e.kind(stream.ts:198 已用 e.kind)→ 例外可實作。G2:§2.1.10:246-248 模式為每次成功 load 的屬性、legacy→strict 允許並跑完整嚴格 diff、strict→legacy 拒絕;現碼 index.ts:41(啟動)與 serve.ts:42(SIGHUP)確實都呼叫同一個 initRelayFromPeersFile → 「同一條路徑」有現碼基礎。縮小靠 §2.1.7 dropHandle、擴大靠 §2.1.3 現查,兩邊一致。殘留只有 §3:297 stream.ts 列的「連線時讀 memberships」措辭(H6,Suggestion)。"
+    },
+    {
+      "id": "R10",
+      "result": "FAIL",
+      "evidence": "已驗 r2 §2.1.10:252-265 與現碼慣例相符:db.ts:15-16 先 exec schema.sql 再跑 migration;db.ts:163-166 pragma table_info 逐欄 guard;db.ts:272-278 sqlite_master.sql 內容 guard;schema.sql:18-19 schema_version(version INTEGER PRIMARY KEY) 使 INSERT OR IGNORE 成立;schema.sql:157-162 fresh DB 只 stamp 1-6,step 6 補 10;P0-2(c)(d) 補了 fresh DB 案。**未通過的是 step 2**(§2.1.10:259-260):「每個 human INSERT OR IGNORE group_member('fleet', handle, <全 caps>, now, '0')」沒有 run-once guard,會在**每一次** openDatabase 執行。現碼 index.ts:40-43 serve 啟動先 open + seed 再 close,serve.ts:61 **再 open 一次** → 第二次 open 時 strict seed 已把 guest 只放進 guest-lab,step 2 的 OR IGNORE 對 (fleet, guest) 無既有列 → 插入成功 → guest 以全 caps 進 fleet。這正是 §2.1.10:250「寧可不起也不要靜默把人放進 fleet」要防的事,而且是每次 relay 重啟必然發生。P0-2(b)(d) 的「重跑 idempotent」用 fleet-only fixture 抓不到。rubric R10 的「重跑 idempotent」在 strict DB 上不成立 → FAIL。見 H1。"
+    },
+    {
+      "id": "R2",
+      "result": "PASS",
+      "evidence": "r2 delta 觸及(G3):§2.1.2:82-83 pre-v10 cached row 缺 group 視為 DEFAULT_GROUP_ID;legacy 命中路徑維持 messages.ts:158-165 現行不解析 body 直接回。無新的跨 group 重放缺口。"
+    },
+    {
+      "id": "R5",
+      "result": "PASS",
+      "evidence": "r2 delta 觸及(G3、G9):§2.1.8:216 idempotency_key 列註明 legacy 不比;§2.1.8:217 新增 reply_idem 重放列(replies.ts:346-352 回同 handle 自己的結果,無新資訊)。無可區分「存在但無權」與「不存在」的新路徑。"
+    },
+    {
+      "id": "R8",
+      "result": "PASS",
+      "evidence": "r2 delta 觸及(G6):§2.1.4:137-140 release / DELETE 接選填 group,§2.1.6:178 cap 表已含 release / DELETE。現碼 claims.ts:56-71 兩個 verb 共用同一 handler 且都讀 JSON body(:57)→ body 加 group 對兩者同時成立。"
+    },
+    {
+      "id": "R9",
+      "result": "PASS",
+      "evidence": "r2 delta 觸及(G7):§2.5-4:272 改為「既有 peer-facing /v1/* 逐位元相同;/metrics 閘與 /v1/whoami 為 mode-independent 明列例外」,與 §2.1.8:221、§2.1.9:231 不再矛盾。P3-2:359 加了 HANGAR_METRICS_TOKEN drop-in 步驟。"
+    },
+    {
+      "id": "R11",
+      "result": "PASS",
+      "evidence": "r2 delta 加的測試案:P0-2(c)(d) fresh DB;P0-3(g)(h)(i) 模式翻轉與 v2 檔形狀;P1-1 cached row 無 group → replay、b 三種 @team/@group 落點;P1-3 b 心跳 → c 收到;P1-5 claims release 帶 / 不帶 group。每條 fold 都有對應案例。缺口:H1 要求的 strict DB 重開案(P0-2 新增 (e))。"
+    },
+    {
+      "id": "R13",
+      "result": "PASS",
+      "evidence": "G8 四處漂移已修:§6:384「15 個端點(+ whoami)」;§2.1.3:103 `stream.ts:165-167`(實讀 stream.ts:165-167 確為 drain 定義);§3 fanout.ts 只剩 :304 一列;P0 1b 併入 :318 步驟 1。無 TODO/TBD。"
+    }
+  ],
+  "gen2_resolution": [
+    {
+      "id": "G1",
+      "status": "resolved",
+      "note": "§2.1.3:112 Fanout 列 presence_update 例外 + :117 持久化 row 不追求 backlog + :119 單一規則除外註記;§2.1.4:132-135 相容;§3:304;P1-3:337 正向案。實作缺口(Fanout 現無 DB 依賴,serve.ts:63 `new Fanout()`)另列 H4(Minor)。"
+    },
+    {
+      "id": "G2",
+      "status": "resolved",
+      "note": "§2.1.10:246-248 模式為每次 load 屬性、翻轉規則;P3-2:359 先 peers-groups-init --write 再以 strict 啟動;P0-3(g)(h)。啟動時翻轉拒絕的行為(exit vs 續跑)與 mode 值如何進 Deps 另列 H5(Minor)。"
+    },
+    {
+      "id": "G3",
+      "status": "resolved",
+      "note": "§2.1.2:82-83 兩句都在;§2.1.8:216;P1-1:330 加案。P1-1 該案寫「200 replay」但現碼 messages.ts:164 重放回 201 → H3(Minor)。"
+    },
+    {
+      "id": "G4",
+      "status": "partial",
+      "note": "schema.sql 升 v10 為 canonical、逐步 guard、P0-2(c)(d) 都補了(§2.1.10:252-265、§3:292)。但 step 2 的 human 回填改成 OR IGNORE 後失去 run-once 性質 → 每次 open 都把所有 human(含 guest)塞進 fleet;prod 啟動 open 兩次(index.ts:40、serve.ts:61)使其必然發生。gen-2 G4 required_change 建議的 OR IGNORE 本身就是這個缺陷的來源,本輪確認必須修。見 H1(Major,blocker)。"
+    },
+    {
+      "id": "G5",
+      "status": "partial",
+      "note": "§2.1.10:236-245 v2 形狀、legacy 判定、頂層多餘鍵 fail、init 輸出 v2、P0-3(i) 都在。但 :244「legacy 判定 = 頂層無 peers 且無 groups」與同一句的「一個恰好叫 groups 的 handle 仍走 legacy」字面互斥(該檔頂層**有** groups)。見 H2(Minor)。"
+    },
+    {
+      "id": "G6",
+      "status": "resolved",
+      "note": "§2.1.4:137-140;§2.1.6:178;P1-5:339。現碼 claims.ts:56-71 兩 verb 共用 body handler,可行。"
+    },
+    {
+      "id": "G7",
+      "status": "resolved",
+      "note": "§2.5-4:272 措辭;P3-2:359 drop-in / 接受 404 兩選一。"
+    },
+    {
+      "id": "G8",
+      "status": "resolved",
+      "note": "§6:384、§2.1.3:103、§3:304 單列、P0:318 合併。行號實讀確認。"
+    },
+    {
+      "id": "G9",
+      "status": "resolved",
+      "note": "§2.1.8:217。"
+    },
+    {
+      "id": "G10",
+      "status": "resolved",
+      "note": "P1-1:327 fixture 標 default_group;:331 b 的三案。"
+    }
+  ],
+  "findings": [
+    {
+      "id": "H1",
+      "severity": "Major",
+      "blocker": true,
+      "section": "§2.1.10 step 2 / P0-2",
+      "title": "v10 migration 的 human → fleet 回填沒有 run-once guard;每次 openDatabase 都把所有 human(含 guest)塞進 fleet,prod 啟動 open 兩次必觸發",
+      "evidence": "plan §2.1.10:259-260「每個 `human` `INSERT OR IGNORE group_member('fleet', handle, <全 caps>, now, '0')`」,step 0-6 沒有任何「schema_version 10 已存在則跳過」的判斷(逐步 guard 只護 DDL)。現碼 index.ts:39-43:serve 啟動時 `openDatabase(dbPath)` → `initRelayFromPeersFile` → `db.close()`;serve.ts:61 `openDatabase(opts.db_path)` **第二次**開庫並再跑全部 migrate*。時序:第一次 open 跑 step 2(此時 guest 若已在 DB,被塞進 fleet)→ strict seed 依 §2.1.7 diff 把 guest 的 fleet 列刪掉 → 第二次 open 再跑 step 2 → `(fleet, guest)` 無既有列 → OR IGNORE 插入成功 → relay 以「guest ∈ fleet,全 caps」開始服務,直到下一次 SIGHUP。SIGHUP 之外沒有任何路徑會再同步。P0-2(b)(d) 的 idempotent 案用 fleet-only fixture,guest 不在 fleet 的狀態永遠不會被測到;P3-3 live 驗收在 SIGHUP 後立即做,也抓不到「重啟後」這個時點。gen-2 G4 required_change 建議 OR IGNORE 是這個缺陷的來源。",
+      "required_change": "§2.1.10 step 2 改為 run-once 資料回填:`const done10 = SELECT 1 FROM schema_version WHERE version=10`;**只在 `!done10` 時**執行 peer_group('fleet') 插入與 human 回填(照 db.ts:38-41 v9 的資料回填慣例;DDL 步驟 1/3/4/5 維持逐物件 guard)。回填 SQL 再加 `WHERE NOT EXISTS (SELECT 1 FROM group_member gm WHERE gm.handle = human.handle)` 作 defence in depth。P0-2 加 (e):v10 DB、human `guest` 只在 `guest-lab` → `openDatabase` 兩次 → `SELECT 1 FROM group_member WHERE group_id='fleet' AND handle='guest'` 為空。P0-3(g) 的斷言加一句「open 兩次後 group_member 仍與檔案一致」。§6 風險表加一列:「migration 資料回填非 run-once → 重啟把 guest 放回 fleet | step 2 以 schema_version 10 guard;P0-2(e)」。"
+    },
+    {
+      "id": "H2",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.1.10:244 / P0-3(i)",
+      "title": "legacy 判定規則與同句的 `groups` handle 相容例外字面互斥",
+      "evidence": "§2.1.10:244「legacy 判定 = 頂層無 `peers` **且無 `groups`**(扁平 record;一個恰好叫 `groups` 的 handle 仍走 legacy)」。扁平檔含 handle `groups` 時頂層**有** `groups` 鍵 → 依前半句不是 legacy → 走 v2 解析 → 無 `peers` → fail,與括號內結論相反;P0-3(i) 依字面無法同時滿足。peers-file.ts:20 + constants.ts HANDLE_REGEX 確認 `groups` 是合法 handle。",
+      "required_change": "§2.1.10:244 改為「**legacy 判定 = 頂層無 `peers` 鍵**(唯一判別;扁平 record 的所有頂層鍵都是 handle,含一個恰好叫 `groups` 的)。有 `peers` = v2:`groups` 缺 → 每個 peer 都不在任何 group → fail-closed(strict 之後即 `groups_section_removed`)」。P0-3(i) 措辭對齊。"
+    },
+    {
+      "id": "H3",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "P1-1:330",
+      "title": "idempotency 重放案預期「200 replay」,現碼重放回 201",
+      "evidence": "messages.ts:164 `if (row) return c.body(row.response_json, 201, …)`;messages.ts:500-507 首次回應亦 201。P1-1:330「cached row 無 `group` + body 缺省 → **200** replay」與現碼不符;嚴格模式下重放應與首次同碼(201),否則 replay 本身就成了可觀測差異。",
+      "required_change": "P1-1:330 改「→ 201 replay(與 messages.ts:164 現行同碼、body 為 cached response_json 原文)」。"
+    },
+    {
+      "id": "H4",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.1.3:112 / §3:304 fanout.ts",
+      "title": "Fanout 層做 presence_update 的成員聯集查詢,但 Fanout 現無任何 DB / groups 依賴;plan 未定注入形狀",
+      "evidence": "fanout.ts:69-71 `class Fanout { private subs = … }` 無建構參數;serve.ts:63 `new Fanout()`;fanout.ts:172 註解「fanout stays presence-agnostic」。`grep -rl 'new Fanout(' packages/relay` = 27 個檔案(含測試)。r2 §2.1.3:112 / §3:304 要 Fanout 執行 `SELECT DISTINCT handle FROM group_member …`,卻沒說 lookup 從哪來。替代路徑:fanout.ts:127-135 `deliverDetailed(e, snapshot)` 已接受呼叫端算好的 `MatchedSub[]`,presence route 可自己算受眾再傳 snapshot(但 deliverFromSnapshot :214-218 不過 accept、也不做 @team 的 sender-handle 自排除,:198-204)。兩條路都可行,plan 要選一條,否則 implementer 會在 27 個 ctor 呼叫點上做無謂 churn。",
+      "required_change": "§3:304 fanout.ts 列補一句擇一:(A)「建構子加**選填** `opts?: { sharedAudience: (team, senderHandle) => Set<handle> }`,由 serve.ts 注入 groups.ts 的 memo 版 lookup;缺省 = 不過濾(既有 27 個 `new Fanout()` 測試呼叫點不動)」;或(B)「presence route 自算受眾(members 聯集 − sender handle)→ `fanout.deliverDetailed(e, snapshot)`,§2.1.3:112 的『Fanout 層』改為『presence route 算好 snapshot』」。§3:299 presence.ts 列同步。"
+    },
+    {
+      "id": "H5",
+      "severity": "Minor",
+      "blocker": false,
+      "section": "§2.1.10:246-248 / §2.1.7:201 / §3:305",
+      "title": "啟動時的 strict→legacy 翻轉「拒絕、保留舊 roster」在啟動路徑無記憶體 roster 可保留;mode 值如何從啟動 load 進 Deps 未定",
+      "evidence": "index.ts:39-45:啟動 load 發生在 `startServer` 之前、用一個隨即 close 的 db handle,此時沒有 Deps 也沒有記憶體 roster;§2.1.10:248「strict → legacy 翻轉一律拒絕(…保留舊 roster)」只對 SIGHUP(serve.ts:40-51)有意義。§2.1.7:201 `reloadRoster(deps, peersFile)` 假設 Deps 已存在,但啟動時第一次 load(index.ts:41)先於 Deps。若 implementer 在啟動翻轉時「拒絕但續跑」,relay 會以 DB 的 strict membership 服務、卻印 legacy WARN,兩者不一致。",
+      "required_change": "§2.1.10 補:「啟動 load(index.ts:41)遇 strict→legacy 翻轉 → **process exit 1**(fail-closed;無舊 roster 可保留);SIGHUP 遇同況 → 拒絕、保留記憶體 roster。`initRelayFromPeersFile` 回傳 `{ seeded, mode }`,index.ts 把 `mode` 傳進 `startServer` → `Deps.groupsMode`;SIGHUP 的 `reloadRoster(deps, peersFile)` 更新 `deps.groupsMode`(只允許 legacy→strict)」。§3:305 serve.ts 列與 §3 加一列 `index.ts`。P0-3(h) 拆成 (h1) SIGHUP 拒絕 (h2) 啟動 exit 1。"
+    },
+    {
+      "id": "H6",
+      "severity": "Suggestion",
+      "blocker": false,
+      "section": "§3:297 stream.ts",
+      "title": "§3 stream.ts 列的「連線時讀 memberships」易被讀成 gen-2 已廢除的連線時快取",
+      "evidence": "§2.1.3:119-121「不再有『連線時讀一次的 membership 快取』…每則現查 + per-reload-epoch memo」;§3:297「stream.ts | 連線時讀 memberships;`deliverable` 加 group 條件」。cold/resume 的 readerScope 確實在連線時算一次(stream.ts:165-167 drain 綁定於連線),但 live deliverable 不是。",
+      "required_change": "§3:297 改「連線時讀 memberships **只供 cold/resume 的 readerScope**;live `deliverable` 走 §2.1.3 的逐則 memo lookup;`reauth` 事件」。"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { resolveCourierInstance } from './index.ts'
+import { resolveCourierInstance, resolveStartupGroups } from './index.ts'
 import type { HangarConfig } from './config.ts'
 
 /**
@@ -45,5 +45,45 @@ describe('resolveCourierInstance', () => {
     const newInstanceId = vi.fn(() => '01MINTED0000000000000000000')
     expect(() => resolveCourierInstance(cfg({}), '/tmp/cfg.json', { saveConfig, newInstanceId }))
       .toThrow(/\/tmp\/cfg\.json/)
+  })
+})
+
+describe('resolveStartupGroups', () => {
+  const cfg = (over: Partial<HangarConfig> = {}) => over as HangarConfig
+
+  it('treats a 404 whoami result as legacy and ignores configured default_group', async () => {
+    await expect(resolveStartupGroups(cfg({ default_group: 'lab' }), { whoami: async () => null }))
+      .resolves.toEqual({ groupsMode: 'legacy' })
+  })
+
+  it('throws when configured default_group is not one of the handle memberships', async () => {
+    await expect(resolveStartupGroups(cfg({ default_group: 'lab' }), {
+      whoami: async () => ({
+        handle: 'alice',
+        default_group: 'cookys',
+        groups: [{ id: 'cookys', caps: ['chat'], history: 'all' }],
+      }),
+    })).rejects.toThrow(/default_group lab is not one of this handle's memberships: cookys/)
+  })
+
+  it('keeps strict whoami context when configured default_group matches', async () => {
+    await expect(resolveStartupGroups(cfg({ default_group: 'lab' }), {
+      whoami: async () => ({
+        handle: 'alice',
+        default_group: 'cookys',
+        groups: [
+          { id: 'cookys', caps: ['chat'], history: 'all' },
+          { id: 'lab', caps: ['chat', 'broadcast'], history: 'since_join' },
+        ],
+      }),
+    })).resolves.toEqual({
+      groupsMode: 'strict',
+      handle: 'alice',
+      default_group: 'lab',
+      groups: [
+        { id: 'cookys', caps: ['chat'], history: 'all' },
+        { id: 'lab', caps: ['chat', 'broadcast'], history: 'since_join' },
+      ],
+    })
   })
 })

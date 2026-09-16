@@ -1,5 +1,5 @@
 import type { Envelope } from '@hangar-bridge/shared'
-import { TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
+import { GROUP_BROADCAST_HANDLE, isBroadcastHandle } from '@hangar-bridge/shared'
 
 export interface Subscriber {
   handle: string
@@ -25,7 +25,7 @@ export interface Subscriber {
    * Set by the stream route; a subscriber without it is simply dropped from
    * the set (its socket, if any, keeps running until its own cleanup).
    */
-  close?: () => void
+  close?: (reason?: string) => void
 }
 
 export interface MatchedSub {
@@ -41,6 +41,14 @@ export interface MatchedSub {
 export interface SnapshotDetail {
   matched: MatchedSub[]
   selfExcluded: boolean
+}
+
+export interface FanoutOptions {
+  sharedAudience?: (team_id: string, handle: string) => Set<string>
+}
+
+export interface DeliveryOptions {
+  audience?: Set<string>
 }
 
 function isSnapshotDetail(v: MatchedSub[] | SnapshotDetail): v is SnapshotDetail {
@@ -69,6 +77,8 @@ function snapshotKey(handle: string, instance: string | undefined): string {
 export class Fanout {
   // team_id -> handle -> Set<Subscriber>
   private subs = new Map<string, Map<string, Set<Subscriber>>>()
+
+  constructor(private readonly opts: FanoutOptions = {}) {}
 
   subscribe(sub: Subscriber): void {
     let byHandle = this.subs.get(sub.team_id)
@@ -126,15 +136,15 @@ export class Fanout {
    */
   deliverDetailed(
     e: Envelope,
-    snapshot?: MatchedSub[] | SnapshotDetail
+    snapshot?: MatchedSub[] | SnapshotDetail | DeliveryOptions
   ): { delivered: boolean; selfExcluded: boolean; matched: MatchedSub[] } {
-    if (snapshot) {
+    if (snapshot && (Array.isArray(snapshot) || 'matched' in snapshot)) {
       const { matched, selfExcluded } = isSnapshotDetail(snapshot)
         ? snapshot
         : { matched: snapshot, selfExcluded: false }
       return this.deliverFromSnapshot(e, matched, selfExcluded)
     }
-    const { matched, selfExcluded } = this.resolveMatches(e, true)
+    const { matched, selfExcluded } = this.resolveMatches(e, true, (snapshot as DeliveryOptions | undefined)?.audience)
     return { delivered: matched.length > 0, selfExcluded, matched }
   }
 
@@ -155,17 +165,20 @@ export class Fanout {
    * "everyone who could receive it was the sender" and "nobody was
    * listening" become indistinguishable once the snapshot is taken.
    */
-  snapshotDetailed(e: Envelope): SnapshotDetail {
-    return this.resolveMatches(e, false)
+  snapshotDetailed(e: Envelope, opts: DeliveryOptions = {}): SnapshotDetail {
+    return this.resolveMatches(e, false, opts.audience)
   }
 
   /** Shared matching logic for both a live delivery and a snapshot-only read. */
-  private resolveMatches(e: Envelope, deliver: boolean): SnapshotDetail {
+  private resolveMatches(e: Envelope, deliver: boolean, audience?: Set<string>): SnapshotDetail {
     const byHandle = this.subs.get(e.team)
     const matched: MatchedSub[] = []
     if (!byHandle) return { matched, selfExcluded: false }
     const senderInstance = e.meta['sender_instance']
     let selfExcluded = false
+    const effectiveAudience = e.kind === 'presence_update' && this.opts.sharedAudience
+      ? this.opts.sharedAudience(e.team, e.from)
+      : audience
     // ONE collection path for @team and direct (unified so @team can also report a
     // matched count for to_filter{repo}). Per-subscriber `accept` carries BOTH the
     // subject-ownership gate AND the to_filter presence match (set by the stream
@@ -183,8 +196,9 @@ export class Fanout {
         matched.push({ handle, instance: sub.instance })
       }
     }
-    if (e.to === TEAM_BROADCAST_HANDLE) {
+    if (isBroadcastHandle(e.to) || (e.kind === 'presence_update' && effectiveAudience)) {
       for (const [handle, set] of byHandle) {
+        if (effectiveAudience && !effectiveAudience.has(handle)) continue
         // Skipping the sender's whole handle is right for an unqualified
         // broadcast: you do not need your own announcement echoed back, and the
         // sessions beside you are not its audience.
@@ -195,7 +209,7 @@ export class Fanout {
         // same project is the single most likely collaborator. Narrow to
         // per-instance there, exactly as the direct branch already does, so the
         // sender still does not hear itself.
-        if (handle === e.from) {
+        if (handle === e.from && e.to !== GROUP_BROADCAST_HANDLE) {
           if (e.to_filter == null) continue
           if (senderInstance === undefined) continue   // legacy peer: keep old behaviour
           collect(handle, filterOutInstance(set, senderInstance))
@@ -263,6 +277,19 @@ export class Fanout {
     return evicted
   }
 
+  dropHandle(team_id: string, handle: string, reason: 'membership_changed' | 'removed'): number {
+    const set = this.subs.get(team_id)?.get(handle)
+    if (!set) return 0
+    let dropped = 0
+    for (const sub of Array.from(set)) {
+      set.delete(sub)
+      dropped++
+      try { sub.close?.(reason) } catch { /* a closing stream must not break reload */ }
+    }
+    if (set.size === 0) this.subs.get(team_id)?.delete(handle)
+    return dropped
+  }
+
   /** Live subscriber count per instance for one handle (legacy subs are keyed ''). */
   instanceCounts(team_id: string, handle: string): Map<string, number> {
     const out = new Map<string, number>()
@@ -277,6 +304,10 @@ export class Fanout {
 
   onlineHandles(team_id: string): string[] {
     return Array.from(this.subs.get(team_id)?.keys() ?? [])
+  }
+
+  onlineHandlesIn(team_id: string, handles: Set<string>): string[] {
+    return this.onlineHandles(team_id).filter(handle => handles.has(handle))
   }
 
   isOnline(team_id: string, handle: string): boolean {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { openDatabase } from './db/db.ts'
 import { initRelayFromPeersFile } from './cli/init.ts'
+import { peersGroupsInit } from './cli/peers-groups-init.ts'
 import { startServer } from './cli/serve.ts'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -31,16 +32,29 @@ async function main() {
     return
   }
 
+  if (cmd === 'peers-groups-init') {
+    peersGroupsInit(process.argv.slice(3))
+    return
+  }
+
   // On every `serve` startup, re-seed from peers.json so secret rotation /
   // adding a peer just needs scp + restart (no separate init step).
   if (!existsSync(dbPath)) {
     mkdirSync(dirname(dbPath), { recursive: true })
   }
-  {
-    const db = openDatabase(dbPath)
-    initRelayFromPeersFile(db, { peers_file: peersFile })
-    db.close()
-  }
+	  {
+	    const db = openDatabase(dbPath)
+	    try {
+	      initRelayFromPeersFile(db, { peers_file: peersFile })
+	    } catch (err) {
+	      if (err instanceof Error && err.message === 'groups_section_removed') {
+	        console.error('groups_section_removed: refusing to start strict roster database with legacy peers file')
+	        process.exit(1)
+	      }
+	      throw err
+	    }
+	    db.close()
+	  }
 
   startServer({ db_path: dbPath, port, host, inactive_days: inactiveDays, peers_file: peersFile })
 }

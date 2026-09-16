@@ -54,4 +54,10 @@ describe('CHANNEL_INSTRUCTIONS', () => {
       + 'report completion with send_to_peer and preserve the correlation_id in your message.'
     )
   })
+
+  it('mentions relay-reported groups and @group without implying legacy deployments have them', () => {
+    expect(CHANNEL_INSTRUCTIONS).toContain(
+      'When the relay reports groups, channel tags may include group="..." and send_to_peer accepts to:"@group" plus group:.'
+    )
+  })
 })

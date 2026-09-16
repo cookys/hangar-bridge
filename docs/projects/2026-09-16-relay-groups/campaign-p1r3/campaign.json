@@ -1,0 +1,16 @@
+{
+  "schema_version": 1, "ticket": "relay-groups-p1r3", "profile": "internal-pilot", "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "db3dd371fe0eccd032cb62feef970f4bdcfd68ab", "branch": "feat/relay-groups-p1r3",
+  "vertical_acceptance": [
+    "legacy groupsMode: /v1/peers entries carry no groups field, claim rows no group_id, message/reply envelopes no group; all pre-existing integration tests pass unchanged",
+    "/v1/peers strict visibility and groups[] come from SQL bounded by the reader's memberships",
+    "@team alias rewrite + deprecated_team_alias audit happen only after cap and recipient checks pass",
+    "addressRules and other post-resolution refusals in strict mode are audited with group_id via one helper; group-audit.test.ts covers two; scripts/verify-groups.sh exits 0 with the depth-0 harness unmodified"
+  ],
+  "allowed_path_prefixes": ["packages/relay/src/", "packages/relay/tests/integration/"],
+  "max_changed_files": 10, "baseline_churn": 600, "max_growth_ratio": 1.5, "max_extra_churn": 300,
+  "max_repair_generations": 1, "max_wall_seconds": 3600, "unit_class": "mechanical",
+  "verify_cmd": "scripts/verify-groups.sh",
+  "rubric_ids": ["GROUPS-LEGACYWIRE-1", "GROUPS-PEERSSQL-2", "GROUPS-ALIASORDER-3", "GROUPS-AUDITALL-4"]
+}

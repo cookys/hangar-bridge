@@ -60,6 +60,32 @@ describe('RelayClient', () => {
     expect(list[0]!.handle).toBe('alice')
   })
 
+  it('whoami returns null on 404 legacy relays', async () => {
+    const fakeFetch = vi.fn(async () => new Response('not found', { status: 404 }))
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    await expect(c.whoami()).resolves.toBeNull()
+  })
+
+  it('whoami calls GET /v1/whoami with bearer on strict relays', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const fakeFetch = vi.fn(async (url: string | URL, init: RequestInit) => {
+      calls.push({ url: String(url), init })
+      return new Response(JSON.stringify({
+        handle: 'alice',
+        default_group: 'cookys',
+        groups: [{ id: 'cookys', caps: ['chat'], history: 'all' }],
+      }), { status: 200 })
+    })
+    const c = new RelayClient({ relayUrl: 'https://x', token: 'tok' }, { fetch: fakeFetch as any })
+    await expect(c.whoami()).resolves.toEqual({
+      handle: 'alice',
+      default_group: 'cookys',
+      groups: [{ id: 'cookys', caps: ['chat'], history: 'all' }],
+    })
+    expect(calls[0]!.url).toBe('https://x/v1/whoami')
+    expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer tok')
+  })
+
   it('claim: 201 → ok result with renewed flag', async () => {
     const calls: string[] = []
     const fakeFetch = vi.fn(async (url: string | URL) => {

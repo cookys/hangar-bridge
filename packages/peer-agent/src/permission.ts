@@ -1,4 +1,4 @@
-import { TEAM_BROADCAST_HANDLE } from '@hangar-bridge/shared'
+import { isBroadcastHandle } from '@hangar-bridge/shared'
 
 export interface PermissionTrackerOpts { ttlMs: number }
 
@@ -110,7 +110,8 @@ export class PermissionOutboundTracker {
     if (v.expires_at < Date.now()) { this.map.delete(key); return false }
     if (!inReplyTo) return false
     const direct = v.targets.get(from)
-    const broadcast = v.targets.get(TEAM_BROADCAST_HANDLE)
+    const broadcast = [...v.targets.entries()]
+      .find(([target]) => isBroadcastHandle(target))?.[1]
     return direct === inReplyTo || broadcast === inReplyTo
   }
 
