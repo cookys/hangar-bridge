@@ -81,6 +81,67 @@ describe('registerTools', () => {
     expect((result.content[0] as any).text).toContain('alice')
   })
 
+  it('list_peers stays byte-identical to the legacy JSON rendering when no peer carries groups', async () => {
+    const peers = [{
+      handle: 'alice',
+      display_name: 'Alice',
+      online: true,
+      summary: 'building',
+      last_seen: '2026-01-01T00:00:00.000Z',
+      sessions: [{ label: 'main', repo: 'hangar-bridge' }],
+    }]
+    const client = { send: vi.fn(), listPeers: vi.fn(async () => peers), setPresence: vi.fn() } as unknown as RelayClient
+    const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
+    const result = await callTool('list_peers', {})
+    expect((result.content[0] as any).text).toBe(JSON.stringify(peers, null, 2))
+  })
+
+  it('list_peers renders strict relay peers grouped by shared group with caller caps', async () => {
+    const peers = [
+      {
+        handle: 'cuda',
+        display_name: 'Cuda',
+        online: true,
+        summary: 'idle',
+        last_seen: '2026-01-01T00:00:00.000Z',
+        sessions: [{ label: 'main', repo: 'hangar-bridge' }],
+        groups: [{ id: 'cookys', caps: ['chat'] }, { id: 'lab', caps: ['chat'] }],
+      },
+      {
+        handle: 'guest',
+        display_name: 'Guest',
+        online: false,
+        summary: 'away',
+        last_seen: null,
+        sessions: [],
+        groups: [{ id: 'lab', caps: ['chat'] }],
+      },
+    ]
+    const client = { send: vi.fn(), listPeers: vi.fn(async () => peers), setPresence: vi.fn() } as unknown as RelayClient
+    const { callTool } = registerTools(
+      client,
+      { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false },
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined,
+      {
+        groupsMode: 'strict',
+        handle: 'alice',
+        default_group: 'cookys',
+        groups: [
+          { id: 'cookys', caps: ['chat', 'broadcast'], history: 'all' },
+          { id: 'lab', caps: ['chat'], history: 'since_join' },
+        ],
+      },
+    )
+    const result = await callTool('list_peers', {})
+    const text = (result.content[0] as any).text as string
+    expect(text).toContain('you: alice default_group=cookys')
+    expect(text).toContain('== cookys  (caps: chat broadcast)')
+    expect(text).toContain('== lab  (caps: chat)')
+    expect(text.match(/^cuda\b/gm)).toHaveLength(2)
+    expect(text).toContain('guest       offline away')
+  })
+
   it('set_summary posts presence', async () => {
     const setPresence = vi.fn(async () => { /* no-op */ })
     const client = { send: vi.fn(), listPeers: vi.fn(async () => []),
@@ -88,6 +149,48 @@ describe('registerTools', () => {
     const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
     await callTool('set_summary', { summary: 'hacking' })
     expect(setPresence).toHaveBeenCalledWith({ summary: 'hacking' })
+  })
+
+  it('send_to_peer accepts @group and passes group through unchanged', async () => {
+    const send = vi.fn(async (payload: any) => ({
+      id: 'msg_01HRK7Y000000000000000000A', v: 2, team: 't1', from: 'a', to: payload.to,
+      group: payload.group, in_reply_to: null, thread_root: null, kind: 'chat',
+      content: payload.content, meta: {}, sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+    }))
+    const client = { send, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient
+    const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
+    await callTool('send_to_peer', { to: '@group', group: 'lab', content: 'hello lab', fleet_wide: true })
+    expect(send).toHaveBeenCalledWith({
+      to: '@group',
+      group: 'lab',
+      subject: null,
+      kind: 'chat',
+      content: 'hello lab',
+      meta: {},
+    })
+  })
+
+  it('send_to_peer logs the deprecated @team alias warning once without adding response text', async () => {
+    const send = vi.fn(async (payload: any) => ({
+      id: 'msg_01HRK7Y000000000000000000A', v: 2, team: 't1', from: 'a', to: payload.to,
+      in_reply_to: null, thread_root: null, kind: 'chat', content: payload.content, meta: {},
+      sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+    }))
+    const client = { send, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
+      const first = await callTool('send_to_peer', { to: '@team', content: 'hello team' })
+      const second = await callTool('send_to_peer', { to: '@team', content: 'hello again' })
+      expect((first.content[0] as any).text).toBe('sent msg_01HRK7Y000000000000000000A')
+      expect((second.content[0] as any).text).toBe('sent msg_01HRK7Y000000000000000000A')
+      const warnings = stderr.mock.calls
+        .map(call => String(call[0]))
+        .filter(line => line.includes('peer.deprecated_team_alias'))
+      expect(warnings).toHaveLength(1)
+    } finally {
+      stderr.mockRestore()
+    }
   })
 })
 
@@ -508,6 +611,17 @@ describe('registerTools — poll_inbox', () => {
     const r = await callTool('poll_inbox', {})
     const text = (r.content[0] as any).text as string
     expect(text).toContain('meta: disposition=accepted correlation_id=ABC123')
+  })
+
+  it('adds group suffix to strict relay message headers', async () => {
+    const pollInbox = vi.fn(async () => ({
+      messages: [mkEnvelope({ group: 'lab' })],
+      next_cursor: null,
+    }))
+    const client = { ...baseClient(), pollInbox } as unknown as RelayClient
+    const { callTool } = registerTools(client, presence, undefined, undefined, undefined, undefined, { pollInbox })
+    const r = await callTool('poll_inbox', {})
+    expect((r.content[0] as any).text).toContain('kind=chat group=lab')
   })
 
   it('FIX6: does not render unknown meta keys', async () => {

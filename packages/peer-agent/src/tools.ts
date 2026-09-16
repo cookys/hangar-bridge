@@ -2,12 +2,13 @@ import { z } from 'zod'
 import { ulid } from 'ulid'
 import {
   HANDLE_REGEX, TEAM_BROADCAST_HANDLE, SUBJECT_REGEX, MAX_SUBJECT_LENGTH,
+  GROUP_BROADCAST_HANDLE, GROUP_ID_REGEX,
   CLAIM_KEY_REGEX, MAX_CLAIM_KEY_LENGTH, MAX_CLAIM_NOTE_LENGTH,
   CLAIM_TTL_MIN_SECONDS, CLAIM_TTL_MAX_SECONDS, CLAIM_DEFAULT_TTL_SECONDS,
-  escapeChannelBody, escapeChannelAttr, ToFilterSchema,
+  escapeChannelBody, escapeChannelAttr, ToFilterSchema, isBroadcastHandle,
   type OutboundMessage, type MessageId, type Envelope,
 } from '@hangar-bridge/shared'
-import type { ClaimClient, InboxClient, PeerTransport, ReplyClient } from './outbound.ts'
+import type { ClaimClient, InboxClient, PeerSummary, PeerTransport, ReplyClient, WhoamiGroup } from './outbound.ts'
 import type { PermissionTracker } from './permission.ts'
 import type { DispatchTracker } from './correlation.ts'
 import type { ReplyLimiter } from './reply-limiter.ts'
@@ -20,13 +21,16 @@ import type { PendingBacklog } from './cursor-store.ts'
 const AddressSchema = z.union([
   z.string().regex(HANDLE_REGEX),
   z.literal(TEAM_BROADCAST_HANDLE),
+  z.literal(GROUP_BROADCAST_HANDLE),
 ])
 
+const GroupInput = z.string().regex(GROUP_ID_REGEX)
 const SubjectInput = z.string().regex(SUBJECT_REGEX).max(MAX_SUBJECT_LENGTH)
 const SendInput = z.object({
   // Optional on purpose: omitting it addresses this session's own project,
   // which is the common case and should be the cheap one.
   to: AddressSchema.optional(),
+  group: GroupInput.optional(),
   content: z.string(),
   fleet_wide: z.boolean().optional(),
   subject: SubjectInput.optional(),
@@ -82,6 +86,12 @@ const DispatchInput = z.object({
   task_kind: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/).optional(),
 })
 
+let deprecatedTeamAliasWarned = false
+
+export type ToolGroupsRuntime =
+  | { groupsMode: 'legacy' }
+  | { groupsMode: 'strict'; handle: string; default_group: string; groups: WhoamiGroup[] }
+
 export const TOOL_DESCRIPTORS = [
   {
     name: 'send_to_peer',
@@ -89,7 +99,8 @@ export const TOOL_DESCRIPTORS = [
     inputSchema: {
       type: 'object',
       properties: {
-        to: { type: 'string', description: 'OPTIONAL. Omit to address this session\'s own project (the default). A handle like "alice" reaches every session on that host — note a handle is an inbox, not one agent.' },
+        to: { type: 'string', description: 'OPTIONAL. Omit to address this session\'s own project (the default). A handle like "alice" reaches every session on that host — note a handle is an inbox, not one agent. When the relay reports groups, "@group" broadcasts within a group.' },
+        group: { type: 'string', description: 'group to send in; defaults to the relay\'s default_group for this handle. Only groups you belong to (see list_peers / whoami)' },
         fleet_wide: { type: 'boolean', description: 'Send to every session on every host. Interrupts the whole fleet; ask the user first. Cannot be combined with `to`.' },
         content: { type: 'string' },
         subject: { type: 'string', description: 'optional dotted routing subject (e.g. "mple2.command"); publisher must own the namespace. Allowed on @team only for chat, where receivers are filtered by ownership + interest' },
@@ -441,11 +452,41 @@ function classifyReplyTransportError(err: unknown): { error: 'relay_unreachable'
 }
 
 function renderInboxMessage(m: Envelope): string {
+  const group = (m as Envelope & { group?: string }).group
   const header = `[${m.id}] from=${m.from} to=${m.to} kind=${m.kind}`
     + `${m.subject ? ` subject=${m.subject}` : ''}`
+    + `${group ? ` group=${group}` : ''}`
     + `${m.in_reply_to ? ` in_reply_to=${m.in_reply_to}` : ''}`
   const metaLine = renderInboxMeta(m.meta)
   return [header, ...(metaLine ? [metaLine] : []), renderInboxBody(m.content)].join('\n')
+}
+
+function renderPeerLine(peer: PeerSummary): string {
+  const state = peer.online ? 'online' : 'offline'
+  const summary = peer.summary ? ` ${peer.summary}` : ''
+  return `${peer.handle.padEnd(11)} ${state}${summary}`
+}
+
+function renderGroupedPeers(peers: PeerSummary[], runtime: ToolGroupsRuntime | undefined): string {
+  if (!peers.some(peer => Array.isArray(peer.groups))) return JSON.stringify(peers, null, 2)
+  const callerGroups = runtime?.groupsMode === 'strict' ? runtime.groups : []
+  const groupIds = [
+    ...callerGroups.map(group => group.id),
+    ...peers.flatMap(peer => (peer.groups ?? []).map(group => group.id)),
+  ].filter((id, idx, all) => all.indexOf(id) === idx)
+  const capsFor = new Map(callerGroups.map(group => [group.id, group.caps]))
+  const lines: string[] = []
+  if (runtime?.groupsMode === 'strict') {
+    lines.push(`you: ${runtime.handle} default_group=${runtime.default_group}`)
+  }
+  for (const groupId of groupIds) {
+    const caps = capsFor.get(groupId) ?? []
+    lines.push(`== ${groupId}  (caps: ${caps.join(' ')})`)
+    for (const peer of peers) {
+      if ((peer.groups ?? []).some(group => group.id === groupId)) lines.push(renderPeerLine(peer))
+    }
+  }
+  return lines.join('\n')
 }
 
 export function registerTools(
@@ -476,6 +517,7 @@ export function registerTools(
    * the batch's `since` reaches its `newest`.
    */
   butler?: { getBacklog: () => PendingBacklog | undefined; clearBacklog: () => void },
+  groupsRuntime?: ToolGroupsRuntime,
 ) {
   const inbox = resolveInboxClient(client, inboxClient)
   const reply = resolveReplyClient(client, replyClient)
@@ -491,11 +533,15 @@ export function registerTools(
   async function callTool(name: string, args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
     if (name === 'send_to_peer') {
       const input = SendInput.parse(args)
-      if (input.fleet_wide === true && input.to !== undefined) {
+      if (input.fleet_wide === true && input.to !== undefined && input.to !== GROUP_BROADCAST_HANDLE) {
         throw new Error(
           'fleet_wide and `to` are contradictory: fleet_wide means every session on every host. '
           + 'Drop one — omit `to` for this project, name a handle for one host, or keep fleet_wide alone.',
         )
+      }
+      if (input.to === TEAM_BROADCAST_HANDLE && !deprecatedTeamAliasWarned) {
+        deprecatedTeamAliasWarned = true
+        logJson('warn', 'peer.deprecated_team_alias', { tool: 'send_to_peer' })
       }
       // Resolve the default audience: this session's own project. Deriving it
       // here (rather than letting the relay guess) keeps it identical to the
@@ -526,7 +572,7 @@ export function registerTools(
       if (
         replyLimiter
         && typeof resolved.to === 'string'
-        && resolved.to !== TEAM_BROADCAST_HANDLE
+        && !isBroadcastHandle(resolved.to)
         && !replyLimiter.canReplyTo(resolved.to)
       ) {
         throw new Error(
@@ -540,13 +586,14 @@ export function registerTools(
         content: input.content,
         meta: input.meta ?? {},
       }
+      if (input.group !== undefined) payload.group = input.group
       if (input.in_reply_to !== undefined) payload.in_reply_to = input.in_reply_to as MessageId
       if (input.thread_root !== undefined) payload.thread_root = input.thread_root as MessageId
       if (input.all_sessions !== undefined) payload.all_sessions = input.all_sessions
       const effectiveFilter = resolved.to_filter ?? input.to_filter
       if (effectiveFilter !== undefined) payload.to_filter = effectiveFilter
       const env = await client.send(payload)
-      if (replyLimiter && typeof resolved.to === 'string' && resolved.to !== TEAM_BROADCAST_HANDLE) {
+      if (replyLimiter && typeof resolved.to === 'string' && !isBroadcastHandle(resolved.to)) {
         replyLimiter.recordOutbound(resolved.to)
       }
       // §11: every /v1/messages response now carries the two-part audience
@@ -579,7 +626,7 @@ export function registerTools(
     if (name === 'list_peers') {
       ListInput.parse(args)
       const list = await client.listPeers()
-      return { content: [{ type: 'text', text: JSON.stringify(list, null, 2) }] }
+      return { content: [{ type: 'text', text: renderGroupedPeers(list, groupsRuntime) }] }
     }
     if (name === 'set_summary') {
       const input = SummaryInput.parse(args)

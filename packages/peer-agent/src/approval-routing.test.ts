@@ -20,6 +20,11 @@ describe('ApprovalRouter', () => {
     expect(r.pick({ excludeSelf: 'alice' })).toEqual(['@team'])
   })
 
+  it('ask_group returns @group', () => {
+    r = new ApprovalRouter({ routing: 'ask_group' }, now)
+    expect(r.pick({ excludeSelf: 'alice' })).toEqual(['@group'])
+  })
+
   it('ask_thread_participants falls back to most recent DM partner if no active thread', () => {
     r = new ApprovalRouter({ routing: 'ask_thread_participants' }, now)
     r.recordDm('bob', now())

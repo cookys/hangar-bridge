@@ -3,6 +3,7 @@ export const CHANNEL_INSTRUCTIONS =
   `Reply with the reply_to_peer tool, passing in_reply_to = the msg_id of the message you're answering — no address is needed. ` +
   `To continue the thread for a different audience, use send_to_peer with thread_root. ` +
   `Broadcasts arrive with to="@team" — reply only if you have something useful to contribute. ` +
+  `When the relay reports groups, channel tags may include group="..." and send_to_peer accepts to:"@group" plus group:. ` +
   `For task_dispatch messages, the current MCP surface has no structured task_result response tool; report completion with send_to_peer and preserve the correlation_id in your message.
 
 ` +

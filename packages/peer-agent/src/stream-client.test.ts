@@ -136,4 +136,30 @@ describe('StreamClient (loopback SSE)', () => {
     expect(delivered).toEqual([envelope('B').id])
     expect(relay.connections).toBe(1)
   })
+
+  it('reauth reconnects without counting as a final-mile delivery failure', async () => {
+    relay = await startRelay((write, n) => {
+      if (n === 1) {
+        write('event: reauth\ndata: {"reason":"membership_changed"}\n\n')
+      } else {
+        write(sse(envelope('B')))
+      }
+    })
+    const delivered: string[] = []
+    const gaveUp: string[] = []
+    client = new StreamClient({
+      relayUrl: relay.url, token: 't',
+      sinceCursor: () => undefined,
+      onEnvelope: async e => { delivered.push(e.id) },
+      onAuthError: () => {},
+      onGiveUp: e => { gaveUp.push(e.id) },
+      maxDeliveryAttempts: 1,
+      wait: () => settle(10),
+    })
+    void client.start()
+    for (let i = 0; i < 100 && delivered.length === 0; i++) await settle(20)
+    expect(relay.connections).toBeGreaterThanOrEqual(2)
+    expect(delivered).toEqual([envelope('B').id])
+    expect(gaveUp).toEqual([])
+  })
 })
