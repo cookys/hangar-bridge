@@ -284,14 +284,7 @@ function checkAudience(
     }
     return 'not_a_recipient' // unknown width, fail closed
 	  }
-	  if (route.to_filter_json == null && route.to_handle === handle) {
-	    if (instance === undefined) return 'ok'
-	    const hasAnyGrant = deps.db.prepare(
-	      'SELECT 1 AS x FROM reply_grant WHERE msg_id=? AND handle=? AND instance=? LIMIT 1'
-	    ).get(route.msg_id, handle, instance)
-	    if (!hasAnyGrant) return 'ok'
-	  }
-	  if (instance === undefined) return 'not_a_recipient'
+  if (instance === undefined) return 'not_a_recipient'
   if (deps.store.hasGrant(route.msg_id, handle, instance, '')) return 'ok'
   if (selector != null && selector !== '' && selector !== '~none' && deps.store.hasGrant(route.msg_id, handle, instance, selector)) {
     return 'ok'

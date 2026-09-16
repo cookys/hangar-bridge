@@ -307,6 +307,8 @@ describe('relay groups — adversarial boundary (strict roster)', () => {
     expect(JSON.parse(cross.text).error).toBe('unknown_parent')
     expect(cross).toEqual(random)
     const ok = await (await send('b', { to: 'c', kind: 'chat', content: 'q', group: 'lab' })).json() as any
+    // reply-routing grants are issued on presentation: c must have RECEIVED the message (poll) before it may reply
+    expect((await req('c', '/v1/messages')).status).toBe(200)
     const reply = await post('c', '/v1/replies', { in_reply_to: ok.id, content: 'a' }, { 'idempotency-key': 'k-ok' })
     expect(reply.status).toBe(200) // existing /v1/replies status; strict mode must not change it
   })
