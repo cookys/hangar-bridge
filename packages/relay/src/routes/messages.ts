@@ -5,9 +5,13 @@ import {
   RESERVED_META_KEYS,
   newMessageId,
   TEAM_BROADCAST_HANDLE,
+  GROUP_BROADCAST_HANDLE,
+  DEFAULT_GROUP_ID,
   EPHEMERAL_ROUTE_TTL_MS,
   BACKLOG_SCAN_CAP,
+  isBroadcastHandle,
   type Envelope,
+  type MemberCap,
 } from '@hangar-bridge/shared'
 import { loadOwnedSet, ownsNamespace } from '../acl.ts'
 import { isValidMessageId, isValidInstanceId } from '@hangar-bridge/shared'
@@ -18,10 +22,20 @@ import { parseCallerInstanceHeader } from '../presence/label.ts'
 import type { Deps } from '../deps.ts'
 import type { ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
 import type { SnapshotDetail } from '../fanout.ts'
+import { loadDefaultGroup, loadMemberships, members, readerScope, requireCap, type Membership } from '../groups.ts'
 
 /** chat, task_dispatch — the only kinds §3.1/§3.2 give a reply_route. */
 function isUserAuthoredKind(kind: Envelope['kind']): kind is 'chat' | 'task_dispatch' {
   return kind === 'chat' || kind === 'task_dispatch'
+}
+
+function capFor(kind: Envelope['kind'], to: string): MemberCap | null {
+  if (kind === 'presence_update') return null
+  if (isBroadcastHandle(to)) return 'broadcast'
+  if (kind === 'chat') return 'chat'
+  if (kind === 'task_dispatch' || kind === 'task_result') return 'dispatch'
+  if (kind === 'permission_request' || kind === 'permission_verdict') return 'permission'
+  return null
 }
 
 /**
@@ -105,9 +119,12 @@ export function messagesRoute(deps: Deps) {
       }, 400)
     }
 
-    const handle = c.get('peer').handle
-    const owned = loadOwnedSet(deps.db, HANGAR_TEAM_ID, handle)
-    const rows = deps.store.fetchInboxSince(HANGAR_TEAM_ID, handle, since ?? '', limit, pollerInstance)
+	    const handle = c.get('peer').handle
+	    const owned = loadOwnedSet(deps.db, HANGAR_TEAM_ID, handle)
+	    const memberships = loadMemberships(deps.db, handle)
+	    const strictReads = deps.groupsMode === 'strict'
+	    const scope = strictReads ? readerScope(memberships) : undefined
+	    const rows = deps.store.fetchInboxSince(HANGAR_TEAM_ID, handle, since ?? '', limit, pollerInstance, scope, strictReads)
     const messages = rows.filter(e => e.subject === null || ownsNamespace(e.subject, owned))
     if (pollerInstance !== undefined) {
       // §4: grant BEFORE responding — same invariant as every other
@@ -132,7 +149,7 @@ export function messagesRoute(deps: Deps) {
     let pending_capped = false
     let tailCursor = next_cursor ?? ''
     for (;;) {
-      const page = deps.store.fetchInboxIdsAfter(HANGAR_TEAM_ID, handle, tailCursor, TAIL_PAGE, pollerInstance)
+	      const page = deps.store.fetchInboxIdsAfter(HANGAR_TEAM_ID, handle, tailCursor, TAIL_PAGE, pollerInstance, scope, strictReads)
       if (page.length === 0) break
       for (const r of page) {
         if (r.subject !== null && !ownsNamespace(r.subject, owned)) continue
@@ -154,14 +171,15 @@ export function messagesRoute(deps: Deps) {
     })
   })
 
-  app.post('/', async c => {
-    const idemKey = c.req.header('idempotency-key')
-    const tokenId = c.get('token').id
-    if (idemKey) {
-      const row = deps.db.prepare(
-        "SELECT response_json FROM idempotency_key WHERE key_hash=? AND token_id=?"
-      ).get(hashToken(`${tokenId}:${idemKey}`), tokenId) as { response_json: string } | undefined
-      if (row) return c.body(row.response_json, 201, { 'content-type': 'application/json' })
+	  app.post('/', async c => {
+	    const idemKey = c.req.header('idempotency-key')
+	    const tokenId = c.get('token').id
+	    const strictGroups = (deps.groupsMode ?? 'legacy') === 'strict'
+	    if (idemKey && !strictGroups) {
+	      const row = deps.db.prepare(
+	        "SELECT response_json FROM idempotency_key WHERE key_hash=? AND token_id=?"
+	      ).get(hashToken(`${tokenId}:${idemKey}`), tokenId) as { response_json: string } | undefined
+	      if (row) return c.body(row.response_json, 201, { 'content-type': 'application/json' })
     }
 
     const raw = await c.req.json().catch(() => null)
@@ -176,9 +194,10 @@ export function messagesRoute(deps: Deps) {
     // relay signal into a channel notification. The only subject a receiver sees is
     // the relay-stamped envelope field (surfaced as `gated_subject`), never sender
     // meta. (task_kind is intentionally NOT reserved — a benign display label.)
-    if (data.meta) {
-      for (const k of RESERVED_META_KEYS) delete (data.meta as Record<string, string>)[k]
-    }
+	    if (data.meta) {
+	      for (const k of RESERVED_META_KEYS) delete (data.meta as Record<string, string>)[k]
+	      delete (data.meta as Record<string, string>)['group']
+	    }
 
     // P4'a attribution. The 8/22 incident was a thread of mutually-denying messages
     // behind one handle: every "that wasn't me" was sincere, but nobody could tell
@@ -240,26 +259,73 @@ export function messagesRoute(deps: Deps) {
         retryable: false,
       }, 400)
     }
-    const returnSelector = returnSelectorParse.value
+	    const returnSelector = returnSelectorParse.value
 
-    // §7 thread continuation (not a reply, NOT flag-controlled): `thread_root`
+	    let group = strictGroups ? (data.group ?? loadDefaultGroup(deps.db, peer.handle)) : DEFAULT_GROUP_ID
+	    let memberships: Map<string, Membership> | null = null
+	    let groupMembers: Set<string> | null = null
+	    if (strictGroups) {
+	      if (data.to === TEAM_BROADCAST_HANDLE) {
+	        data.to = GROUP_BROADCAST_HANDLE
+	        auditEvent(deps, peer.id, 'deprecated_team_alias', { group_id: group, handle: peer.handle })
+	      }
+	      memberships = loadMemberships(deps.db, peer.handle)
+	      const idemRow = idemKey
+	        ? deps.db.prepare(
+	          "SELECT response_json FROM idempotency_key WHERE key_hash=? AND token_id=?"
+	        ).get(hashToken(`${tokenId}:${idemKey}`), tokenId) as { response_json: string } | undefined
+	        : undefined
+	      if (idemRow) {
+	        const cached = JSON.parse(idemRow.response_json) as { group?: string }
+	        const cachedGroup = cached.group ?? DEFAULT_GROUP_ID
+	        if (cachedGroup !== group) return c.json({ error: 'idempotency_mismatch' }, 422)
+	        if (!memberships.has(group)) {
+	          auditEvent(deps, peer.id, 'group.unknown_group', { group_id: group, handle: peer.handle })
+	          return c.json({ error: 'unknown_group' }, 404)
+	        }
+	        return c.body(idemRow.response_json, 201, { 'content-type': 'application/json' })
+	      }
+	      if (!memberships.has(group)) {
+	        auditEvent(deps, peer.id, 'group.unknown_group', { group_id: group, handle: peer.handle })
+	        return c.json({ error: 'unknown_group' }, 404)
+	      }
+	      const cap = capFor(data.kind, data.to)
+	      if (cap !== null) {
+	        const capResult = requireCap(memberships, group, cap)
+	        if (capResult === 'cap_denied') {
+	          auditEvent(deps, peer.id, 'group.cap_denied', { group_id: group, handle: peer.handle, cap })
+	          return c.json({ error: 'cap_denied' }, 403)
+	        }
+	      }
+	      if (!isBroadcastHandle(data.to)) {
+	        groupMembers = members(deps.db, group)
+	        if (!groupMembers.has(data.to)) {
+	          auditEvent(deps, peer.id, 'group.unknown_recipient', { group_id: group, handle: peer.handle, to: data.to })
+	          return c.json({ error: 'unknown_recipient' }, 404)
+	        }
+	      } else {
+	        groupMembers = members(deps.db, group)
+	      }
+	    }
+
+	    // §7 thread continuation (not a reply, NOT flag-controlled): `thread_root`
     // names a route the caller SENT or holds a GRANT on; on success the send
     // canonicalises to that route's effective root. This is the only
     // sanctioned path to a wider audience inside a thread.
     let continuationRoot: string | null = null
     if (data.thread_root !== undefined) {
-      const resolved = resolveThreadContinuation(
-        deps, data.thread_root, peer.handle, stampedInstance.instance, returnSelector
-      )
-      if (!resolved.ok) {
-        return c.json({
+	      const resolved = resolveThreadContinuation(
+	        deps, data.thread_root, peer.handle, stampedInstance.instance, returnSelector
+	      )
+	      if (!resolved.ok || (strictGroups && resolved.group_id !== group)) {
+	        return c.json({
           error: 'not_in_thread',
           message: 'thread_root names a route you neither sent nor were granted; '
             + 'it must be a message you sent or one you received',
           retryable: false,
         }, 403)
       }
-      continuationRoot = resolved.canonicalRoot
+	      continuationRoot = resolved.canonicalRoot
     }
 
     // §6.1-6.3 address refusals, gated behind addressRules (default 'off' —
@@ -278,7 +344,7 @@ export function messagesRoute(deps: Deps) {
       if (stampedInstance.instance === undefined) {
         return c.json({ error: 'sender_instance_required', message: 'x-hangar-instance is required', retryable: false }, 400)
       }
-      if (data.kind === 'chat' && data.to !== TEAM_BROADCAST_HANDLE && data.to_filter == null && data.all_sessions !== true) {
+	      if (data.kind === 'chat' && !isBroadcastHandle(data.to) && data.to_filter == null && data.all_sessions !== true) {
         const liveInstances = Array.from(deps.fanout.instanceCounts(HANGAR_TEAM_ID, data.to as string).keys())
           .filter(i => i !== '')
         return c.json({
@@ -289,7 +355,7 @@ export function messagesRoute(deps: Deps) {
           live_instances: liveInstances,
         }, 400)
       }
-      if (data.kind === 'task_dispatch' && data.to_filter == null) {
+	      if (!strictGroups && data.kind === 'task_dispatch' && data.to_filter == null) {
         return c.json({
           error: 'dispatch_needs_instance',
           message: 'task_dispatch must target exactly one instance via to_filter.instance '
@@ -322,7 +388,7 @@ export function messagesRoute(deps: Deps) {
       // `deliverable` filter — so this check is skipped for @team (it would 409 anyway
       // since @team owns no namespace). Publisher-ownership above still fully gates who
       // may broadcast on the namespace.
-      if (data.to !== TEAM_BROADCAST_HANDLE) {
+	      if (!isBroadcastHandle(data.to)) {
         const ownedRcpt = loadOwnedSet(deps.db, HANGAR_TEAM_ID, data.to as string)
         if (!ownsNamespace(data.subject, ownedRcpt)) {
           auditEvent(deps, peer.id, 'subject.recipient_denied', { subject: data.subject, to: data.to as string })
@@ -354,7 +420,7 @@ export function messagesRoute(deps: Deps) {
     // that teaches the alternative — the clients here are models, so a 400
     // carrying the fix IS the migration mechanism.
     if (
-      data.to === TEAM_BROADCAST_HANDLE
+	      isBroadcastHandle(data.to)
       && data.kind === 'chat'
       && data.subject == null
       && data.to_filter == null
@@ -395,7 +461,7 @@ export function messagesRoute(deps: Deps) {
       // a noise problem for a lost-mail problem. Durable also restores in_reply_to
       // for project threads and lets an offline member catch up on reconnect
       // (the SSE cold-start drain re-applies the same presence filter).
-      const isProjectChat = data.to === TEAM_BROADCAST_HANDLE
+	      const isProjectChat = isBroadcastHandle(data.to)
         && data.kind === 'chat'
         && data.to_filter.repo !== undefined
         && data.to_filter.instance === undefined
@@ -419,7 +485,7 @@ export function messagesRoute(deps: Deps) {
         && data.to_filter.instance === stampedInstance.instance
       let built: Envelope
       try {
-        built = deps.store.buildEnvelope(HANGAR_TEAM_ID, peer.handle, data)
+	        built = deps.store.buildEnvelope(HANGAR_TEAM_ID, peer.handle, data, group)
       } catch (err) {
         return c.json({ error: 'invalid_message', message: err instanceof Error ? err.message : '' }, 400)
       }
@@ -432,7 +498,8 @@ export function messagesRoute(deps: Deps) {
       // binds to the exact set fanout will deliver to, and a session that
       // subscribes in between is not delivered to live (no grant — a durable
       // row grants it on drain instead, §4/item 7).
-      const snap = deps.fanout.snapshotDetailed(built)
+	      const audience = strictGroups && isBroadcastHandle(built.to) ? (groupMembers ?? members(deps.db, group)) : undefined
+	      const snap = deps.fanout.snapshotDetailed(built, audience ? { audience } : {})
       const matched = snap.matched
       let deliveredAt: string | null = null
       // Only task_dispatch is persisted (with delivered_at stamped so it never
@@ -455,9 +522,9 @@ export function messagesRoute(deps: Deps) {
       // correlation_id above for the receiver to reply with.
       const getsRoute = built.kind === 'chat' || (built.kind === 'task_dispatch' && matched.length > 0)
       const route: ReplyRouteInput | null = getsRoute ? {
-        msg_id: built.id, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
-        sender_instance: stampedInstance.instance ?? null, return_selector: returnSelector,
-        to_handle: built.to, to_filter_json: built.to_filter ? JSON.stringify(built.to_filter) : null,
+	        msg_id: built.id, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
+	        sender_instance: stampedInstance.instance ?? null, return_selector: returnSelector,
+	        to_handle: built.to, group_id: group, to_filter_json: built.to_filter ? JSON.stringify(built.to_filter) : null,
         thread_root: continuationRoot ?? built.thread_root ?? built.id,
         correlation_id: built.meta['correlation_id'] ?? null,
         created_at: deps.now().toISOString(),
@@ -502,7 +569,7 @@ export function messagesRoute(deps: Deps) {
     // peer handle from middleware. Client-supplied `from` (if any) is ignored.
     let built: Envelope
     try {
-      built = deps.store.buildEnvelope(HANGAR_TEAM_ID, peer.handle, data)
+	        built = deps.store.buildEnvelope(HANGAR_TEAM_ID, peer.handle, data, group)
     } catch (err) {
       const message = err instanceof Error ? err.message : ''
       return c.json({ error: 'invalid_message', message }, 400)
@@ -520,14 +587,15 @@ export function messagesRoute(deps: Deps) {
     // set is identical to what a live `deliver()` would have computed — it
     // only adds the §11 audience-report numbers, unchanged from today's
     // delivery outcome.
-    const snap = deps.fanout.snapshotDetailed(built)
+	    const audience = strictGroups && isBroadcastHandle(built.to) ? (groupMembers ?? members(deps.db, group)) : undefined
+	    const snap = deps.fanout.snapshotDetailed(built, audience ? { audience } : {})
     // Protocol kinds (task_result, permission_*, presence_update) get NO
     // route (§6.4) — they are request-id/correlation_id keyed and never
     // reply parents.
     const route: ReplyRouteInput | null = isUserAuthoredKind(built.kind) ? {
-      msg_id: built.id, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
-      sender_instance: stampedInstance.instance ?? null, return_selector: returnSelector,
-      to_handle: built.to, to_filter_json: built.to_filter ? JSON.stringify(built.to_filter) : null,
+	      msg_id: built.id, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
+	      sender_instance: stampedInstance.instance ?? null, return_selector: returnSelector,
+	      to_handle: built.to, group_id: group, to_filter_json: built.to_filter ? JSON.stringify(built.to_filter) : null,
       thread_root: continuationRoot ?? built.thread_root ?? built.id,
       correlation_id: built.meta['correlation_id'] ?? null,
       created_at: deps.now().toISOString(),
@@ -557,9 +625,9 @@ export function messagesRoute(deps: Deps) {
     // "fix" this into a delivered-count check without re-reading
     // tests/integration/attribution.test.ts § self-excluded delivery accounting.
     if (envelope.subject === null) {
-      const isDelivered = envelope.to === TEAM_BROADCAST_HANDLE
-        ? deps.fanout.onlineHandles(envelope.team).some(h => h !== envelope.from)
-        : deps.fanout.isOnline(envelope.team, envelope.to)
+	      const isDelivered = isBroadcastHandle(envelope.to)
+	        ? deps.fanout.onlineHandlesIn(envelope.team, groupMembers ?? members(deps.db, group)).some(h => h !== envelope.from)
+	        : deps.fanout.isOnline(envelope.team, envelope.to)
       if (isDelivered) {
         deps.store.markDelivered(envelope.id)
         envelope = { ...envelope, delivered_at: deps.now().toISOString() }
@@ -599,7 +667,7 @@ function resolveThreadContinuation(
   callerHandle: string,
   callerInstance: string | undefined,
   callerSelector: string | null
-): { ok: true; canonicalRoot: string } | { ok: false } {
+): { ok: true; canonicalRoot: string; group_id: string } | { ok: false } {
   const route = deps.store.getRoute(threadRootId) ?? deps.store.getRouteByCorrelation(threadRootId)
   if (!route) return { ok: false }
 
@@ -625,7 +693,7 @@ function resolveThreadContinuation(
   )
 
   if (!sent && !granted) return { ok: false }
-  return { ok: true, canonicalRoot: route.thread_root }
+  return { ok: true, canonicalRoot: route.thread_root, group_id: route.group_id ?? DEFAULT_GROUP_ID }
 }
 
 /**
@@ -635,7 +703,7 @@ function resolveThreadContinuation(
  */
 export function durableReport(built: Envelope, persisted: boolean, repo: string | undefined): string[] {
   if (!persisted) return []
-  if (built.to === TEAM_BROADCAST_HANDLE) return repo !== undefined ? [`repo:${repo}`] : ['team']
+  if (isBroadcastHandle(built.to)) return repo !== undefined ? [`repo:${repo}`] : ['team']
   return [built.to]
 }
 

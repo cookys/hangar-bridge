@@ -114,9 +114,7 @@ export function migrateV9ToV10(db: Db): void {
 
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_claim_expires ON claim(team_id, expires_at);
-      -- P0 bridge: claims/store.ts still upserts ON CONFLICT(team_id, claim_key); P1 rescopes claims per group
-      -- and drops this index (plan §2.1.4). Until then it keeps legacy single-group behaviour byte-identical.
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_legacy_unique ON claim(team_id, claim_key);
+      DROP INDEX IF EXISTS idx_claim_legacy_unique;
       CREATE INDEX IF NOT EXISTS idx_message_group_id ON message(team_id, group_id, id);
       CREATE INDEX IF NOT EXISTS idx_message_group_to ON message(team_id, group_id, to_handle, id);
       INSERT OR IGNORE INTO schema_version(version) VALUES (10);

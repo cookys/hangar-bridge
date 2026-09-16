@@ -11,9 +11,13 @@ import { healthRoute } from './routes/health.ts'
 import { repliesRoute } from './routes/replies.ts'
 import { inboxRoute } from './routes/inbox.ts'
 import { grantsRoute } from './routes/grants.ts'
+import { whoamiRoute } from './routes/whoami.ts'
 import { accessLog } from './middleware/access-log.ts'
+import { MembershipMemo } from './groups.ts'
 
 export function buildApp(deps: Deps) {
+  deps.groupsMode ??= 'legacy'
+  deps.memberships ??= new MembershipMemo(deps.db)
   const app = new Hono()
   app.use('*', accessLog)
   // /health is wired BEFORE any auth-bearing route module so it stays public.
@@ -25,6 +29,7 @@ export function buildApp(deps: Deps) {
   app.route('/v1/stream', streamRoute(deps))
   app.route('/v1/presence', presenceRoute(deps))
   app.route('/v1/peers', peersRoute(deps))
+  app.route('/v1/whoami', whoamiRoute(deps))
   app.route('/v1/permission', permissionRoute(deps))
   // Cooperative asset-claim primitive (P4). POST/DELETE /v1/claim, GET /v1/claims;
   // the same sub-app is mounted at both paths so GET works on either.

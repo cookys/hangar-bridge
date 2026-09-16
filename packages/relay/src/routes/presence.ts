@@ -5,9 +5,10 @@ import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
 import type { Deps } from '../deps.ts'
 import { effectiveLabel } from '../presence/label.ts'
+import { loadDefaultGroup } from '../groups.ts'
 
 const PresenceBody = z.object({
-  summary: z.string().max(200),
+  summary: z.string().max(200).default(''),
   // Per-PROCESS instance id. Absent ⇒ legacy client, keyed on the bare token
   // label exactly as before. Validated here so a client-supplied string can
   // never be composed into a registry key unchecked.
@@ -61,13 +62,13 @@ export function presenceRoute(deps: Deps) {
     // 2026-08-31: 8301 rows against 59 substantive), which buried real traffic deep
     // enough that poll_inbox could only prove the link was alive — not what it is
     // for. The registry set() above remains the authority for who is online.
-    const envelope = deps.store.buildEnvelope(team, handle, {
-      to: TEAM_BROADCAST_HANDLE,
+	    const envelope = deps.store.buildEnvelope(team, handle, {
+	      to: TEAM_BROADCAST_HANDLE,
       subject: null,
       kind: 'presence_update',
       content: parsed.data.summary,
       meta,
-    })
+	    }, loadDefaultGroup(deps.db, handle))
     deps.fanout.deliver(envelope)
     return c.json({ ok: true })
   })

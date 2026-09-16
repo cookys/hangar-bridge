@@ -122,8 +122,6 @@ CREATE TABLE IF NOT EXISTS claim (
   PRIMARY KEY (team_id, group_id, claim_key)
 );
 CREATE INDEX IF NOT EXISTS idx_claim_expires ON claim(team_id, expires_at);
--- P0 bridge (dropped in P1 when claims are group-scoped): claims/store.ts upserts ON CONFLICT(team_id, claim_key).
-CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_legacy_unique ON claim(team_id, claim_key);
 
 -- Reply routing (REPLY_ROUTING_SPEC.md §3.1, schema v9). A route is stamped for
 -- every accepted user-authored message so a later reply can resolve who may

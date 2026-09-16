@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import {
-  HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, TEAM_BROADCAST_HANDLE,
+  HANGAR_TEAM_ID, isBroadcastHandle, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, TEAM_BROADCAST_HANDLE,
   SSE_EVENT_BACKLOG, SSE_EVENT_BACKLOG_END, REPLAY_MAX_MIN, REPLAY_MAX_MAX,
   BACKLOG_SCAN_CAP, BACKLOG_BY_SENDER_CAP, BACKLOG_BY_SENDER_REST,
   type Envelope, type BacklogEvent, type BacklogEndEvent, type MessageId,
@@ -13,6 +13,7 @@ import type { Subscriber } from '../fanout.ts'
 import { logJson } from '../logger.ts'
 import { effectiveLabel, parseInstanceHeader } from '../presence/label.ts'
 import { ConnectionRegistry } from '../presence/connections.ts'
+import { readerScope } from '../groups.ts'
 
 const PING_INTERVAL_MS = 25_000
 const BACKLOG_PAGE = 1000
@@ -87,13 +88,19 @@ export function streamRoute(deps: Deps) {
       // The single per-recipient gate, applied to BOTH backlog and live, keyed on
       // the authenticated handle. null-subject ⇒ pass (back-compat). Ownership is
       // the fail-closed authority; interest only narrows within owned.
-      const deliverable = (e: Envelope): boolean => {
-        // Apply self-exclusion to the durable drain too. Live delivery already
+	      const deliverable = (e: Envelope): boolean => {
+	        if ((deps.groupsMode ?? 'legacy') === 'strict' && e.kind !== 'presence_update') {
+	          const membership = deps.memberships!.get(handle).get(e.group)
+	          if (!membership) return false
+	          if (e.id <= membership.since_msg_id) return false
+	        }
+	        // Apply self-exclusion to the durable drain too. Live delivery already
         // excludes this instance in Fanout; without this check a message queued
         // while offline echoes back on the sender process's next cold start.
         if (
-          e.from === handle
-          && instance !== undefined
+	          e.from === handle
+	          && !isBroadcastHandle(e.to)
+	          && instance !== undefined
           && e.meta['sender_instance'] === instance
         ) return false
         // to_filter: presence-backed audience narrowing (v1 instance|repo). A
@@ -127,15 +134,15 @@ export function streamRoute(deps: Deps) {
       // Set when a newer connection from the same instance supersedes this one
       // (Fanout.evictSuperseded). The read loop exits, cleanup runs, and the
       // response ends — the client that still had this socket open sees EOF.
-      let superseded = false
-      const sub: Subscriber = {
+	      let closeReason: string | undefined
+	      const sub: Subscriber = {
         handle,
         team_id,
         instance,
         accept: deliverable,
         deliver: (e: Envelope) => { queue.push(e); notify?.() },
-        close: () => { superseded = true; notify?.() },
-      }
+	        close: (reason?: string) => { closeReason = reason ?? 'superseded'; notify?.() },
+	      }
       // Subscribe BEFORE backlog drain so a message landing in the connect window
       // is buffered (not lost); dedupe-by-id prevents a backlog+live double-send.
       deps.fanout.subscribe(sub)
@@ -162,9 +169,14 @@ export function streamRoute(deps: Deps) {
       // never starve deliverable rows behind it (B3). since-resume = id>cursor only
       // (client cursor is the dedup authority, preserves @team redelivery); cold-start
       // = id>cursor AND delivered_at IS NULL (pending-only).
-      const drain = since
-        ? (cur: string) => deps.store.fetchSince(team_id, handle, cur)
-        : (cur: string) => deps.store.fetchPendingSince(team_id, handle, cur)
+	      const strictGroups = (deps.groupsMode ?? 'legacy') === 'strict'
+	      const scope = strictGroups
+	        ? readerScope(deps.memberships!.get(handle))
+	        : undefined
+	      const drainInstance = strictGroups ? instance : undefined
+	      const drain = since
+	        ? (cur: string) => deps.store.fetchSince(team_id, handle, cur, drainInstance, scope)
+	        : (cur: string) => deps.store.fetchPendingSince(team_id, handle, cur, drainInstance, scope)
 
       // Butler pass (§2.1): scan the population P this connection would replay
       // — the same drain, the same `deliverable` gate — up to BACKLOG_SCAN_CAP
@@ -261,7 +273,7 @@ export function streamRoute(deps: Deps) {
       c.req.raw.signal?.addEventListener('abort', cleanup)
 
       try {
-        while (!c.req.raw.signal?.aborted && !superseded) {
+	        while (!c.req.raw.signal?.aborted && closeReason === undefined) {
           if (queue.length === 0) {
             await new Promise<void>(resolve => {
               notify = () => { notify = null; resolve() }
@@ -278,9 +290,12 @@ export function streamRoute(deps: Deps) {
         // A superseded stream must not silently swallow what was queued for it:
         // it was evicted from the fanout set already, so anything still here
         // arrived before the eviction. Hand it to the newer stream.
-        if (superseded && queue.length > 0) {
-          for (const e of queue.splice(0)) deps.fanout.deliver(e)
-        }
+	        if (closeReason === 'superseded' && queue.length > 0) {
+	          for (const e of queue.splice(0)) deps.fanout.deliver(e)
+	        }
+	        if (closeReason === 'membership_changed' || closeReason === 'removed') {
+	          await stream.writeSSE({ event: 'reauth', data: JSON.stringify({ reason: closeReason }) })
+	        }
       } finally {
         cleanup()
       }

@@ -1,6 +1,8 @@
 import {
   EnvelopeSchema,
+  DEFAULT_GROUP_ID,
   envelopeFromRow,
+  isBroadcastHandle,
   newMessageId,
   PROTOCOL_VERSION,
   TEAM_BROADCAST_HANDLE,
@@ -9,6 +11,7 @@ import {
   type OutboundMessage,
 } from '@hangar-bridge/shared'
 import type { Db } from '../db/db.ts'
+import type { ReaderScope } from '../groups.ts'
 
 export interface ReplyRoute {
   msg_id: string
@@ -17,6 +20,7 @@ export interface ReplyRoute {
   sender_instance: string | null
   return_selector: string | null
   to_handle: string
+  group_id: string
   to_filter_json: string | null
   thread_root: string
   legacy_width: string | null
@@ -33,6 +37,7 @@ export interface ReplyRouteInput {
   sender_instance?: string | null
   return_selector?: string | null
   to_handle: string
+  group_id?: string
   to_filter_json?: string | null
   thread_root: string
   legacy_width?: string | null
@@ -61,7 +66,7 @@ export type FinalizeGrantResult = 'replaced' | 'exists' | 'inserted' | null
 function envelopeFromMailboxRow(row: EnvelopeRow): Envelope {
   return {
     id: row.id, v: row.v, team: row.team_id,
-    from: row.from_handle, to: row.to_handle, subject: row.subject,
+    from: row.from_handle, to: row.to_handle, group: row.group_id ?? DEFAULT_GROUP_ID, subject: row.subject,
     in_reply_to: row.in_reply_to, thread_root: row.thread_root,
     kind: row.kind, content: row.content,
     meta: JSON.parse(row.meta_json) as Record<string, string>,
@@ -73,6 +78,11 @@ function envelopeFromMailboxRow(row: EnvelopeRow): Envelope {
 export class MessageStore {
   constructor(private readonly db: Db) {}
 
+  private scopeClause(scope?: ReaderScope): { sql: string; params: string[] } {
+    if (!scope) return { sql: '1', params: [] }
+    return { sql: scope.sql, params: scope.params }
+  }
+
   /**
    * Validate + construct an Envelope WITHOUT writing it. Split out of `insert`
    * so a directed (to_filter) message can be built + presence-gate-delivered and
@@ -80,8 +90,8 @@ export class MessageStore {
    * (chat) — while keeping recipient/in_reply_to validation identical to a
    * normal send. `delivered_at` defaults null; a caller may override at persist.
    */
-  buildEnvelope(team_id: string, from_handle: string, msg: OutboundMessage): Envelope {
-    if (msg.to !== TEAM_BROADCAST_HANDLE) {
+  buildEnvelope(team_id: string, from_handle: string, msg: OutboundMessage, groupId: string = DEFAULT_GROUP_ID): Envelope {
+    if (!isBroadcastHandle(msg.to)) {
       const rcpt = this.db.prepare(
         "SELECT 1 AS x FROM human WHERE team_id=? AND handle=? AND disabled_at IS NULL"
       ).get(team_id, msg.to)
@@ -91,8 +101,8 @@ export class MessageStore {
     let thread_root: string | null = null
     if (msg.in_reply_to) {
       const parent = this.db.prepare(
-        "SELECT thread_root, id FROM message WHERE id=? AND team_id=?"
-      ).get(msg.in_reply_to, team_id) as { thread_root: string | null; id: string } | undefined
+        "SELECT thread_root, id FROM message WHERE id=? AND team_id=? AND group_id=?"
+      ).get(msg.in_reply_to, team_id, groupId) as { thread_root: string | null; id: string } | undefined
       if (!parent) throw new Error(`unknown in_reply_to: ${msg.in_reply_to}`)
       thread_root = parent.thread_root ?? parent.id
     }
@@ -103,6 +113,7 @@ export class MessageStore {
       team: team_id,
       from: from_handle,
       to: msg.to,
+      group: groupId,
       subject: msg.subject ?? null,
       in_reply_to: msg.in_reply_to ?? null,
       thread_root,
@@ -118,10 +129,10 @@ export class MessageStore {
   /** Write a pre-built envelope. `deliveredAt` overrides envelope.delivered_at. */
   persist(envelope: Envelope, deliveredAt?: string | null): void {
     this.db.prepare(`
-      INSERT INTO message(id,v,team_id,from_handle,to_handle,subject,in_reply_to,thread_root,kind,content,meta_json,to_filter_json,sent_at,delivered_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO message(id,v,team_id,from_handle,to_handle,group_id,subject,in_reply_to,thread_root,kind,content,meta_json,to_filter_json,sent_at,delivered_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
-      envelope.id, envelope.v, envelope.team, envelope.from, envelope.to, envelope.subject,
+      envelope.id, envelope.v, envelope.team, envelope.from, envelope.to, envelope.group, envelope.subject,
       envelope.in_reply_to, envelope.thread_root, envelope.kind, envelope.content,
       JSON.stringify(envelope.meta),
       envelope.to_filter == null ? null : JSON.stringify(envelope.to_filter),
@@ -129,8 +140,8 @@ export class MessageStore {
     )
   }
 
-  insert(team_id: string, from_handle: string, msg: OutboundMessage): Envelope {
-    const envelope = this.buildEnvelope(team_id, from_handle, msg)
+  insert(team_id: string, from_handle: string, msg: OutboundMessage, groupId: string = DEFAULT_GROUP_ID): Envelope {
+    const envelope = this.buildEnvelope(team_id, from_handle, msg, groupId)
     this.persist(envelope)
     return envelope
   }
@@ -142,20 +153,22 @@ export class MessageStore {
    * session's own next cold start. Omitted, behaviour is byte-identical to
    * today (existing callers unaffected).
    */
-  fetchSince(team_id: string, to_handle: string, since_id: string, pollerInstance?: string): Envelope[] {
+  fetchSince(team_id: string, to_handle: string, since_id: string, pollerInstance?: string, scope?: ReaderScope): Envelope[] {
+    const scoped = this.scopeClause(scope)
     const directClause = pollerInstance === undefined
       ? 'to_handle=?'
       : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
     const params = pollerInstance === undefined
-      ? [team_id, since_id, to_handle, to_handle]
-      : [team_id, since_id, to_handle, pollerInstance, to_handle]
+      ? [team_id, since_id, ...scoped.params, to_handle, to_handle]
+      : [team_id, since_id, ...scoped.params, to_handle, pollerInstance, to_handle]
     const rows = this.db.prepare(`
-      SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
+      SELECT id, v, team_id, from_handle, to_handle, group_id, subject, in_reply_to, thread_root,
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ?
+        AND ${scoped.sql}
         AND to_handle NOT LIKE '@mailbox:%'
-        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
+        AND (${directClause} OR (to_handle IN ('@team','@group') AND from_handle != ?))
       ORDER BY id ASC LIMIT 1000
     `).all(...params) as EnvelopeRow[]
     return rows.map(envelopeFromRow)
@@ -167,20 +180,22 @@ export class MessageStore {
   // window — the single-shot variant could permanently starve deliverable rows past
   // position 1000 (B3 black hole).
   // Same §4 self-exclusion as fetchSince (pollerInstance optional, back-compat when omitted).
-  fetchPendingSince(team_id: string, to_handle: string, since_id: string, pollerInstance?: string): Envelope[] {
+  fetchPendingSince(team_id: string, to_handle: string, since_id: string, pollerInstance?: string, scope?: ReaderScope): Envelope[] {
+    const scoped = this.scopeClause(scope)
     const directClause = pollerInstance === undefined
       ? 'to_handle=?'
       : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
     const params = pollerInstance === undefined
-      ? [team_id, since_id, to_handle, to_handle]
-      : [team_id, since_id, to_handle, pollerInstance, to_handle]
+      ? [team_id, since_id, ...scoped.params, to_handle, to_handle]
+      : [team_id, since_id, ...scoped.params, to_handle, pollerInstance, to_handle]
     const rows = this.db.prepare(`
-      SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
+      SELECT id, v, team_id, from_handle, to_handle, group_id, subject, in_reply_to, thread_root,
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ? AND delivered_at IS NULL
+        AND ${scoped.sql}
         AND to_handle NOT LIKE '@mailbox:%'
-        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
+        AND (${directClause} OR (to_handle IN ('@team','@group') AND from_handle != ?))
       ORDER BY id ASC LIMIT 1000
     `).all(...params) as EnvelopeRow[]
     return rows.map(envelopeFromRow)
@@ -195,20 +210,23 @@ export class MessageStore {
    * Same recipient predicate as fetchSince (direct rows plus @team from others).
    */
   // Same §4 self-exclusion as fetchSince (pollerInstance optional, back-compat when omitted).
-  fetchInboxSince(team_id: string, to_handle: string, since_id: string, limit: number, pollerInstance?: string): Envelope[] {
+  fetchInboxSince(team_id: string, to_handle: string, since_id: string, limit: number, pollerInstance?: string, scope?: ReaderScope, includeOwnBroadcast = false): Envelope[] {
+    const scoped = this.scopeClause(scope)
+    const broadcastClause = includeOwnBroadcast ? "to_handle IN ('@team','@group')" : "(to_handle IN ('@team','@group') AND from_handle != ?)"
     const directClause = pollerInstance === undefined
       ? 'to_handle=?'
       : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
     const params = pollerInstance === undefined
-      ? [team_id, since_id, to_handle, to_handle, limit]
-      : [team_id, since_id, to_handle, pollerInstance, to_handle, limit]
+      ? [team_id, since_id, ...scoped.params, to_handle, ...(includeOwnBroadcast ? [] : [to_handle]), limit]
+      : [team_id, since_id, ...scoped.params, to_handle, pollerInstance, ...(includeOwnBroadcast ? [] : [to_handle]), limit]
     const rows = this.db.prepare(`
-      SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
+      SELECT id, v, team_id, from_handle, to_handle, group_id, subject, in_reply_to, thread_root,
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE team_id=? AND id > ?
+        AND ${scoped.sql}
         AND to_handle NOT LIKE '@mailbox:%'
-        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
+        AND (${directClause} OR ${broadcastClause})
       ORDER BY id ASC LIMIT ?
     `).all(...params) as EnvelopeRow[]
     return rows.map(envelopeFromRow)
@@ -219,18 +237,21 @@ export class MessageStore {
    * strictly after `after_id`, in the same shape `fetchInboxSince` selects;
    * the route applies ownsNamespace on top and pages until its cap.
    */
-  fetchInboxIdsAfter(team_id: string, to_handle: string, after_id: string, limit: number, pollerInstance?: string): Array<{ id: string; subject: string | null }> {
+  fetchInboxIdsAfter(team_id: string, to_handle: string, after_id: string, limit: number, pollerInstance?: string, scope?: ReaderScope, includeOwnBroadcast = false): Array<{ id: string; subject: string | null }> {
+    const scoped = this.scopeClause(scope)
+    const broadcastClause = includeOwnBroadcast ? "to_handle IN ('@team','@group')" : "(to_handle IN ('@team','@group') AND from_handle != ?)"
     const directClause = pollerInstance === undefined
       ? 'to_handle=?'
       : `(to_handle=? AND (json_extract(meta_json,'$.sender_instance') IS NULL OR json_extract(meta_json,'$.sender_instance') != ?))`
     const params = pollerInstance === undefined
-      ? [team_id, after_id, to_handle, to_handle, limit]
-      : [team_id, after_id, to_handle, pollerInstance, to_handle, limit]
+      ? [team_id, after_id, ...scoped.params, to_handle, ...(includeOwnBroadcast ? [] : [to_handle]), limit]
+      : [team_id, after_id, ...scoped.params, to_handle, pollerInstance, ...(includeOwnBroadcast ? [] : [to_handle]), limit]
     return this.db.prepare(`
       SELECT id, subject FROM message
       WHERE team_id=? AND id > ?
+        AND ${scoped.sql}
         AND to_handle NOT LIKE '@mailbox:%'
-        AND (${directClause} OR (to_handle='@team' AND from_handle != ?))
+        AND (${directClause} OR ${broadcastClause})
       ORDER BY id ASC LIMIT ?
     `).all(...params) as Array<{ id: string; subject: string | null }>
   }
@@ -252,12 +273,12 @@ export class MessageStore {
     this.db.prepare(`
       INSERT INTO reply_route(
         msg_id, team_id, from_handle, sender_instance, return_selector, to_handle,
-        to_filter_json, thread_root, legacy_width, correlation_id, created_at, expires_at, unaddressable_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        group_id, to_filter_json, thread_root, legacy_width, correlation_id, created_at, expires_at, unaddressable_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       route.msg_id, route.team_id, route.from_handle,
       route.sender_instance ?? null, route.return_selector ?? null,
-      route.to_handle, route.to_filter_json ?? null, route.thread_root,
+      route.to_handle, route.group_id ?? DEFAULT_GROUP_ID, route.to_filter_json ?? null, route.thread_root,
       route.legacy_width ?? null, route.correlation_id ?? null,
       route.created_at, route.expires_at ?? null, route.unaddressable_at ?? null
     )
@@ -383,14 +404,16 @@ export class MessageStore {
    * intentionally never overlaps `fetchSince` / `fetchPendingSince` /
    * `fetchInboxSince`, which only ever match a bare handle or `@team`.
    */
-  fetchMailboxSince(handle: string, since_id: string, limit: number): Envelope[] {
+  fetchMailboxSince(handle: string, since_id: string, limit: number, scope?: ReaderScope): Envelope[] {
+    const scoped = this.scopeClause(scope)
     const rows = this.db.prepare(`
-      SELECT id, v, team_id, from_handle, to_handle, subject, in_reply_to, thread_root,
+      SELECT id, v, team_id, from_handle, to_handle, group_id, subject, in_reply_to, thread_root,
              kind, content, meta_json, to_filter_json, sent_at, delivered_at
       FROM message
       WHERE to_handle = ? AND id > ?
+        AND ${scoped.sql}
       ORDER BY id ASC LIMIT ?
-    `).all(`@mailbox:${handle}`, since_id, limit) as EnvelopeRow[]
+    `).all(`@mailbox:${handle}`, since_id, ...scoped.params, limit) as EnvelopeRow[]
     return rows.map(envelopeFromMailboxRow)
   }
 }

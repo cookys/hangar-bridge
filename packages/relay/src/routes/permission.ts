@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { HANGAR_TEAM_ID, type MessageId } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import type { Deps } from '../deps.ts'
+import { loadMemberships, readerScope } from '../groups.ts'
 
 const Body = z.object({
   request_id: z.string().regex(/^[a-km-z]{5}$/i),
@@ -14,6 +15,7 @@ interface RequestRow {
   id: string
   content: string
   from_handle: string
+  group_id: string
   meta_json: string
 }
 
@@ -25,15 +27,19 @@ export function permissionRoute(deps: Deps) {
     const parsed = Body.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'invalid_body' }, 400)
 
-    const team = HANGAR_TEAM_ID
-    const me = c.get('peer').handle
-
-    const rows = deps.db.prepare(`
-      SELECT id, content, from_handle, meta_json
-      FROM message
-      WHERE team_id=? AND kind='permission_request' AND to_handle=?
-      ORDER BY id DESC LIMIT 50
-    `).all(team, me) as RequestRow[]
+	    const team = HANGAR_TEAM_ID
+	    const me = c.get('peer').handle
+	    const scope = (deps.groupsMode ?? 'legacy') === 'strict'
+	      ? readerScope(loadMemberships(deps.db, me))
+	      : undefined
+	
+	    const rows = deps.db.prepare(`
+	      SELECT id, content, from_handle, group_id, meta_json
+	      FROM message
+	      WHERE team_id=? AND kind='permission_request' AND to_handle=?
+	        AND ${scope?.sql ?? '1'}
+	      ORDER BY id DESC LIMIT 50
+	    `).all(team, me, ...(scope?.params ?? [])) as RequestRow[]
 
     const want = parsed.data.request_id.toLowerCase()
     const req = rows
@@ -55,10 +61,10 @@ export function permissionRoute(deps: Deps) {
       to: req.from_handle,
       subject: null,
       kind: 'permission_verdict',
-      content: '',
-      in_reply_to: req.id as MessageId,
-      meta,
-    })
+	      content: '',
+	      in_reply_to: req.id as MessageId,
+	      meta,
+	    }, req.group_id)
     deps.fanout.deliver(verdict)
     const nowIso = deps.now().toISOString()
     deps.db.prepare("UPDATE message SET delivered_at=COALESCE(delivered_at,?) WHERE id=?")

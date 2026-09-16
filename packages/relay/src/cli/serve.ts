@@ -9,6 +9,9 @@ import { ClaimStore } from '../claims/store.ts'
 import { startInactivitySweeper } from '../purge.ts'
 import { initRelayFromPeersFile } from './init.ts'
 import { logJson } from '../logger.ts'
+import type { Deps } from '../deps.ts'
+import { MembershipMemo, sharedAudience } from '../groups.ts'
+import { HANGAR_TEAM_ID } from '@hangar-bridge/shared'
 
 export interface ServeOpts {
   db_path: string
@@ -37,9 +40,29 @@ export function parseAddressRulesEnv(value: string | undefined): 'off' | 'on' {
  * restart cannot offer, where a bad file leaves the fleet with no relay at all.
  * Returns true iff the reload applied.
  */
-export function reloadRoster(db: ReturnType<typeof openDatabase>, peersFile: string): boolean {
+export function reloadRoster(depsOrDb: Deps | ReturnType<typeof openDatabase>, peersFile: string): boolean {
+  const deps: Deps = 'store' in depsOrDb
+    ? depsOrDb
+    : {
+      db: depsOrDb,
+      store: new MessageStore(depsOrDb),
+      fanout: new Fanout(),
+      presence: new PresenceRegistry(),
+      claims: new ClaimStore(depsOrDb),
+      now: () => new Date(),
+      groupsMode: 'legacy',
+      memberships: new MembershipMemo(depsOrDb),
+    }
   try {
-    const r = initRelayFromPeersFile(db, { peers_file: peersFile })
+    const r = initRelayFromPeersFile(deps.db, { peers_file: peersFile })
+    deps.groupsMode = r.mode
+    deps.memberships?.clear()
+    for (const s of r.diff.shrunk) {
+      deps.fanout.dropHandle(HANGAR_TEAM_ID, s.handle, 'membership_changed')
+    }
+    for (const handle of r.diff.removed_handles) {
+      deps.fanout.dropHandle(HANGAR_TEAM_ID, handle, 'removed')
+    }
     logJson('info', 'relay.roster.reloaded', { seeded: r.seeded.length })
     return true
   } catch (err) {
@@ -59,8 +82,11 @@ export function startServer(opts: ServeOpts) {
     process.exit(1)
   }
   const db = openDatabase(opts.db_path)
+  const initial = opts.peers_file
+    ? initRelayFromPeersFile(db, { peers_file: opts.peers_file })
+    : { mode: 'legacy' as const, seeded: [], diff: { mode: 'legacy' as const, removed_handles: [], shrunk: [], grown: [] } }
   const store = new MessageStore(db)
-  const fanout = new Fanout()
+  const fanout = new Fanout({ sharedAudience: (_team, handle) => sharedAudience(db, handle) })
   const presence = new PresenceRegistry()
   const claims = new ClaimStore(db)
   // Defaults to 'warn' so an upgrade never changes delivery behaviour on its
@@ -68,7 +94,12 @@ export function startServer(opts: ServeOpts) {
   // knows fleet_wide). Flipping it is a config change, not a redeploy.
   const broadcastGate = process.env.HANGAR_BROADCAST_GATE === 'enforce' ? 'enforce' as const : 'warn' as const
   const addressRules = parseAddressRulesEnv(process.env.HANGAR_RELAY_ADDRESS_RULES)
-  const app = buildApp({ db, store, fanout, presence, claims, now: () => new Date(), broadcastGate, addressRules })
+  const deps: Deps = {
+    db, store, fanout, presence, claims, now: () => new Date(), broadcastGate, addressRules,
+    groupsMode: initial.mode, metricsToken: process.env.HANGAR_METRICS_TOKEN,
+    memberships: new MembershipMemo(db),
+  }
+  const app = buildApp(deps)
   const server = serve({ fetch: app.fetch, port: opts.port, hostname: opts.host })
 
   const days = opts.inactive_days ?? 30
@@ -80,7 +111,7 @@ export function startServer(opts: ServeOpts) {
 
   if (opts.peers_file) {
     const peersFile = opts.peers_file
-    process.on('SIGHUP', () => { reloadRoster(db, peersFile) })
+    process.on('SIGHUP', () => { reloadRoster(deps, peersFile) })
     logJson('info', 'relay.roster.reload_handler.armed', { peers_file: peersFile })
   }
 

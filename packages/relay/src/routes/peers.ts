@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { HANGAR_TEAM_ID } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import type { Deps } from '../deps.ts'
+import { loadMemberships, sharedAudience } from '../groups.ts'
 
 const TTL_MS = 2_000
 
@@ -15,17 +16,28 @@ export function peersRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
   app.use('*', bearerAuth(deps.db))
 
-  let cached: { at: number; body: string } | null = null
+  const cached = new Map<string, { at: number; body: string }>()
 
   app.get('/', c => {
-    if (cached && Date.now() - cached.at < TTL_MS) {
-      return c.body(cached.body, 200, { 'content-type': 'application/json' })
+    const reader = c.get('peer').handle
+    const readerMemberships = loadMemberships(deps.db, reader)
+    const cacheKey = [...readerMemberships.keys()].sort().join('\0')
+    const hit = cached.get(cacheKey)
+    if (hit && Date.now() - hit.at < TTL_MS) {
+      return c.body(hit.body, 200, { 'content-type': 'application/json' })
     }
+    const visible = (deps.groupsMode ?? 'legacy') === 'strict'
+      ? new Set([...sharedAudience(deps.db, reader), reader])
+      : null
     const humans = deps.db.prepare(
       "SELECT id, handle, display_name FROM human WHERE team_id=? AND disabled_at IS NULL"
     ).all(HANGAR_TEAM_ID) as HumanRow[]
 
-    const list = humans.map(h => {
+    const list = humans.filter(h => visible === null || visible.has(h.handle)).map(h => {
+      const peerMemberships = loadMemberships(deps.db, h.handle)
+      const groups = [...peerMemberships.values()]
+        .filter(m => h.handle === reader || readerMemberships.has(m.group_id))
+        .map(m => ({ id: m.group_id, caps: [...m.caps] }))
       const snap = deps.presence.get(HANGAR_TEAM_ID, h.handle)
       // Presence (a heartbeat POST) and a live SSE subscription are two
       // different facts, and a session can hold the first without the second —
@@ -45,11 +57,12 @@ export function peersRoute(deps: Deps) {
         summary: snap?.summary ?? '',
         last_seen: snap?.last_seen ?? null,
         subscribed,
-        sessions,
-      }
-    })
-    const body = JSON.stringify(list)
-    cached = { at: Date.now(), body }
+	        sessions,
+	        groups,
+	      }
+	    })
+	    const body = JSON.stringify(list)
+	    cached.set(cacheKey, { at: Date.now(), body })
     return c.body(body, 200, { 'content-type': 'application/json' })
   })
   return app
