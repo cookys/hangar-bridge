@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import {
+  DEFAULT_GROUP_ID,
   HANGAR_TEAM_ID,
   CLAIM_KEY_REGEX, MAX_CLAIM_KEY_LENGTH, MAX_CLAIM_NOTE_LENGTH,
   CLAIM_TTL_MIN_SECONDS, CLAIM_TTL_MAX_SECONDS, CLAIM_DEFAULT_TTL_SECONDS,
@@ -43,7 +44,7 @@ export function claimsRoute(deps: Deps) {
 	    const { key, ttl_seconds, note } = parsed.data
 	    const group = (deps.groupsMode ?? 'legacy') === 'strict'
 	      ? (parsed.data.group ?? loadDefaultGroup(deps.db, owner))
-	      : 'cookys'
+		      : DEFAULT_GROUP_ID
 	    const memberships = loadMemberships(deps.db, owner)
 	    const cap = (deps.groupsMode ?? 'legacy') === 'strict' ? requireCap(memberships, group, 'claim') : 'ok'
 	    if (cap === 'unknown_group') {
@@ -67,7 +68,7 @@ export function claimsRoute(deps: Deps) {
 
 	  // List all live claims.
 	  app.get('/', c => {
-	    if ((deps.groupsMode ?? 'legacy') !== 'strict') return c.json(deps.claims.list(HANGAR_TEAM_ID))
+	    if ((deps.groupsMode ?? 'legacy') !== 'strict') return c.json(deps.claims.list(HANGAR_TEAM_ID, [DEFAULT_GROUP_ID]))
 	    const memberships = loadMemberships(deps.db, c.get('peer').handle)
 	    return c.json(deps.claims.list(HANGAR_TEAM_ID, [...memberships.keys()]))
 	  })
@@ -84,7 +85,7 @@ export function claimsRoute(deps: Deps) {
 	    const owner = peer.handle
 	    const group = (deps.groupsMode ?? 'legacy') === 'strict'
 	      ? (parsed.data.group ?? loadDefaultGroup(deps.db, owner))
-	      : 'cookys'
+		      : DEFAULT_GROUP_ID
 	    const memberships = loadMemberships(deps.db, owner)
 	    const cap = (deps.groupsMode ?? 'legacy') === 'strict' ? requireCap(memberships, group, 'claim') : 'ok'
 	    if (cap === 'unknown_group') {

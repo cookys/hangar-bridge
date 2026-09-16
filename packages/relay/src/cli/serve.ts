@@ -40,19 +40,7 @@ export function parseAddressRulesEnv(value: string | undefined): 'off' | 'on' {
  * restart cannot offer, where a bad file leaves the fleet with no relay at all.
  * Returns true iff the reload applied.
  */
-export function reloadRoster(depsOrDb: Deps | ReturnType<typeof openDatabase>, peersFile: string): boolean {
-  const deps: Deps = 'store' in depsOrDb
-    ? depsOrDb
-    : {
-      db: depsOrDb,
-      store: new MessageStore(depsOrDb),
-      fanout: new Fanout(),
-      presence: new PresenceRegistry(),
-      claims: new ClaimStore(depsOrDb),
-      now: () => new Date(),
-      groupsMode: 'legacy',
-      memberships: new MembershipMemo(depsOrDb),
-    }
+export function reloadRoster(deps: Deps, peersFile: string): boolean {
   try {
     const r = initRelayFromPeersFile(deps.db, { peers_file: peersFile })
     deps.groupsMode = r.mode

@@ -318,9 +318,7 @@ export function repliesRoute(deps: Deps) {
   app.post('/', async c => {
     const peer = c.get('peer')
 
-	    const idemKeyRaw = c.req.header('idempotency-key') ?? (
-	      (deps.groupsMode ?? 'legacy') === 'strict' ? newMessageId() : undefined
-	    )
+	    const idemKeyRaw = c.req.header('idempotency-key')
     if (idemKeyRaw === undefined) {
       return c.json(errorBody('idempotency_key_required', 'the Idempotency-Key header is required on /v1/replies'), asStatus(REPLY_ERROR_HTTP_STATUS.idempotency_key_required!))
     }
@@ -476,7 +474,7 @@ export function repliesRoute(deps: Deps) {
         throw err
       }
       if (outcome === 'storm') return c.json(stormBody, asStatus(REPLY_ERROR_HTTP_STATUS.reply_storm!))
-	      return c.json(body, (deps.groupsMode ?? 'legacy') === 'strict' ? 201 : 200)
+	      return c.json(body, 200)
     }
 
     // ── session branch (§5.1 step 6, the normal case) ────────────────
@@ -551,7 +549,7 @@ export function repliesRoute(deps: Deps) {
     // no other writer could have taken over mid-transaction-to-here) leaves
     // the row at `committed`, which §5.1 calls "the honest state".
     fencedIdemUpdate(deps.db, keyHash, myLease, { state: 'final', result_status: 200, result_json: JSON.stringify(finalBody), error_until: null })
-	    return c.json(finalBody, (deps.groupsMode ?? 'legacy') === 'strict' ? 201 : 200)
+	    return c.json(finalBody, 200)
   })
 
   return app

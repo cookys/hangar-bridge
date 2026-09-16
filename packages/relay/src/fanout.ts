@@ -191,7 +191,7 @@ export class Fanout {
           selfExcluded = true
           continue
         }
-        if (e.kind !== 'presence_update' && sub.accept && !sub.accept(e)) continue
+        if (sub.accept && !sub.accept(e)) continue
         if (deliver) sub.deliver(e)
         matched.push({ handle, instance: sub.instance })
       }

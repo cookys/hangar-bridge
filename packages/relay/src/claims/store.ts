@@ -45,16 +45,9 @@ export class ClaimStore {
    * DIFFERENT handle holds a live claim.
    */
   acquire(
-    team_id: string, groupOrKey: string, keyOrOwner: string, ownerOrLabel: string | null,
-    labelOrTtl: string | number | null, ttlOrNote: number | string | null, noteMaybe?: string | null,
+    team_id: string, group_id: string, claim_key: string, owner_handle: string,
+    owner_label: string | null, ttl_seconds: number, note: string | null,
   ): AcquireResult {
-    const oldShape = typeof labelOrTtl === 'number'
-    const group_id = oldShape ? 'cookys' : groupOrKey
-    const claim_key = oldShape ? groupOrKey : keyOrOwner
-    const owner_handle = oldShape ? keyOrOwner : ownerOrLabel!
-    const owner_label = oldShape ? ownerOrLabel : labelOrTtl as string | null
-    const ttlSec = oldShape ? labelOrTtl : ttlOrNote as number
-    const note = oldShape ? ttlOrNote as string | null : noteMaybe ?? null
     const now = this.now()
     const nowIso = now.toISOString()
     const current = this.live(team_id, group_id, claim_key, nowIso)
@@ -62,7 +55,7 @@ export class ClaimStore {
       return { ok: false, conflict: current }
     }
     const renewed = current !== undefined // same-owner live row ⇒ renew/extend
-    const expires_at = new Date(now.getTime() + ttlSec * 1000).toISOString()
+    const expires_at = new Date(now.getTime() + ttl_seconds * 1000).toISOString()
     // Preserve created_at on renew; reset it when (re)claiming a free/expired key.
     const created_at = renewed ? current!.created_at : nowIso
     this.db.prepare(`
@@ -82,13 +75,13 @@ export class ClaimStore {
   }
 
   /** List live (non-expired) claims for a team, ordered by key. */
-  list(team_id: string, groupIds?: string[]): Claim[] {
+  list(team_id: string, group_ids: string[]): Claim[] {
     const nowIso = this.now().toISOString()
-    if (groupIds && groupIds.length === 0) return []
-    const groupClause = groupIds ? `AND group_id IN (${groupIds.map(() => '?').join(',')})` : ''
+    if (group_ids.length === 0) return []
+    const groupClause = `AND group_id IN (${group_ids.map(() => '?').join(',')})`
     return this.db.prepare(
       `SELECT * FROM claim WHERE team_id=? AND expires_at > ? ${groupClause} ORDER BY group_id ASC, claim_key ASC`
-    ).all(team_id, nowIso, ...(groupIds ?? [])) as Claim[]
+    ).all(team_id, nowIso, ...group_ids) as Claim[]
   }
 
   /**
@@ -96,10 +89,7 @@ export class ClaimStore {
    * considered already released (idempotent delete). A live claim held by a different
    * handle is refused (conflict) so one peer cannot steal another's lock.
    */
-  release(team_id: string, groupOrKey: string, keyOrOwner: string, ownerMaybe?: string): ReleaseResult {
-    const group_id = ownerMaybe === undefined ? 'cookys' : groupOrKey
-    const claim_key = ownerMaybe === undefined ? groupOrKey : keyOrOwner
-    const owner_handle = ownerMaybe === undefined ? keyOrOwner : ownerMaybe
+  release(team_id: string, group_id: string, claim_key: string, owner_handle: string): ReleaseResult {
     const nowIso = this.now().toISOString()
     const current = this.live(team_id, group_id, claim_key, nowIso)
     if (current && current.owner_handle !== owner_handle) {
