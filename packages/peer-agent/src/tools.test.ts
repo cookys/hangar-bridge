@@ -170,6 +170,29 @@ describe('registerTools', () => {
     })
   })
 
+  it('send_to_peer fills the runtime default_group when group is omitted in strict mode, and never in legacy', async () => {
+    const mk = () => vi.fn(async (payload: any) => ({
+      id: 'msg_01HRK7Y000000000000000000A', v: 2, team: 't1', from: 'a', to: payload.to, group: payload.group,
+      in_reply_to: null, thread_root: null, kind: 'chat', content: payload.content, meta: {},
+      sent_at: '2026-01-01T00:00:00.000Z', delivered_at: null,
+    }))
+    const strictSend = mk()
+    const strictClient = { send: strictSend, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient
+    const strict = registerTools(
+      strictClient, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false },
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { groupsMode: 'strict', handle: 'alice', default_group: 'lab', groups: [{ id: 'lab', caps: ['chat', 'broadcast'], history: 'since_join' }] },
+    )
+    await strict.callTool('send_to_peer', { to: '@group', content: 'hello', fleet_wide: true })
+    expect(strictSend.mock.calls[0]![0]).toMatchObject({ to: '@group', group: 'lab' })
+
+    const legacySend = mk()
+    const legacyClient = { send: legacySend, listPeers: vi.fn(async () => []), setPresence: vi.fn() } as unknown as RelayClient
+    const legacy = registerTools(legacyClient, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
+    await legacy.callTool('send_to_peer', { content: 'hello', fleet_wide: true })
+    expect(legacySend.mock.calls[0]![0]).not.toHaveProperty('group')
+  })
+
   it('send_to_peer logs the deprecated @team alias warning once without adding response text', async () => {
     const send = vi.fn(async (payload: any) => ({
       id: 'msg_01HRK7Y000000000000000000A', v: 2, team: 't1', from: 'a', to: payload.to,

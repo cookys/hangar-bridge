@@ -586,7 +586,10 @@ export function registerTools(
         content: input.content,
         meta: input.meta ?? {},
       }
+      // plan §2.1.9: a configured default_group (validated at startup against /v1/whoami) is what an
+      // omitted `group` means on THIS side; only in strict mode, so a legacy relay sees no new key.
       if (input.group !== undefined) payload.group = input.group
+      else if (groupsRuntime?.groupsMode === 'strict') payload.group = groupsRuntime.default_group
       if (input.in_reply_to !== undefined) payload.in_reply_to = input.in_reply_to as MessageId
       if (input.thread_root !== undefined) payload.thread_root = input.thread_root as MessageId
       if (input.all_sessions !== undefined) payload.all_sessions = input.all_sessions
