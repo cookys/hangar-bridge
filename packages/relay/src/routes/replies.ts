@@ -22,7 +22,7 @@ import type { Db } from '../db/db.ts'
 import type { ReplyRoute, ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
 import { ReplyLimiter } from '../reply-limiter.ts'
 import { parseReturnSelectorHeader, grantsFromSnapshot, durableReport } from './messages.ts'
-import { loadMemberships, readerScope, type ReaderScope } from '../groups.ts'
+import { loadDefaultGroup, loadMemberships, readerScope, type ReaderScope } from '../groups.ts'
 import { envelopeForWire } from './wire.ts'
 
 // ---------------------------------------------------------------------
@@ -360,10 +360,17 @@ export function repliesRoute(deps: Deps) {
 
     /** §5.1 steps 2-4/5 refusal: write reply_idem -> error under the fence (with an optional atomic tombstone), respond. */
     function writeRefusal(
-      code: ReplyErrorCode, status: number, message: string, tombstoneMsgId?: string
+      code: ReplyErrorCode, status: number, message: string, tombstoneMsgId?: string, groupId?: string
     ): Response {
       const body = errorBody(code, message, { retryWithNewKey: true })
       const json = JSON.stringify(body)
+      // plan §2.5-6: every strict-mode refusal is audited with the group it was decided in
+      // (the parent route's group when one resolved, else the replier's default group).
+      if ((deps.groupsMode ?? 'legacy') === 'strict') {
+        auditEvent(deps, peer.id, 'group.reply_refused', {
+          group_id: groupId ?? loadDefaultGroup(deps.db, peer.handle), handle: peer.handle, error: code, in_reply_to: data.in_reply_to,
+        })
+      }
       if (tombstoneMsgId === undefined) {
         const changes = fencedIdemUpdate(deps.db, keyHash, myLease, { state: 'error', result_status: status, result_json: json, error_until: null })
         if (changes === 0) return replyInProgress(c)
@@ -391,17 +398,17 @@ export function repliesRoute(deps: Deps) {
 
     const audience = checkAudience(deps, routeForReply, peer.handle, declaredInstance, declaredSelector)
     if (audience === 'not_a_recipient') {
-      return writeRefusal('not_a_recipient', REPLY_ERROR_HTTP_STATUS.not_a_recipient!, 'you are not in this route\'s grants')
+      return writeRefusal('not_a_recipient', REPLY_ERROR_HTTP_STATUS.not_a_recipient!, 'you are not in this route\'s grants', undefined, routeForReply.group_id ?? undefined)
     }
     if (audience === 'legacy_unreplyable') {
-      return writeRefusal('legacy_unreplyable', REPLY_ERROR_HTTP_STATUS.legacy_unreplyable!, 'this backfilled row carried a to_filter and cannot be replied to')
+      return writeRefusal('legacy_unreplyable', REPLY_ERROR_HTTP_STATUS.legacy_unreplyable!, 'this backfilled row carried a to_filter and cannot be replied to', undefined, routeForReply.group_id ?? undefined)
     }
 
 	    if (!isRouteAddressable(deps, routeForReply)) {
       return writeRefusal(
         'parent_unaddressable', REPLY_ERROR_HTTP_STATUS.parent_unaddressable!,
         'the parent has no sender_instance, return_selector is ~none, or from_handle is disabled/removed',
-	        routeForReply.msg_id
+	        routeForReply.msg_id, routeForReply.group_id ?? undefined
 	      )
 	    }
 	
@@ -545,4 +552,12 @@ export function repliesRoute(deps: Deps) {
   })
 
   return app
+}
+
+function auditEvent(
+  deps: Deps, actorHumanId: string, event: string, detail: Record<string, string>
+): void {
+  deps.db.prepare(
+    'INSERT INTO audit_log(team_id,at,actor_human_id,event,detail_json) VALUES (?,?,?,?,?)'
+  ).run(HANGAR_TEAM_ID, deps.now().toISOString(), actorHumanId, event, JSON.stringify(detail))
 }

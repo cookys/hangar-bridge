@@ -58,8 +58,8 @@ describe('strict group refusal audits', () => {
     })
   })
 
-  const post = (who: Handle, body: unknown, headers: Record<string, string> = {}) =>
-    app.request('/v1/messages', {
+  const post = (who: Handle, body: unknown, headers: Record<string, string> = {}, path = '/v1/messages') =>
+    app.request(path, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${tok[who]}`,
@@ -167,5 +167,15 @@ describe('strict group refusal audits', () => {
       handle: 'b',
       error: 'handle_needs_all_sessions',
     })
+  })
+  it('audits a strict not_a_recipient reply refusal with the parent route group_id', async () => {
+    const parent = await (await post('b', { to: 'c', kind: 'chat', content: 'root', group: 'lab', all_sessions: true })).json() as { id: string }
+    // a is not a recipient of a lab message (and not even a lab member): the refusal must be audited with group_id
+    const res = await post('a', { in_reply_to: parent.id, content: 'r' }, { 'idempotency-key': 'k-audit-1' }, '/v1/replies')
+    expect([403, 404]).toContain(res.status)
+    const rows = auditDetails('group.reply_refused')
+    expect(rows.length).toBeGreaterThanOrEqual(1)
+    expect(rows[0]).toMatchObject({ handle: 'a' })
+    expect(typeof rows[0]!.group_id).toBe('string')
   })
 })
