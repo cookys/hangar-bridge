@@ -1,6 +1,6 @@
 # Plan — Relay groups:同一個 hub 上多個互不可見的圈子,訊息安全由 relay 逐則裁決
 
-status: **REVIEWED r4 — Fable 5.1 gen-4 SHIP-AS-IS**(J1–J4 非 blocker 亦已折入);可動工(dev-flow L)
+status: **IMPLEMENTED 2026-09-16** — P0–P3a merged via /l5 (codex gpt-5.5 + MiniMax-M3 / codex gpt-5.6-sol review); P3b = deploy + live guest acceptance, see docs/projects/2026-09-16-relay-groups/
 owner: cookys
 branch: `feat/relay-groups`(base `develop`)
 scope: `packages/shared`(envelope / constants)、`packages/relay`(schema v10、peers-file、acl、每條 route、fanout、presence、claims、purge、SIGHUP reload)、`packages/peer-agent`(config、tools、channel tag)、dotfiles `bin/fleet`(送件 / peers 顯示)、hangar docs(ADR + runbook + tower)
