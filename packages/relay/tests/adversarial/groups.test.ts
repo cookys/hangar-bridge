@@ -188,7 +188,7 @@ describe('relay groups — adversarial boundary (strict roster)', () => {
     const bc = await send('c', { to: '@group', kind: 'chat', content: 'BROADCAST hello' })
     expect(bc.status).toBe(403)
     expect((await bc.json() as any).error).toBe('cap_denied')
-    const dp = await send('c', { to: 'b', kind: 'task_dispatch', content: 'run', meta: { correlation_id: 'c1' } })
+    const dp = await send('c', { to: 'b', kind: 'task_dispatch', content: 'run', to_filter: { instance: inst.b }, meta: { correlation_id: 'c1' } })
     expect(dp.status).toBe(403)
     expect((await dp.json() as any).error).toBe('cap_denied')
     const ch = await send('c', { to: 'b', kind: 'chat', content: 'hello' })
@@ -209,7 +209,8 @@ describe('relay groups — adversarial boundary (strict roster)', () => {
   })
 
   it('in_reply_to across groups is byte-identical to a nonexistent parent; same-group parent is accepted', async () => {
-    const parent = await (await send('a', { to: 'b', kind: 'task_dispatch', content: 'run', meta: { correlation_id: 'c1' } })).json() as any
+    // addressRules=on: a dispatch must name an instance (existing dispatch_needs_instance rule stays in strict mode)
+    const parent = await (await send('a', { to: 'b', kind: 'task_dispatch', content: 'run', to_filter: { instance: inst.b }, meta: { correlation_id: 'c1' } })).json() as any
     // b is in both groups: choosing lab for a task_result whose parent lives in cookys must look like "no such parent"
     const cross = await bodyOf(await send('b', { to: 'a', kind: 'task_result', content: 'done', group: 'lab', in_reply_to: parent.id, meta: { correlation_id: 'c1' } }))
     const random = await bodyOf(await send('b', { to: 'a', kind: 'task_result', content: 'done', group: 'lab', in_reply_to: newMessageId(), meta: { correlation_id: 'c1' } }))
@@ -269,9 +270,11 @@ describe('relay groups — adversarial boundary (strict roster)', () => {
     const evB = eventKinds(await readNEvents(sb.body!, 6, 1200))
     const evC = eventKinds(await readNEvents(sc.body!, 6, 1200))
     const evA = eventKinds(await readNEvents(sa.body!, 6, 1200))
-    expect(evB.filter(k => k === 'chat').length).toBe(2)
+    // a broadcast is never echoed to its sender's own handle (existing fanout rule): a gets 0, b gets a's cookys
+    // broadcast only (its own lab one is not echoed), c gets b's lab broadcast only
+    expect(evA.filter(k => k === 'chat').length).toBe(0)
+    expect(evB.filter(k => k === 'chat').length).toBe(1)
     expect(evC.filter(k => k === 'chat').length).toBe(1)
-    expect(evA.filter(k => k === 'chat').length).toBe(1)
     // presence: a's heartbeat reaches b (shares cookys) but never c; b's reaches a and c
     expect(evC.filter(k => k === 'presence_update').length).toBe(1)
     expect(evA.filter(k => k === 'presence_update').length).toBe(1)
@@ -300,14 +303,17 @@ describe('relay groups — adversarial boundary (strict roster)', () => {
   // ---------------------------------------------------------------- replies / permission / grants / inbox
   it('replying to a cookys message as c is byte-identical to a nonexistent parent (404 unknown_parent)', async () => {
     const parent = await (await send('a', { to: 'b', kind: 'chat', content: 'root' })).json() as any
-    const cross = await bodyOf(await post('c', '/v1/replies', { in_reply_to: parent.id, content: 'r' }))
-    const random = await bodyOf(await post('c', '/v1/replies', { in_reply_to: newMessageId(), content: 'r' }))
+    // /v1/replies requires an Idempotency-Key (existing contract); keep it so the group check is what we measure
+    const cross = await bodyOf(await post('c', '/v1/replies', { in_reply_to: parent.id, content: 'r' }, { 'idempotency-key': 'k-cross' }))
+    const random = await bodyOf(await post('c', '/v1/replies', { in_reply_to: newMessageId(), content: 'r' }, { 'idempotency-key': 'k-random' }))
     expect(cross.status).toBe(404)
     expect(JSON.parse(cross.text).error).toBe('unknown_parent')
     expect(cross).toEqual(random)
     const ok = await (await send('b', { to: 'c', kind: 'chat', content: 'q', group: 'lab' })).json() as any
-    const reply = await post('c', '/v1/replies', { in_reply_to: ok.id, content: 'a' })
-    expect(reply.status).toBe(201)
+    // reply-routing grants are issued on presentation: c must have RECEIVED the message (poll) before it may reply
+    expect((await req('c', '/v1/messages')).status).toBe(200)
+    const reply = await post('c', '/v1/replies', { in_reply_to: ok.id, content: 'a' }, { 'idempotency-key': 'k-ok' })
+    expect(reply.status).toBe(200) // existing /v1/replies status; strict mode must not change it
   })
 
   it('permission/respond, grants/finalize and inbox never admit another group\'s ids', async () => {

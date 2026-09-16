@@ -253,7 +253,7 @@ export function seedPeers(db: Db, peers: LoadedPeersFile | PeerEntry[], now: Dat
       // re-seed REVOKES it. The owned-set is read once per SSE connection (M1), so
       // revocation takes effect on the next connection; in-flight streams pick it up
       // on reconnect (a relay restart, the documented re-seed path, drops all streams).
-      const subjectsJson = JSON.stringify(peer.subjects ?? { owned: [], interest: [] })
+      const subjectsJson = JSON.stringify({ ...(peer.subjects ?? { owned: [], interest: [] }), default_group: peer.default_group })
       if (!existingHuman) {
         db.prepare(
           "INSERT INTO human(id,team_id,handle,display_name,subjects,created_at,last_active_at) VALUES (?,?,?,?,?,?,?)"

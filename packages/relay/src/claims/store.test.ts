@@ -3,6 +3,7 @@ import { openDatabase, type Db } from '../db/db.ts'
 import { ClaimStore } from './store.ts'
 
 const T = 'hangar'
+const G = 'cookys'
 
 describe('ClaimStore', () => {
   let db: Db
@@ -16,7 +17,7 @@ describe('ClaimStore', () => {
   })
 
   it('acquires an unclaimed key', () => {
-    const r = s.acquire(T, 'repo:x:file', 'alice', 'laptop', 60, 'editing')
+    const r = s.acquire(T, G, 'repo:x:file', 'alice', 'laptop', 60, 'editing')
     expect(r.ok).toBe(true)
     if (r.ok) {
       expect(r.renewed).toBe(false)
@@ -27,10 +28,10 @@ describe('ClaimStore', () => {
   })
 
   it('same owner renew extends expiry and preserves created_at', () => {
-    const a = s.acquire(T, 'k', 'alice', 'laptop', 60, null)
+    const a = s.acquire(T, G, 'k', 'alice', 'laptop', 60, null)
     const created = a.ok ? a.claim.created_at : ''
     clock += 30_000
-    const b = s.acquire(T, 'k', 'alice', 'desktop', 60, 'renewed')
+    const b = s.acquire(T, G, 'k', 'alice', 'desktop', 60, 'renewed')
     expect(b.ok).toBe(true)
     if (b.ok) {
       expect(b.renewed).toBe(true)
@@ -41,17 +42,17 @@ describe('ClaimStore', () => {
   })
 
   it('conflicts when a different owner holds a live claim', () => {
-    s.acquire(T, 'k', 'alice', 'laptop', 60, null)
+    s.acquire(T, G, 'k', 'alice', 'laptop', 60, null)
     clock += 30_000
-    const r = s.acquire(T, 'k', 'bob', 'laptop', 60, null)
+    const r = s.acquire(T, G, 'k', 'bob', 'laptop', 60, null)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.conflict.owner_handle).toBe('alice')
   })
 
   it('an expired claim is re-acquirable by anyone', () => {
-    s.acquire(T, 'k', 'alice', 'laptop', 60, null)
+    s.acquire(T, G, 'k', 'alice', 'laptop', 60, null)
     clock += 61_000 // past expiry
-    const r = s.acquire(T, 'k', 'bob', 'laptop', 60, null)
+    const r = s.acquire(T, G, 'k', 'bob', 'laptop', 60, null)
     expect(r.ok).toBe(true)
     if (r.ok) {
       expect(r.renewed).toBe(false)                          // fresh claim, not a renew
@@ -60,40 +61,40 @@ describe('ClaimStore', () => {
   })
 
   it('list returns only live claims, ordered by key', () => {
-    s.acquire(T, 'b-key', 'alice', 'l', 60, null)
-    s.acquire(T, 'a-key', 'alice', 'l', 60, null)
-    s.acquire(T, 'gone', 'alice', 'l', 10, null)
+    s.acquire(T, G, 'b-key', 'alice', 'l', 60, null)
+    s.acquire(T, G, 'a-key', 'alice', 'l', 60, null)
+    s.acquire(T, G, 'gone', 'alice', 'l', 10, null)
     clock += 30_000 // 'gone' (ttl 10s) expired; the 60s ones still live
-    const keys = s.list(T).map(c => c.claim_key)
+    const keys = s.list(T, [G]).map(c => c.claim_key)
     expect(keys).toEqual(['a-key', 'b-key'])
   })
 
   it('owner can release; released=true, then gone from list', () => {
-    s.acquire(T, 'k', 'alice', 'l', 60, null)
-    const r = s.release(T, 'k', 'alice')
+    s.acquire(T, G, 'k', 'alice', 'l', 60, null)
+    const r = s.release(T, G, 'k', 'alice')
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.released).toBe(true)
-    expect(s.list(T)).toEqual([])
+    expect(s.list(T, [G])).toEqual([])
   })
 
   it('release of an absent key is idempotent (released=false)', () => {
-    const r = s.release(T, 'nope', 'alice')
+    const r = s.release(T, G, 'nope', 'alice')
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.released).toBe(false)
   })
 
   it('non-owner cannot release a live claim (conflict)', () => {
-    s.acquire(T, 'k', 'alice', 'l', 60, null)
-    const r = s.release(T, 'k', 'bob')
+    s.acquire(T, G, 'k', 'alice', 'l', 60, null)
+    const r = s.release(T, G, 'k', 'bob')
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.conflict.owner_handle).toBe('alice')
-    expect(s.list(T).length).toBe(1) // still held
+    expect(s.list(T, [G]).length).toBe(1) // still held
   })
 
   it('releasing an expired claim held by another handle succeeds (idempotent cleanup)', () => {
-    s.acquire(T, 'k', 'alice', 'l', 10, null)
+    s.acquire(T, G, 'k', 'alice', 'l', 10, null)
     clock += 61_000 // alice's claim expired
-    const r = s.release(T, 'k', 'bob') // expired ⇒ not a live-owner conflict
+    const r = s.release(T, G, 'k', 'bob') // expired ⇒ not a live-owner conflict
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.released).toBe(true)
   })

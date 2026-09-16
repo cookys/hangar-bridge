@@ -36,11 +36,19 @@ async function main() {
   if (!existsSync(dbPath)) {
     mkdirSync(dirname(dbPath), { recursive: true })
   }
-  {
-    const db = openDatabase(dbPath)
-    initRelayFromPeersFile(db, { peers_file: peersFile })
-    db.close()
-  }
+	  {
+	    const db = openDatabase(dbPath)
+	    try {
+	      initRelayFromPeersFile(db, { peers_file: peersFile })
+	    } catch (err) {
+	      if (err instanceof Error && err.message === 'groups_section_removed') {
+	        console.error('groups_section_removed: refusing to start strict roster database with legacy peers file')
+	        process.exit(1)
+	      }
+	      throw err
+	    }
+	    db.close()
+	  }
 
   startServer({ db_path: dbPath, port, host, inactive_days: inactiveDays, peers_file: peersFile })
 }

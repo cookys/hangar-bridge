@@ -3,6 +3,7 @@ import type { MessageStore } from './messages/store.ts'
 import type { Fanout } from './fanout.ts'
 import type { PresenceRegistry } from './presence/registry.ts'
 import type { ClaimStore } from './claims/store.ts'
+import type { MembershipMemo } from './groups.ts'
 
 export interface Deps {
   db: Db
@@ -29,4 +30,7 @@ export interface Deps {
    * this flag — they come from the shared schema / are always enforced.
    */
   addressRules?: 'off' | 'on'
+  metricsToken?: string | undefined
+  groupsMode?: 'legacy' | 'strict' | undefined
+  memberships?: MembershipMemo | undefined
 }

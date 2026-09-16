@@ -1,10 +1,20 @@
 import { Hono } from 'hono'
+import { timingSafeEqual } from 'node:crypto'
 import type { Deps } from '../deps.ts'
 
 export function metricsRoute(deps: Deps) {
-  const app = new Hono()
-  app.get('/', c => {
-    const msgTotal = deps.db.prepare("SELECT COUNT(*) AS c FROM message").get() as { c: number }
+	  const app = new Hono()
+	  app.get('/', c => {
+	    if (!deps.metricsToken) return c.notFound()
+	    const raw = c.req.header('authorization') ?? ''
+	    const prefix = 'Bearer '
+	    if (!raw.startsWith(prefix)) return c.json({ error: 'unauthorized' }, 401)
+	    const got = Buffer.from(raw.slice(prefix.length))
+	    const want = Buffer.from(deps.metricsToken)
+	    if (got.length !== want.length || !timingSafeEqual(got, want)) {
+	      return c.json({ error: 'unauthorized' }, 401)
+	    }
+	    const msgTotal = deps.db.prepare("SELECT COUNT(*) AS c FROM message").get() as { c: number }
     const tokenLive = deps.db.prepare("SELECT COUNT(*) AS c FROM token WHERE revoked_at IS NULL").get() as { c: number }
     const body = [
       '# HELP mesh_messages_total Total messages accepted by this relay',

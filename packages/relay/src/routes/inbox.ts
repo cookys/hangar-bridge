@@ -3,6 +3,8 @@ import { isValidMessageId } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
 import type { Deps } from '../deps.ts'
+import { loadMemberships, readerScope } from '../groups.ts'
+import { envelopeForWire } from './wire.ts'
 
 const DEFAULT_LIMIT = 100
 const MIN_LIMIT = 1
@@ -33,10 +35,14 @@ export function inboxRoute(deps: Deps) {
       if (limit < MIN_LIMIT || limit > MAX_LIMIT) return c.json({ error: 'invalid_limit' }, 400)
     }
 
-    const handle = c.get('peer').handle
-    const rows = deps.store.fetchMailboxSince(handle, since, limit + 1)
+	    const handle = c.get('peer').handle
+	    const scope = (deps.groupsMode ?? 'legacy') === 'strict'
+	      ? readerScope(loadMemberships(deps.db, handle))
+	      : undefined
+    const strictGroups = (deps.groupsMode ?? 'legacy') === 'strict'
+    const rows = deps.store.fetchMailboxSince(handle, since, limit + 1, scope)
     const has_more = rows.length > limit
-    const messages = has_more ? rows.slice(0, limit) : rows
+    const messages = (has_more ? rows.slice(0, limit) : rows).map(e => envelopeForWire(e, strictGroups))
     const last_id = messages.length > 0 ? messages[messages.length - 1]!.id : null
 
     return c.json({ messages, last_id, has_more })

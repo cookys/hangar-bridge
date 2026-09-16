@@ -9,6 +9,7 @@ import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
 import { parseInstanceHeader } from '../presence/label.ts'
 import type { Deps } from '../deps.ts'
+import { loadMemberships, readerScope } from '../groups.ts'
 
 /**
  * §8.1 return-selector grammar for a FINALISE body: exactly `<name>@<ULID>`
@@ -62,11 +63,20 @@ export function grantsRoute(deps: Deps) {
     if (!parsed.success) {
       return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400)
     }
-    const { msg_id, selector } = parsed.data
-    const handle = c.get('peer').handle
-    const instance = parsedInstance.instance
-
-    const outcome = deps.store.finalizeGrant(msg_id, handle, instance, selector)
+	    const { msg_id, selector } = parsed.data
+	    const handle = c.get('peer').handle
+	    const instance = parsedInstance.instance
+	    if ((deps.groupsMode ?? 'legacy') === 'strict') {
+	      const route = deps.store.getRouteScoped(msg_id, readerScope(loadMemberships(deps.db, handle), 'group_id', 'msg_id'))
+	      if (!route) {
+	        return c.json(errorBody(
+	          'grant_not_found',
+	          'neither a blank nor any non-blank grant exists for (msg_id, handle, courier instance)'
+	        ), 404)
+	      }
+	    }
+	
+	    const outcome = deps.store.finalizeGrant(msg_id, handle, instance, selector)
     if (outcome === null) {
       return c.json(errorBody(
         'grant_not_found',
