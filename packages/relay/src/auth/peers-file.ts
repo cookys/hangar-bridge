@@ -103,7 +103,7 @@ function legacyLoaded(parsed: PeersFile, warn: boolean): LoadedPeersFile {
   }
 }
 
-export function loadPeersFile(path: string): LoadedPeersFile {
+export function loadPeersFile(path: string, opts: { warnLegacy?: boolean } = {}): LoadedPeersFile {
   if (!existsSync(path)) {
     throw new Error(
       `peers file not found at ${path}. ` +
@@ -116,7 +116,7 @@ export function loadPeersFile(path: string): LoadedPeersFile {
     throw new Error('peers file must be a JSON object')
   }
   if (!Object.prototype.hasOwnProperty.call(raw, 'peers')) {
-    return legacyLoaded(PeersFileSchema.parse(raw), true)
+    return legacyLoaded(PeersFileSchema.parse(raw), opts.warnLegacy ?? true)
   }
   const parsed = PeersFileV2Schema.parse(raw)
   const peers = Object.entries(parsed.peers).map(([handle, entry]) => normalizePeer(handle, entry, entry.default_group))

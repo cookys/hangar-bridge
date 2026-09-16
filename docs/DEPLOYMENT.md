@@ -449,9 +449,12 @@ else
 fi
 ```
 
-For groups rollout rollback, restore `peers.json.bak.<epoch>` (or the section 2.1 `peers.json`
-backup) together with the section 2.1 SQLite backup, then reinstall the previous revision. Do not
-roll back only the roster after strict groups have existed; strict-to-legacy startup is refused.
+For groups rollout rollback the roster and the database must come from the SAME point in time:
+the section 2.1 backup directory holds the pre-upgrade `peers.json` (flat) and the pre-upgrade
+SQLite file together — restore both from there, then reinstall the previous revision. The
+`peers.json.bak.<epoch>` written by `peers-groups-init` is the same flat file and may be used
+instead of the backup-dir copy, but never restore a flat roster onto the migrated database on its
+own: strict-to-legacy startup is refused once a non-`cookys` group has existed.
 The bootstrap exception exists only for a legacy relay whose recorded `previous_live` lacked build
 identity; all later rollbacks must take the exact-health branch. After rollback, keep the checkout
 detached at the proven rollback SHA until a fixed `origin/develop` candidate is admitted and

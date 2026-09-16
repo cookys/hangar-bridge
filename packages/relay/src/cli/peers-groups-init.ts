@@ -64,16 +64,6 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   return parsed
 }
 
-function loadPeersFileWithoutLegacyLog(path: string): LoadedPeersFile {
-  const originalWrite = process.stdout.write
-  process.stdout.write = (() => true) as typeof process.stdout.write
-  try {
-    return loadPeersFile(path)
-  } finally {
-    process.stdout.write = originalWrite
-  }
-}
-
 function readJsonObject(path: string): JsonObject {
   const raw = JSON.parse(readFileSync(path, 'utf8'))
   if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -124,7 +114,7 @@ function buildV2Document(loaded: LoadedPeersFile, raw: JsonObject, group: string
 }
 
 function assertWrittenStrict(path: string, original: LoadedPeersFile): void {
-  const loaded = loadPeersFileWithoutLegacyLog(path)
+  const loaded = loadPeersFile(path, { warnLegacy: false })
   if (loaded.mode !== 'strict') throw new Error('written peers file did not reload in strict mode')
   const writtenPeers = new Map(loaded.peers.map(peer => [peer.handle, peer.secret_sha256_hex]))
   for (const peer of original.peers) {
@@ -136,9 +126,9 @@ function assertWrittenStrict(path: string, original: LoadedPeersFile): void {
 
 export function peersGroupsInit(argv: readonly string[], io: CliIo = defaultIo, opts: CliOpts = {}): void {
   const args = parseArgs(argv)
-  const loaded = loadPeersFileWithoutLegacyLog(args.peers)
+  const loaded = loadPeersFile(args.peers, { warnLegacy: false })
   if (loaded.mode === 'strict') {
-    io.stdout('peers.json is already v2 (strict); nothing to do\n')
+    io.stdout(`peers.json is already v2 (strict); nothing to do${args.group !== DEFAULT_GROUP_ID ? ' (--group is ignored on a v2 file: edit groups directly)' : ''}\n`)
     return
   }
 
