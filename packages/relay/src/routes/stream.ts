@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import {
-  HANGAR_TEAM_ID, isBroadcastHandle, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, TEAM_BROADCAST_HANDLE,
+  HANGAR_TEAM_ID, isValidMessageId, INTEREST_REGEX, RESERVED_CLI_INSTANCE, TEAM_BROADCAST_HANDLE,
   SSE_EVENT_BACKLOG, SSE_EVENT_BACKLOG_END, REPLAY_MAX_MIN, REPLAY_MAX_MAX,
   BACKLOG_SCAN_CAP, BACKLOG_BY_SENDER_CAP, BACKLOG_BY_SENDER_REST,
   type Envelope, type BacklogEvent, type BacklogEndEvent, type MessageId,
@@ -14,6 +14,7 @@ import { logJson } from '../logger.ts'
 import { effectiveLabel, parseInstanceHeader } from '../presence/label.ts'
 import { ConnectionRegistry } from '../presence/connections.ts'
 import { readerScope } from '../groups.ts'
+import { envelopeForWire } from './wire.ts'
 
 const PING_INTERVAL_MS = 25_000
 const BACKLOG_PAGE = 1000
@@ -98,9 +99,8 @@ export function streamRoute(deps: Deps) {
         // excludes this instance in Fanout; without this check a message queued
         // while offline echoes back on the sender process's next cold start.
         if (
-	          e.from === handle
-	          && !isBroadcastHandle(e.to)
-	          && instance !== undefined
+          e.from === handle
+          && instance !== undefined
           && e.meta['sender_instance'] === instance
         ) return false
         // to_filter: presence-backed audience narrowing (v1 instance|repo). A
@@ -156,7 +156,7 @@ export function streamRoute(deps: Deps) {
         if (instance !== undefined && deps.store.getRoute(e.id) !== null) {
           deps.store.insertGrants(e.id, [{ handle, instance, selector: '' }])
         }
-        await stream.writeSSE({ event: 'message', data: JSON.stringify(e) })
+        await stream.writeSSE({ event: 'message', data: JSON.stringify(envelopeForWire(e, strictGroups)) })
         deps.store.markDelivered(e.id)
         markSeen(e.id)
       }
@@ -283,7 +283,7 @@ export function streamRoute(deps: Deps) {
           const e = queue.shift()!
           if (seen.has(e.id)) continue
           if (watermark !== null && e.id <= watermark) continue
-          await stream.writeSSE({ event: 'message', data: JSON.stringify(e) })
+          await stream.writeSSE({ event: 'message', data: JSON.stringify(envelopeForWire(e, strictGroups)) })
           deps.store.markDelivered(e.id)
           markSeen(e.id)
         }

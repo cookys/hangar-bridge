@@ -103,6 +103,9 @@ export class MessageStore {
       const parent = this.db.prepare(
         "SELECT thread_root, id FROM message WHERE id=? AND team_id=? AND group_id=?"
       ).get(msg.in_reply_to, team_id, groupId) as { thread_root: string | null; id: string } | undefined
+        ?? this.db.prepare(
+          "SELECT thread_root, msg_id AS id FROM reply_route WHERE msg_id=? AND team_id=? AND group_id=?"
+        ).get(msg.in_reply_to, team_id, groupId) as { thread_root: string | null; id: string } | undefined
       if (!parent) throw new Error(`unknown in_reply_to: ${msg.in_reply_to}`)
       thread_root = parent.thread_root ?? parent.id
     }

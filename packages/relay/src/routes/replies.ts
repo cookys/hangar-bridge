@@ -23,6 +23,7 @@ import type { ReplyRoute, ReplyRouteInput, ReplyGrantInput } from '../messages/s
 import { ReplyLimiter } from '../reply-limiter.ts'
 import { parseReturnSelectorHeader, grantsFromSnapshot, durableReport } from './messages.ts'
 import { loadMemberships, readerScope, type ReaderScope } from '../groups.ts'
+import { envelopeForWire } from './wire.ts'
 
 // ---------------------------------------------------------------------
 // RFC 8785 (JCS) canonical JSON — small and local (no new dependency).
@@ -72,14 +73,6 @@ export function computeRequestDigest(payload: { in_reply_to: string; content: st
 
 const IDEMPOTENCY_KEY_REGEX = /^[A-Za-z0-9_-]{1,64}$/
 const STALE_PENDING_MS = 60_000
-
-type WireEnvelope = Omit<Envelope, 'group'> | Envelope
-
-function envelopeForWire(envelope: Envelope, strictGroups: boolean): WireEnvelope {
-  if (strictGroups) return envelope
-  const { group: _group, ...legacy } = envelope
-  return legacy
-}
 
 /**
  * Poll cadence for a `pending` idempotency row (§5.1 step 1: "poll every

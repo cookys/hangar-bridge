@@ -23,6 +23,7 @@ import type { Deps } from '../deps.ts'
 import type { ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
 import type { SnapshotDetail } from '../fanout.ts'
 import { loadDefaultGroup, loadMemberships, members, readerScope, requireCap, type Membership } from '../groups.ts'
+import { envelopeForWire } from './wire.ts'
 
 /** chat, task_dispatch — the only kinds §3.1/§3.2 give a reply_route. */
 function isUserAuthoredKind(kind: Envelope['kind']): kind is 'chat' | 'task_dispatch' {
@@ -54,14 +55,6 @@ export function grantsFromSnapshot(snap: SnapshotDetail): ReplyGrantInput[] {
 const TAIL_PAGE = 1000
 const DEFAULT_INBOX_LIMIT = 100
 const MAX_INBOX_LIMIT = 1000
-
-type WireEnvelope = Omit<Envelope, 'group'> | Envelope
-
-function envelopeForWire(envelope: Envelope, strictGroups: boolean): WireEnvelope {
-  if (strictGroups) return envelope
-  const { group: _group, ...legacy } = envelope
-  return legacy
-}
 
 // §8.1 return-selector grammar: `<name>@<ULID>` or the literal `~none`.
 const RETURN_SELECTOR_NAME_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -321,6 +314,8 @@ export function messagesRoute(deps: Deps) {
 	      if (data.in_reply_to != null) {
 	        const parent = deps.db.prepare(
 	          'SELECT 1 AS x FROM message WHERE id=? AND team_id=? AND group_id=?'
+	        ).get(data.in_reply_to, HANGAR_TEAM_ID, group) ?? deps.db.prepare(
+	          'SELECT 1 AS x FROM reply_route WHERE msg_id=? AND team_id=? AND group_id=?'
 	        ).get(data.in_reply_to, HANGAR_TEAM_ID, group)
 	        if (!parent) {
 	          auditEvent(deps, peer.id, 'group.unknown_parent', { group_id: group, handle: peer.handle, in_reply_to: data.in_reply_to })
@@ -390,15 +385,7 @@ export function messagesRoute(deps: Deps) {
 	          live_instances: liveInstances,
 	        }, 'group.address_refused')
 	      }
-		      if (!strictGroups && data.kind === 'task_dispatch' && data.to_filter == null) {
-        return c.json({
-          error: 'dispatch_needs_instance',
-          message: 'task_dispatch must target exactly one instance via to_filter.instance '
-            + '(a host-wide command is not supported)',
-          retryable: false,
-        }, 400)
-      }
-    }
+	    }
 
     // Fail-closed namespace ACL — gate on SUBJECT PRESENCE, not a kind allow-list.
     // A non-null subject is only meaningful on a command-carrying kind; a subjected
@@ -430,6 +417,15 @@ export function messagesRoute(deps: Deps) {
           return c.json({ error: 'recipient_not_owner' }, 409)
         }
       }
+    }
+
+    if ((deps.addressRules ?? 'off') === 'on' && data.kind === 'task_dispatch' && data.to_filter == null) {
+      return refuse(400, {
+        error: 'dispatch_needs_instance',
+        message: 'task_dispatch must target exactly one instance via to_filter.instance '
+          + '(a host-wide command is not supported)',
+        retryable: false,
+      }, 'group.address_refused')
     }
 
     // ── unqualified fleet-wide broadcast gate ───────────────────────────────
@@ -551,11 +547,14 @@ export function messagesRoute(deps: Deps) {
       // reason to withhold it.
       if (isProjectChat) persistMessage = true
 
-      // §3.2/item 2: a directed task_dispatch matching nobody gets no route,
-      // same as today's no-row rule. Directed chat always gets a route (even
-      // 0 matches) since the relay already minted+advertised a
-      // correlation_id above for the receiver to reply with.
-      const getsRoute = built.kind === 'chat' || (built.kind === 'task_dispatch' && matched.length > 0)
+      // §3.2/item 2: in strict groups, directed task_dispatch gets a route so
+      // a later task_result can name the accepted dispatch id; matched:0 still
+      // gets no durable message row, preserving the no-zombie/no-double-exec
+      // rule. Legacy keeps today's no-route/no-row behavior for matched:0.
+      // Directed chat always gets a route too (even 0 matches) since the relay
+      // already minted+advertised a correlation_id above for the receiver to
+      // reply with.
+      const getsRoute = built.kind === 'chat' || (built.kind === 'task_dispatch' && (matched.length > 0 || strictGroups))
       const route: ReplyRouteInput | null = getsRoute ? {
 	        msg_id: built.id, team_id: HANGAR_TEAM_ID, from_handle: peer.handle,
 	        sender_instance: stampedInstance.instance ?? null, return_selector: returnSelector,

@@ -8,7 +8,7 @@ import { effectiveLabel } from '../presence/label.ts'
 import { loadDefaultGroup } from '../groups.ts'
 
 const PresenceBody = z.object({
-  summary: z.string().max(200).default(''),
+  summary: z.string().max(200),
   // Per-PROCESS instance id. Absent ⇒ legacy client, keyed on the bare token
   // label exactly as before. Validated here so a client-supplied string can
   // never be composed into a registry key unchecked.
@@ -24,6 +24,9 @@ const PresenceBody = z.object({
   delivery_state: z.enum(['unverified', 'verified', 'deaf']).optional(),
   caps: z.string().max(200).optional(),
 })
+const StrictPresenceBody = PresenceBody.extend({
+  summary: z.string().max(200).default(''),
+})
 
 export function presenceRoute(deps: Deps) {
   const app = new Hono<{ Variables: AuthContext }>()
@@ -35,7 +38,8 @@ export function presenceRoute(deps: Deps) {
   // is not available to middleware.
   app.use('*', rateLimit({ windowMs: 1_000, max: 4, key: c => `pres:${c.get('token').id}` }))
   app.post('/', async c => {
-    const parsed = PresenceBody.safeParse(await c.req.json().catch(() => null))
+    const bodySchema = (deps.groupsMode ?? 'legacy') === 'strict' ? StrictPresenceBody : PresenceBody
+    const parsed = bodySchema.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'invalid_body' }, 400)
     const team = HANGAR_TEAM_ID
     const handle = c.get('peer').handle
