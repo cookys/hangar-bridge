@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "ticket": "relay-groups-p1",
+  "profile": "internal-pilot",
+  "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "1c18e6593e9a28e825280cc0624bbfd41145c228",
+  "branch": "feat/relay-groups-p1",
+  "vertical_acceptance": [
+    "packages/relay/tests/adversarial/groups.test.ts (depth-0 owned, unmodified) passes 19/19 under scripts/verify-groups.sh",
+    "POST /v1/messages resolves group -> membership -> cap -> recipient before thread_root / addressRules / subject ACL; 404 unknown_group / unknown_recipient byte-identical to nonexistent; 403 cap_denied; @team normalised to @group; in_reply_to and thread_root group-scoped; idempotency hit compares group; delivered_at only counts group members; every refusal audited with group_id",
+    "every read path (stream cold/resume/live, poll, inbox, replay-butler counts, replies, permission, grants, peers, claims) is scoped by reader membership + since_msg_id in SQL; presence heartbeats reach only shared-group connections; /v1/peers keeps array shape with groups[] and per-membership cache; /v1/whoami; /metrics token gate",
+    "reloadRoster(deps, path) drops shrunk/removed handles' streams with event: reauth and refuses strict->legacy; claims per (team, group, key) with idx_claim_legacy_unique dropped; legacy groupsMode keeps every pre-existing test green unchanged except serve.reload.test.ts and claims.test.ts rows"
+  ],
+  "allowed_path_prefixes": [
+    "packages/relay/src/",
+    "packages/relay/tests/integration/",
+    "packages/shared/src/"
+  ],
+  "max_changed_files": 30,
+  "baseline_churn": 3000,
+  "max_growth_ratio": 1.5,
+  "max_extra_churn": 1500,
+  "max_repair_generations": 2,
+  "max_wall_seconds": 7200,
+  "unit_class": "mechanical",
+  "verify_cmd": "scripts/verify-groups.sh",
+  "rubric_ids": ["GROUPS-HARNESS-1", "GROUPS-WRITE-2", "GROUPS-READ-3", "GROUPS-RELOAD-4"]
+}

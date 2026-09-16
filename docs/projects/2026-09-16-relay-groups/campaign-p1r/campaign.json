@@ -1,0 +1,16 @@
+{
+  "schema_version": 1, "ticket": "relay-groups-p1r", "profile": "internal-pilot", "mission_grant_ref": null,
+  "repo_identity": "git-common-dir:/home/cookys/projects/hangar-bridge/.git",
+  "base_sha": "da5923c288eb53e0fa65f9432b0d946cb180ed2d", "branch": "feat/relay-groups-p1r",
+  "vertical_acceptance": [
+    "routes/replies.ts: no mode-dependent status (always 200) and no synthesized Idempotency-Key; missing key is 400 idempotency_key_required in every mode",
+    "ClaimStore.acquire/release/list have one explicit positional signature with group_id; callers and tests updated; no duck-typed overload detection",
+    "fanout keeps sub.accept for presence_update; stream deliverable skips only the membership check for presence; unit test covers accept=false",
+    "reloadRoster(deps, path) is the only signature; serve.reload.test.ts builds a Deps; scripts/verify-groups.sh exits 0 with the depth-0 adversarial harness unmodified"
+  ],
+  "allowed_path_prefixes": ["packages/relay/src/", "packages/relay/tests/integration/"],
+  "max_changed_files": 12, "baseline_churn": 800, "max_growth_ratio": 1.5, "max_extra_churn": 400,
+  "max_repair_generations": 1, "max_wall_seconds": 3600, "unit_class": "mechanical",
+  "verify_cmd": "scripts/verify-groups.sh",
+  "rubric_ids": ["GROUPS-REPLIES-1", "GROUPS-CLAIMS-2", "GROUPS-PRESENCE-3", "GROUPS-RELOAD-4"]
+}
