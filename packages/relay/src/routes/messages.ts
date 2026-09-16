@@ -22,7 +22,7 @@ import { parseCallerInstanceHeader } from '../presence/label.ts'
 import type { Deps } from '../deps.ts'
 import type { ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
 import type { SnapshotDetail } from '../fanout.ts'
-import { loadDefaultGroup, loadMemberships, members, readerScope, requireCap, type Membership } from '../groups.ts'
+import { loadDefaultGroup, loadMemberships, members, readerScope, requireCap, type Membership, type ReaderScope } from '../groups.ts'
 import { envelopeForWire } from './wire.ts'
 
 /** chat, task_dispatch — the only kinds §3.1/§3.2 give a reply_route. */
@@ -330,8 +330,11 @@ export function messagesRoute(deps: Deps) {
 	    // sanctioned path to a wider audience inside a thread.
 	    let continuationRoot: string | null = null
 	    if (data.thread_root !== undefined) {
+	      // strict: resolve the route through the SQL-scoped predicate so a cross-group root and a
+	      // nonexistent root follow one identical lookup path (plan §2.5-3 / §2.5-6)
+	      const threadScope = strictGroups && memberships ? readerScope(memberships, 'group_id', 'msg_id') : undefined
 	      const resolved = resolveThreadContinuation(
-	        deps, data.thread_root, peer.handle, stampedInstance.instance, returnSelector
+	        deps, data.thread_root, peer.handle, stampedInstance.instance, returnSelector, threadScope
 	      )
 	      if (!resolved.ok || (strictGroups && resolved.group_id !== group)) {
 	        if (strictGroups) {
@@ -393,6 +396,18 @@ export function messagesRoute(deps: Deps) {
     // outright, else a non-owner could smuggle a gated_subject via e.g. a subjected
     // presence_update and bypass the ownership check entirely.
     // #3: subject!=null ⇒ `to` is a concrete handle EXCEPT for a subjected @team `chat`
+    // §6.4 dispatch_needs_instance stays inside the address-rules stage, BEFORE any subject-ACL
+    // query (address rules → subject ACL is the mandated order; a malformed dispatch must not
+    // learn subject-ownership results).
+    if ((deps.addressRules ?? 'off') === 'on' && data.kind === 'task_dispatch' && data.to_filter == null) {
+      return refuse(400, {
+        error: 'dispatch_needs_instance',
+        message: 'task_dispatch must target exactly one instance via to_filter.instance '
+          + '(a host-wide command is not supported)',
+        retryable: false,
+      }, 'group.address_refused')
+    }
+
     // (subject-scoped coordination broadcast). The schema already rejects a subjected
     // @team of any non-chat kind (task_dispatch etc.) → 400 (R1: commands stay direct).
     if (data.subject != null) {
@@ -417,15 +432,6 @@ export function messagesRoute(deps: Deps) {
           return c.json({ error: 'recipient_not_owner' }, 409)
         }
       }
-    }
-
-    if ((deps.addressRules ?? 'off') === 'on' && data.kind === 'task_dispatch' && data.to_filter == null) {
-      return refuse(400, {
-        error: 'dispatch_needs_instance',
-        message: 'task_dispatch must target exactly one instance via to_filter.instance '
-          + '(a host-wide command is not supported)',
-        retryable: false,
-      }, 'group.address_refused')
     }
 
     // ── unqualified fleet-wide broadcast gate ───────────────────────────────
@@ -700,9 +706,12 @@ function resolveThreadContinuation(
   threadRootId: string,
   callerHandle: string,
   callerInstance: string | undefined,
-  callerSelector: string | null
+  callerSelector: string | null,
+  scope?: ReaderScope
 ): { ok: true; canonicalRoot: string; group_id: string } | { ok: false } {
-  const route = deps.store.getRoute(threadRootId) ?? deps.store.getRouteByCorrelation(threadRootId)
+  const route = scope
+    ? (deps.store.getRouteScoped(threadRootId, scope) ?? deps.store.getRouteByCorrelationScoped(threadRootId, scope))
+    : (deps.store.getRoute(threadRootId) ?? deps.store.getRouteByCorrelation(threadRootId))
   if (!route) return { ok: false }
 
   const sent = route.legacy_width != null

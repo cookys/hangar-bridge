@@ -135,11 +135,12 @@ describe('strict group refusal audits', () => {
   it('includes group_id on strict subject ACL audits', async () => {
     own('b', ['mple2'])
 
-    const publish = await post('b', { to: 'c', kind: 'task_dispatch', content: 'go', group: 'lab', subject: 'other.ns' })
+    // a subjected dispatch can never pass addressRules=on (dispatch needs to_filter, subject forbids it) — use chat
+    const publish = await post('b', { to: 'c', kind: 'chat', content: 'go', group: 'lab', subject: 'other.ns', all_sessions: true })
     expect(publish.status).toBe(403)
     expect(auditDetails('subject.publish_denied')[0]).toMatchObject({ group_id: 'lab', handle: 'b', subject: 'other.ns' })
 
-    const recipient = await post('b', { to: 'c', kind: 'task_dispatch', content: 'go', group: 'lab', subject: 'mple2.cmd' })
+    const recipient = await post('b', { to: 'c', kind: 'chat', content: 'go', group: 'lab', subject: 'mple2.cmd', all_sessions: true })
     expect(recipient.status).toBe(409)
     expect(auditDetails('subject.recipient_denied')[0]).toMatchObject({ group_id: 'lab', to: 'c', subject: 'mple2.cmd' })
   })
