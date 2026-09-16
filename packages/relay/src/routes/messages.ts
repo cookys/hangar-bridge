@@ -55,6 +55,14 @@ const TAIL_PAGE = 1000
 const DEFAULT_INBOX_LIMIT = 100
 const MAX_INBOX_LIMIT = 1000
 
+type WireEnvelope = Omit<Envelope, 'group'> | Envelope
+
+function envelopeForWire(envelope: Envelope, strictGroups: boolean): WireEnvelope {
+  if (strictGroups) return envelope
+  const { group: _group, ...legacy } = envelope
+  return legacy
+}
+
 // §8.1 return-selector grammar: `<name>@<ULID>` or the literal `~none`.
 const RETURN_SELECTOR_NAME_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
@@ -166,7 +174,7 @@ export function messagesRoute(deps: Deps) {
     // overwrite it; the two describe different things (who sent it vs.
     // whether THIS presentation could be granted).
     return c.json({
-      messages, next_cursor, pending_after, pending_capped,
+      messages: messages.map(m => envelopeForWire(m, strictReads)), next_cursor, pending_after, pending_capped,
       ...(pollerInstance === undefined ? { attribution_status: 'unverifiable' } : {}),
     })
   })
@@ -264,11 +272,8 @@ export function messagesRoute(deps: Deps) {
 	    let group = strictGroups ? (data.group ?? loadDefaultGroup(deps.db, peer.handle)) : DEFAULT_GROUP_ID
 	    let memberships: Map<string, Membership> | null = null
 	    let groupMembers: Set<string> | null = null
+	    const usedDeprecatedTeamAlias = strictGroups && data.to === TEAM_BROADCAST_HANDLE
 	    if (strictGroups) {
-	      if (data.to === TEAM_BROADCAST_HANDLE) {
-	        data.to = GROUP_BROADCAST_HANDLE
-	        auditEvent(deps, peer.id, 'deprecated_team_alias', { group_id: group, handle: peer.handle })
-	      }
 	      memberships = loadMemberships(deps.db, peer.handle)
 	      const idemRow = idemKey
 	        ? deps.db.prepare(
@@ -309,6 +314,10 @@ export function messagesRoute(deps: Deps) {
 	      } else {
 	        groupMembers = members(deps.db, group)
 	      }
+	      if (usedDeprecatedTeamAlias) {
+	        data.to = GROUP_BROADCAST_HANDLE
+	        auditEvent(deps, peer.id, 'deprecated_team_alias', { group_id: group, handle: peer.handle })
+	      }
 	      if (data.in_reply_to != null) {
 	        const parent = deps.db.prepare(
 	          'SELECT 1 AS x FROM message WHERE id=? AND team_id=? AND group_id=?'
@@ -343,34 +352,45 @@ export function messagesRoute(deps: Deps) {
 	      continuationRoot = resolved.canonicalRoot
 	    }
 
-    // §6.1-6.3 address refusals, gated behind addressRules (default 'off' —
-    // byte-identical to today until an operator opts in). reserved_address /
-    // reserved_instance (§6.5) are NOT gated: they already 400 above, from
-    // the shared OutboundMessageSchema/ToFilterSchema refinements (D1).
-    if ((deps.addressRules ?? 'off') === 'on' && isUserAuthoredKind(data.kind)) {
-      if (data.in_reply_to != null) {
-        return c.json({
-          error: 'use_reply_verb',
-          message: "use `fleet reply <msg_id>`; to continue the thread for a different "
-            + "audience send a new message with `thread_root`",
-          retryable: false,
-        }, 400)
-      }
-      if (stampedInstance.instance === undefined) {
-        return c.json({ error: 'sender_instance_required', message: 'x-hangar-instance is required', retryable: false }, 400)
-      }
+	    const refuse = (
+	      status: 400 | 403 | 409 | 500,
+	      body: { error: string } & Record<string, unknown>,
+	      event: string,
+	    ) => {
+	      if (strictGroups) {
+	        auditEvent(deps, peer.id, event, { group_id: group, handle: peer.handle, error: body.error })
+	      }
+	      return c.json(body, status)
+	    }
+
+	    // §6.1-6.3 address refusals, gated behind addressRules (default 'off' —
+	    // byte-identical to today until an operator opts in). reserved_address /
+	    // reserved_instance (§6.5) are NOT gated: they already 400 above, from
+	    // the shared OutboundMessageSchema/ToFilterSchema refinements (D1).
+	    if ((deps.addressRules ?? 'off') === 'on' && isUserAuthoredKind(data.kind)) {
+	      if (data.in_reply_to != null) {
+	        return refuse(400, {
+	          error: 'use_reply_verb',
+	          message: "use `fleet reply <msg_id>`; to continue the thread for a different "
+	            + "audience send a new message with `thread_root`",
+	          retryable: false,
+	        }, 'group.address_refused')
+	      }
+	      if (stampedInstance.instance === undefined) {
+	        return refuse(400, { error: 'sender_instance_required', message: 'x-hangar-instance is required', retryable: false }, 'group.address_refused')
+	      }
 	      if (data.kind === 'chat' && !isBroadcastHandle(data.to) && data.to_filter == null && data.all_sessions !== true) {
-        const liveInstances = Array.from(deps.fanout.instanceCounts(HANGAR_TEAM_ID, data.to as string).keys())
-          .filter(i => i !== '')
-        return c.json({
-          error: 'handle_needs_all_sessions',
-          message: 'a bare-handle chat is durable and reaches every sibling that connects '
-            + 'later; resend with all_sessions: true to acknowledge that',
-          retryable: false,
-          live_instances: liveInstances,
-        }, 400)
-      }
-	      if (!strictGroups && data.kind === 'task_dispatch' && data.to_filter == null) {
+	        const liveInstances = Array.from(deps.fanout.instanceCounts(HANGAR_TEAM_ID, data.to as string).keys())
+	          .filter(i => i !== '')
+	        return refuse(400, {
+	          error: 'handle_needs_all_sessions',
+	          message: 'a bare-handle chat is durable and reaches every sibling that connects '
+	            + 'later; resend with all_sessions: true to acknowledge that',
+	          retryable: false,
+	          live_instances: liveInstances,
+	        }, 'group.address_refused')
+	      }
+		      if (!strictGroups && data.kind === 'task_dispatch' && data.to_filter == null) {
         return c.json({
           error: 'dispatch_needs_instance',
           message: 'task_dispatch must target exactly one instance via to_filter.instance '
@@ -563,7 +583,7 @@ export function messagesRoute(deps: Deps) {
         persisted: String(built.kind === 'task_dispatch' && matched.length > 0),
       })
       const responseJson = JSON.stringify({
-        ...built,
+        ...envelopeForWire(built, strictGroups),
         delivered_at: deliveredAt,
         matched: matched.length,
         matched_sessions: matched,
@@ -650,7 +670,7 @@ export function messagesRoute(deps: Deps) {
     }
 
     const responseJson = JSON.stringify({
-      ...envelope,
+      ...envelopeForWire(envelope, strictGroups),
       live: snap.matched.map(m => `${m.handle}#${m.instance ?? ''}`),
       durable: durableReport(envelope, true, undefined),
       matched: snap.matched.length,

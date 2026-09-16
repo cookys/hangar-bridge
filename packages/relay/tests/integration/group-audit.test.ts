@@ -70,6 +70,16 @@ describe('strict group refusal audits', () => {
       body: JSON.stringify(body),
     })
 
+  const postWithoutInstance = (who: Handle, body: unknown) =>
+    app.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${tok[who]}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+
   const auditDetails = (event: string) =>
     (db.prepare('SELECT detail_json FROM audit_log WHERE event=? ORDER BY id').all(event) as Array<{ detail_json: string }>)
       .map(row => JSON.parse(row.detail_json) as Record<string, string>)
@@ -132,5 +142,29 @@ describe('strict group refusal audits', () => {
     const recipient = await post('b', { to: 'c', kind: 'task_dispatch', content: 'go', group: 'lab', subject: 'mple2.cmd' })
     expect(recipient.status).toBe(409)
     expect(auditDetails('subject.recipient_denied')[0]).toMatchObject({ group_id: 'lab', to: 'c', subject: 'mple2.cmd' })
+  })
+
+  it('audits strict sender_instance_required address refusal with group_id', async () => {
+    const res = await postWithoutInstance('b', { to: 'c', kind: 'chat', content: 'x', group: 'lab', all_sessions: true })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toBe('sender_instance_required')
+
+    expect(auditDetails('group.address_refused')).toContainEqual({
+      group_id: 'lab',
+      handle: 'b',
+      error: 'sender_instance_required',
+    })
+  })
+
+  it('audits strict handle_needs_all_sessions address refusal with group_id', async () => {
+    const res = await post('b', { to: 'c', kind: 'chat', content: 'x', group: 'lab' })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toBe('handle_needs_all_sessions')
+
+    expect(auditDetails('group.address_refused')).toContainEqual({
+      group_id: 'lab',
+      handle: 'b',
+      error: 'handle_needs_all_sessions',
+    })
   })
 })

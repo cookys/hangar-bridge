@@ -10,6 +10,7 @@ import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import { rateLimit } from '../middleware/rate-limit.ts'
 import type { Deps } from '../deps.ts'
 import { loadDefaultGroup, loadMemberships, requireCap } from '../groups.ts'
+import type { Claim } from '../claims/store.ts'
 
 const KeySchema = z.string().max(MAX_CLAIM_KEY_LENGTH).regex(CLAIM_KEY_REGEX)
 
@@ -27,6 +28,14 @@ function auditEvent(deps: Deps, actorHumanId: string, event: string, detail: Rec
   deps.db.prepare(
     'INSERT INTO audit_log(team_id,at,actor_human_id,event,detail_json) VALUES (?,?,?,?,?)'
   ).run(HANGAR_TEAM_ID, deps.now().toISOString(), actorHumanId, event, JSON.stringify(detail))
+}
+
+type WireClaim = Omit<Claim, 'group_id'> | Claim
+
+function claimForWire(claim: Claim, strictGroups: boolean): WireClaim {
+  if (strictGroups) return claim
+  const { group_id: _group_id, ...legacy } = claim
+  return legacy
 }
 
 export function claimsRoute(deps: Deps) {
@@ -63,12 +72,12 @@ export function claimsRoute(deps: Deps) {
         expires_at: r.conflict.expires_at,
       }, 409)
     }
-    return c.json({ claim: r.claim, renewed: r.renewed }, 201)
+    return c.json({ claim: claimForWire(r.claim, (deps.groupsMode ?? 'legacy') === 'strict'), renewed: r.renewed }, 201)
   })
 
 	  // List all live claims.
 	  app.get('/', c => {
-	    if ((deps.groupsMode ?? 'legacy') !== 'strict') return c.json(deps.claims.list(HANGAR_TEAM_ID, [DEFAULT_GROUP_ID]))
+    if ((deps.groupsMode ?? 'legacy') !== 'strict') return c.json(deps.claims.list(HANGAR_TEAM_ID, [DEFAULT_GROUP_ID]).map(c => claimForWire(c, false)))
 	    const memberships = loadMemberships(deps.db, c.get('peer').handle)
 	    return c.json(deps.claims.list(HANGAR_TEAM_ID, [...memberships.keys()]))
 	  })

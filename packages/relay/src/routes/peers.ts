@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { HANGAR_TEAM_ID } from '@hangar-bridge/shared'
 import { bearerAuth, type AuthContext } from '../auth/middleware.ts'
 import type { Deps } from '../deps.ts'
-import { loadMemberships, sharedAudience } from '../groups.ts'
+import { loadMemberships } from '../groups.ts'
 
 const TTL_MS = 2_000
 
@@ -10,6 +10,11 @@ interface HumanRow {
   id: string
   handle: string
   display_name: string
+}
+
+interface GroupRow {
+  group_id: string
+  caps_json: string
 }
 
 export function peersRoute(deps: Deps) {
@@ -26,18 +31,37 @@ export function peersRoute(deps: Deps) {
     if (hit && Date.now() - hit.at < TTL_MS) {
       return c.body(hit.body, 200, { 'content-type': 'application/json' })
     }
-    const visible = (deps.groupsMode ?? 'legacy') === 'strict'
-      ? new Set([...sharedAudience(deps.db, reader), reader])
-      : null
-    const humans = deps.db.prepare(
-      "SELECT id, handle, display_name FROM human WHERE team_id=? AND disabled_at IS NULL"
-    ).all(HANGAR_TEAM_ID) as HumanRow[]
+    const strictGroups = (deps.groupsMode ?? 'legacy') === 'strict'
+    const humans = strictGroups
+      ? deps.db.prepare(`
+        SELECT DISTINCT h.id, h.handle, h.display_name
+        FROM human h
+        WHERE h.team_id=? AND h.disabled_at IS NULL
+          AND (
+            h.handle=?
+            OR h.handle IN (
+              SELECT gm2.handle
+              FROM group_member gm
+              JOIN group_member gm2 ON gm2.group_id=gm.group_id
+              WHERE gm.handle=?
+            )
+          )
+      `).all(HANGAR_TEAM_ID, reader, reader) as HumanRow[]
+      : deps.db.prepare(
+        "SELECT id, handle, display_name FROM human WHERE team_id=? AND disabled_at IS NULL"
+      ).all(HANGAR_TEAM_ID) as HumanRow[]
 
-    const list = humans.filter(h => visible === null || visible.has(h.handle)).map(h => {
-      const peerMemberships = loadMemberships(deps.db, h.handle)
-      const groups = [...peerMemberships.values()]
-        .filter(m => h.handle === reader || readerMemberships.has(m.group_id))
-        .map(m => ({ id: m.group_id, caps: [...m.caps] }))
+    const list = humans.map(h => {
+      const groups = strictGroups
+        ? (deps.db.prepare(`
+          SELECT gm2.group_id, gm2.caps_json
+          FROM group_member gm
+          JOIN group_member gm2 ON gm2.group_id=gm.group_id
+          WHERE gm.handle=? AND gm2.handle=?
+          ORDER BY gm2.group_id ASC
+        `).all(reader, h.handle) as GroupRow[])
+          .map(row => ({ id: row.group_id, caps: JSON.parse(row.caps_json) as string[] }))
+        : []
       const snap = deps.presence.get(HANGAR_TEAM_ID, h.handle)
       // Presence (a heartbeat POST) and a live SSE subscription are two
       // different facts, and a session can hold the first without the second —
@@ -58,7 +82,7 @@ export function peersRoute(deps: Deps) {
         last_seen: snap?.last_seen ?? null,
         subscribed,
 	        sessions,
-	        groups,
+	        ...(strictGroups ? { groups } : {}),
 	      }
 	    })
 	    const body = JSON.stringify(list)

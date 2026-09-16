@@ -73,6 +73,14 @@ export function computeRequestDigest(payload: { in_reply_to: string; content: st
 const IDEMPOTENCY_KEY_REGEX = /^[A-Za-z0-9_-]{1,64}$/
 const STALE_PENDING_MS = 60_000
 
+type WireEnvelope = Omit<Envelope, 'group'> | Envelope
+
+function envelopeForWire(envelope: Envelope, strictGroups: boolean): WireEnvelope {
+  if (strictGroups) return envelope
+  const { group: _group, ...legacy } = envelope
+  return legacy
+}
+
 /**
  * Poll cadence for a `pending` idempotency row (§5.1 step 1: "poll every
  * 250 ms up to 10 s"). Exported as a mutable config object (not a constant)
@@ -432,7 +440,7 @@ export function repliesRoute(deps: Deps) {
       const report = { ...audienceReport([], durable), ...(legacyParent ? { legacy_parent: true as const } : {}) }
       // Stored + returned body includes the envelope: a replayed idempotent
       // response must be byte-identical to the original, not just the report.
-      const body = { ...envelope, ...report }
+      const body = { ...envelopeForWire(envelope, (deps.groupsMode ?? 'legacy') === 'strict'), ...report }
       const json = JSON.stringify(body)
 
       let outcome: 'ok' | 'storm' | 'fenced'
@@ -465,7 +473,7 @@ export function repliesRoute(deps: Deps) {
         throw err
       }
       if (outcome === 'storm') return c.json(stormBody, asStatus(REPLY_ERROR_HTTP_STATUS.reply_storm!))
-	      return c.json(body, 200)
+      return c.json(body, 200)
     }
 
     // ── session branch (§5.1 step 6, the normal case) ────────────────
@@ -492,7 +500,7 @@ export function repliesRoute(deps: Deps) {
     // Stored + returned body includes the envelope: a replayed idempotent
     // response must be byte-identical to the original, not just the report.
     const committedBody = {
-      ...envelope,
+      ...envelopeForWire(envelope, (deps.groupsMode ?? 'legacy') === 'strict'),
       ...audienceReport(snap.matched, durable),
       sender_state: snap.matched.length > 0 ? 'live' as const : 'offline' as const,
       ...(legacyParent ? { legacy_parent: true as const } : {}),
@@ -531,7 +539,7 @@ export function repliesRoute(deps: Deps) {
 
     const delivery = deps.fanout.deliverDetailed(envelope, snap)
     const finalBody = {
-      ...envelope,
+      ...envelopeForWire(envelope, (deps.groupsMode ?? 'legacy') === 'strict'),
       ...audienceReport(delivery.matched, durable),
       sender_state: delivery.matched.length > 0 ? 'live' as const : 'offline' as const,
       ...(legacyParent ? { legacy_parent: true as const } : {}),
