@@ -50,6 +50,12 @@ describe('PermissionOutboundTracker (SEC-M1 responder authorization)', () => {
     expect(t.isAuthorizedResponder('abcde', 'carol', requestMsg)).toBe(true)
   })
 
+  it('@group target authorizes any sender that passed the grouped roster gate', () => {
+    t.recordRelay('abcde', ['@group'])
+    t.confirm('abcde', '@group', requestMsg)
+    expect(t.isAuthorizedResponder('abcde', 'carol', requestMsg)).toBe(true)
+  })
+
   it('replaces authority when a short request_id is reused', () => {
     t.recordRelay('abcde', ['alice'])
     t.confirm('abcde', 'alice', requestMsg)

@@ -141,6 +141,53 @@ describe('loadConfig', () => {
     expect(() => loadConfig(p)).toThrow(/ask_team/)
   })
 
+  it('accepts a default_group matching the shared group id syntax', () => {
+    const p = join(workdir, 'default-group.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      default_group: 'lab-1.alpha',
+    }))
+    expect(loadConfig(p).default_group).toBe('lab-1.alpha')
+  })
+
+  it('rejects a malformed default_group', () => {
+    const p = join(workdir, 'bad-default-group.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      default_group: 'Bad Group',
+    }))
+    expect(() => loadConfig(p)).toThrow()
+  })
+
+  it('accepts ask_group permission routing on SSE', () => {
+    const p = join(workdir, 'ask-group.json')
+    writeFileSync(p, JSON.stringify({
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      permission_relay: { enabled: true, routing: 'ask_group' },
+    }))
+    expect(loadConfig(p).permission_relay.routing).toBe('ask_group')
+  })
+
+  it('rejects ask_group permission routing on NATS where only direct reactive lanes exist', () => {
+    const p = join(workdir, 'nats-group-permission.json')
+    writeFileSync(p, JSON.stringify({
+      transport: 'nats',
+      relay_url: 'https://mesh.example.com',
+      token_path: join(workdir, 'tok'),
+      nats: {
+        url: 'nats://localhost:4222',
+        nkey_seed_path: join(workdir, 'seed'),
+        roster_path: join(workdir, 'fleet-roster.json'),
+      },
+      permission_relay: { enabled: true, routing: 'ask_group' },
+      audit_log: join(workdir, 'audit'),
+    }))
+    expect(() => loadConfig(p)).toThrow(/ask_group/)
+  })
+
   /**
    * D5 item 4a (§8.1): the courier persists its instance id in config.json so
    * a restart keeps every grant it holds valid ("no grant migration is

@@ -34,6 +34,16 @@ describe('InboundDispatcher', () => {
     expect(sent[0]!.method).toBe('notifications/claude/channel')
   })
 
+  it('adds group to claude-channel notification meta when the envelope carries one', async () => {
+    await expect(d.handle(envelope({ group: 'lab' } as Partial<Envelope>))).resolves.toBe('delivered')
+    expect(sent[0]!.params.meta).toMatchObject({ group: 'lab' })
+  })
+
+  it('keeps legacy claude-channel notification meta byte-shaped when the envelope has no group', async () => {
+    await expect(d.handle(envelope())).resolves.toBe('delivered')
+    expect(sent[0]!.params.meta).not.toHaveProperty('group')
+  })
+
   it('passes the authenticated envelope to the selected final-mile emitter', async () => {
     let accepted: Envelope | undefined
     const dp = new InboundDispatcher({

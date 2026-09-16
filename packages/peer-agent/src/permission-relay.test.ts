@@ -118,6 +118,20 @@ describe('makeOutboundPermissionHandler — routing gate', () => {
     expect(sent[0]!.subject).toBeNull()
   })
 
+  it('ask_group fans the request out via @group', async () => {
+    const { sent, client } = fakeClient()
+    const relay = makeOutboundPermissionHandler({
+      client,
+      approvalRouter: new ApprovalRouter({ routing: 'ask_group' }),
+      selfHandle: 'alice',
+      ttlMs: 60_000,
+    })
+    const { relayedTo } = await relay(PARAMS)
+    expect(relayedTo).toEqual(['@group'])
+    expect(sent[0]!.to).toBe('@group')
+    expect(sent[0]!.subject).toBeNull()
+  })
+
   it('SEC-M2: empty selfHandle fails CLOSED (cannot exclude self → relays to nobody)', async () => {
     const { sent, client } = fakeClient()
     const relay = makeOutboundPermissionHandler({

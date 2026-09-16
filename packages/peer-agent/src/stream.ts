@@ -7,6 +7,12 @@ import { logJson } from './logger.ts'
 
 export interface SseEvent { event: string; data: string }
 
+class ReauthSignal extends Error {
+  constructor(readonly reason: string) {
+    super(`reauth: ${reason}`)
+  }
+}
+
 export function parseSseEvent(block: string): SseEvent | null {
   const lines = block.split('\n')
   let event = 'message'
@@ -140,7 +146,11 @@ export class StreamClient {
         this.startHeartbeat()
         await this.readStream(res.body as unknown as ReadableStream<Uint8Array>)
       } catch (err) {
-        logJson('warn', 'peer.stream.disconnect', { err: String(err instanceof Error ? err.message : err) })
+        if (err instanceof ReauthSignal) {
+          this.attempt = 0
+        } else {
+          logJson('warn', 'peer.stream.disconnect', { err: String(err instanceof Error ? err.message : err) })
+        }
       } finally {
         // A stream can end either through an error or a clean EOF. Both prove
         // connection stability when they lasted long enough, so clear stale
@@ -241,6 +251,17 @@ export class StreamClient {
       if (!ev) continue
       logJson('info', 'peer.stream.event', { event: ev.event })
       if (ev.event === 'ping') continue
+      if (ev.event === 'reauth') {
+        let reason = 'unknown'
+        try {
+          const raw: unknown = JSON.parse(ev.data)
+          if (raw && typeof raw === 'object' && typeof (raw as { reason?: unknown }).reason === 'string') {
+            reason = (raw as { reason: string }).reason
+          }
+        } catch { /* keep unknown */ }
+        logJson('info', 'peer.stream.reauth', { reason })
+        throw new ReauthSignal(reason)
+      }
       if (ev.event === SSE_EVENT_BACKLOG || ev.event === SSE_EVENT_BACKLOG_END) {
         await this.consumeBacklogEvent(ev.event, ev.data)
         continue
@@ -250,6 +271,9 @@ export class StreamClient {
       try {
         const raw = JSON.parse(ev.data)
         envelope = EnvelopeSchema.parse(raw)
+        if (!Object.prototype.hasOwnProperty.call(raw, 'group')) {
+          delete (envelope as unknown as { group?: string }).group
+        }
       } catch (err) {
         logJson('warn', 'peer.stream.decode_error', { err: String(err instanceof Error ? err.message : err) })
         continue
