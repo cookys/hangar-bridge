@@ -300,14 +300,15 @@ describe('relay groups — adversarial boundary (strict roster)', () => {
   // ---------------------------------------------------------------- replies / permission / grants / inbox
   it('replying to a cookys message as c is byte-identical to a nonexistent parent (404 unknown_parent)', async () => {
     const parent = await (await send('a', { to: 'b', kind: 'chat', content: 'root' })).json() as any
-    const cross = await bodyOf(await post('c', '/v1/replies', { in_reply_to: parent.id, content: 'r' }))
-    const random = await bodyOf(await post('c', '/v1/replies', { in_reply_to: newMessageId(), content: 'r' }))
+    // /v1/replies requires an Idempotency-Key (existing contract); keep it so the group check is what we measure
+    const cross = await bodyOf(await post('c', '/v1/replies', { in_reply_to: parent.id, content: 'r' }, { 'idempotency-key': 'k-cross' }))
+    const random = await bodyOf(await post('c', '/v1/replies', { in_reply_to: newMessageId(), content: 'r' }, { 'idempotency-key': 'k-random' }))
     expect(cross.status).toBe(404)
     expect(JSON.parse(cross.text).error).toBe('unknown_parent')
     expect(cross).toEqual(random)
     const ok = await (await send('b', { to: 'c', kind: 'chat', content: 'q', group: 'lab' })).json() as any
-    const reply = await post('c', '/v1/replies', { in_reply_to: ok.id, content: 'a' })
-    expect(reply.status).toBe(201)
+    const reply = await post('c', '/v1/replies', { in_reply_to: ok.id, content: 'a' }, { 'idempotency-key': 'k-ok' })
+    expect(reply.status).toBe(200) // existing /v1/replies status; strict mode must not change it
   })
 
   it('permission/respond, grants/finalize and inbox never admit another group\'s ids', async () => {
