@@ -278,7 +278,10 @@ export function messagesRoute(deps: Deps) {
 	      if (idemRow) {
 	        const cached = JSON.parse(idemRow.response_json) as { group?: string }
 	        const cachedGroup = cached.group ?? DEFAULT_GROUP_ID
-	        if (cachedGroup !== group) return c.json({ error: 'idempotency_mismatch' }, 422)
+	        if (cachedGroup !== group) {
+	          auditEvent(deps, peer.id, 'group.idempotency_mismatch', { group_id: group, handle: peer.handle, cached_group_id: cachedGroup })
+	          return c.json({ error: 'idempotency_mismatch' }, 422)
+	        }
 	        if (!memberships.has(group)) {
 	          auditEvent(deps, peer.id, 'group.unknown_group', { group_id: group, handle: peer.handle })
 	          return c.json({ error: 'unknown_group' }, 404)
@@ -306,27 +309,39 @@ export function messagesRoute(deps: Deps) {
 	      } else {
 	        groupMembers = members(deps.db, group)
 	      }
+	      if (data.in_reply_to != null) {
+	        const parent = deps.db.prepare(
+	          'SELECT 1 AS x FROM message WHERE id=? AND team_id=? AND group_id=?'
+	        ).get(data.in_reply_to, HANGAR_TEAM_ID, group)
+	        if (!parent) {
+	          auditEvent(deps, peer.id, 'group.unknown_parent', { group_id: group, handle: peer.handle, in_reply_to: data.in_reply_to })
+	          return c.json({ error: 'invalid_message', message: `unknown in_reply_to: ${data.in_reply_to}` }, 400)
+	        }
+	      }
 	    }
 
 	    // §7 thread continuation (not a reply, NOT flag-controlled): `thread_root`
-    // names a route the caller SENT or holds a GRANT on; on success the send
-    // canonicalises to that route's effective root. This is the only
-    // sanctioned path to a wider audience inside a thread.
-    let continuationRoot: string | null = null
-    if (data.thread_root !== undefined) {
+	    // names a route the caller SENT or holds a GRANT on; on success the send
+	    // canonicalises to that route's effective root. This is the only
+	    // sanctioned path to a wider audience inside a thread.
+	    let continuationRoot: string | null = null
+	    if (data.thread_root !== undefined) {
 	      const resolved = resolveThreadContinuation(
 	        deps, data.thread_root, peer.handle, stampedInstance.instance, returnSelector
 	      )
 	      if (!resolved.ok || (strictGroups && resolved.group_id !== group)) {
+	        if (strictGroups) {
+	          auditEvent(deps, peer.id, 'group.not_in_thread', { group_id: group, handle: peer.handle, thread_root: data.thread_root })
+	        }
 	        return c.json({
-          error: 'not_in_thread',
-          message: 'thread_root names a route you neither sent nor were granted; '
-            + 'it must be a message you sent or one you received',
-          retryable: false,
-        }, 403)
-      }
+	          error: 'not_in_thread',
+	          message: 'thread_root names a route you neither sent nor were granted; '
+	            + 'it must be a message you sent or one you received',
+	          retryable: false,
+	        }, 403)
+	      }
 	      continuationRoot = resolved.canonicalRoot
-    }
+	    }
 
     // §6.1-6.3 address refusals, gated behind addressRules (default 'off' —
     // byte-identical to today until an operator opts in). reserved_address /
@@ -379,7 +394,7 @@ export function messagesRoute(deps: Deps) {
       }
       const ownedPub = loadOwnedSet(deps.db, HANGAR_TEAM_ID, peer.handle)
       if (!ownsNamespace(data.subject, ownedPub)) {
-        auditEvent(deps, peer.id, 'subject.publish_denied', { subject: data.subject, handle: peer.handle })
+        auditEvent(deps, peer.id, 'subject.publish_denied', { group_id: group, subject: data.subject, handle: peer.handle })
         return c.json({ error: 'forbidden_subject' }, 403)
       }
       // Recipient-ownership applies only to a DIRECT subjected message (one concrete
@@ -388,10 +403,10 @@ export function messagesRoute(deps: Deps) {
       // `deliverable` filter — so this check is skipped for @team (it would 409 anyway
       // since @team owns no namespace). Publisher-ownership above still fully gates who
       // may broadcast on the namespace.
-	      if (!isBroadcastHandle(data.to)) {
+      if (!isBroadcastHandle(data.to)) {
         const ownedRcpt = loadOwnedSet(deps.db, HANGAR_TEAM_ID, data.to as string)
         if (!ownsNamespace(data.subject, ownedRcpt)) {
-          auditEvent(deps, peer.id, 'subject.recipient_denied', { subject: data.subject, to: data.to as string })
+          auditEvent(deps, peer.id, 'subject.recipient_denied', { group_id: group, subject: data.subject, to: data.to as string })
           return c.json({ error: 'recipient_not_owner' }, 409)
         }
       }

@@ -22,7 +22,7 @@ import type { Db } from '../db/db.ts'
 import type { ReplyRoute, ReplyRouteInput, ReplyGrantInput } from '../messages/store.ts'
 import { ReplyLimiter } from '../reply-limiter.ts'
 import { parseReturnSelectorHeader, grantsFromSnapshot, durableReport } from './messages.ts'
-import { loadMemberships } from '../groups.ts'
+import { loadMemberships, readerScope, type ReaderScope } from '../groups.ts'
 
 // ---------------------------------------------------------------------
 // RFC 8785 (JCS) canonical JSON — small and local (no new dependency).
@@ -236,8 +236,10 @@ function replyInProgress(c: Context) {
 }
 
 /** §5.1 step 2: route lookup by id, then by correlation_id alias; expired ⇒ not found. */
-function resolveParentRoute(deps: Deps, id: string, nowIso: string): ReplyRoute | null {
-  const route = deps.store.getRoute(id) ?? deps.store.getRouteByCorrelation(id)
+function resolveParentRoute(deps: Deps, id: string, nowIso: string, scope?: ReaderScope): ReplyRoute | null {
+  const route = scope
+    ? deps.store.getRouteScoped(id, scope) ?? deps.store.getRouteByCorrelationScoped(id, scope)
+    : deps.store.getRoute(id) ?? deps.store.getRouteByCorrelation(id)
   if (!route) return null
   if (route.expires_at != null && route.expires_at < nowIso) return null
   return route
@@ -378,19 +380,15 @@ export function repliesRoute(deps: Deps) {
     }
 
     const nowIso = deps.now().toISOString()
-	    const parentRoute = resolveParentRoute(deps, data.in_reply_to, nowIso)
-	    const visibleRoute = parentRoute && (deps.groupsMode ?? 'legacy') === 'strict'
-	      ? (() => {
-	        const membership = loadMemberships(deps.db, peer.handle).get(parentRoute.group_id)
-	        return membership && parentRoute.msg_id > membership.since_msg_id ? parentRoute : null
-	      })()
-	      : parentRoute
-	    if (!visibleRoute) {
-	      return writeRefusal('unknown_parent', REPLY_ERROR_HTTP_STATUS.unknown_parent!, 'no route for in_reply_to (never existed, expired, or a zero-match dispatch)')
-	    }
-	    const routeForReply = visibleRoute
-	
-	    const audience = checkAudience(deps, routeForReply, peer.handle, declaredInstance, declaredSelector)
+    const parentScope = (deps.groupsMode ?? 'legacy') === 'strict'
+      ? readerScope(loadMemberships(deps.db, peer.handle), 'group_id', 'msg_id')
+      : undefined
+    const routeForReply = resolveParentRoute(deps, data.in_reply_to, nowIso, parentScope)
+    if (!routeForReply) {
+      return writeRefusal('unknown_parent', REPLY_ERROR_HTTP_STATUS.unknown_parent!, 'no route for in_reply_to (never existed, expired, or a zero-match dispatch)')
+    }
+
+    const audience = checkAudience(deps, routeForReply, peer.handle, declaredInstance, declaredSelector)
     if (audience === 'not_a_recipient') {
       return writeRefusal('not_a_recipient', REPLY_ERROR_HTTP_STATUS.not_a_recipient!, 'you are not in this route\'s grants')
     }

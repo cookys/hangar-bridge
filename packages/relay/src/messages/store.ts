@@ -322,6 +322,15 @@ export class MessageStore {
     return row ?? null
   }
 
+  getRouteScoped(msg_id: string, scope: ReaderScope): ReplyRoute | null {
+    const scoped = this.scopeClause(scope)
+    const row = this.db.prepare(`
+      SELECT * FROM reply_route
+      WHERE msg_id=? AND ${scoped.sql}
+    `).get(msg_id, ...scoped.params) as ReplyRoute | undefined
+    return row ?? null
+  }
+
   getRouteByCorrelation(correlation_id: string): ReplyRoute | null {
     const row = this.db.prepare(
       'SELECT * FROM reply_route WHERE correlation_id=?'
@@ -329,9 +338,25 @@ export class MessageStore {
     return row ?? null
   }
 
+  getRouteByCorrelationScoped(correlation_id: string, scope: ReaderScope): ReplyRoute | null {
+    const scoped = this.scopeClause(scope)
+    const row = this.db.prepare(`
+      SELECT * FROM reply_route
+      WHERE correlation_id=? AND ${scoped.sql}
+    `).get(correlation_id, ...scoped.params) as ReplyRoute | undefined
+    return row ?? null
+  }
+
   /** §3.4: a route with `expires_at` in the past is not live — unknown_parent. */
   getLiveRoute(msg_id: string, now: string): ReplyRoute | null {
     const route = this.getRoute(msg_id)
+    if (!route) return null
+    if (route.expires_at != null && route.expires_at < now) return null
+    return route
+  }
+
+  getLiveRouteScoped(msg_id: string, now: string, scope: ReaderScope): ReplyRoute | null {
+    const route = this.getRouteScoped(msg_id, scope)
     if (!route) return null
     if (route.expires_at != null && route.expires_at < now) return null
     return route
