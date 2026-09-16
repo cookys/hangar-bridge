@@ -8,6 +8,13 @@
 
 當您在同一台主機上開發多個不同專案，並希望發送給專案 A 的訊息/任務絕對不進入專案 B，請使用**專案等級的隔離機制**。
 
+## Project handles and groups
+
+Project isolation and relay groups are orthogonal. `init-project` gives each project on the same host
+its own handle and config directory; groups decide which handles may see and reach one another. A
+per-project handle gets its own `default_group` in v2 `peers.json`, which is how the model
+`group = domain, handle = project agent` is expressed.
+
 ## 操作指南 (Walkthrough)
 
 ### 1. 初始化專案設定
