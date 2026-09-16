@@ -5,7 +5,7 @@
 > actually work*. Companion to the design specs: [`SUBJECT_ROUTING_SPEC.md`](../SUBJECT_ROUTING_SPEC.md)
 > (fail-closed subject ACL) and [`docs/PROJECT_ISOLATION.md`](./PROJECT_ISOLATION.md)
 > (same-box cross-project isolation), plus [`docs/CLAIMS.md`](./CLAIMS.md) (claim contract).
-> Last verified against the combined SSE/NATS code: 2026-07-21.
+> Last verified against the combined SSE/NATS code: 2026-09-16.
 
 ---
 
@@ -68,7 +68,7 @@ then layer subject-routing ACL, task dispatch, cooperative claims, and an opt-in
 | Package | Current responsibility |
 |---|---|
 | `@hangar-bridge/shared` | One envelope schema, channel serialization/escaping, monotonic message IDs, subject matchers, claim bounds, and shared constants. Both transports depend on it. |
-| `@hangar-bridge/relay` | Default Hono HTTP/SSE messaging hub, bearer identity, bidirectional subject ACL, SQLite/WAL schema v7, TTL presence, claim API, durable buffer, fanout, and audit. |
+| `@hangar-bridge/relay` | Default Hono HTTP/SSE messaging hub, bearer identity, bidirectional subject ACL, SQLite/WAL schema v10, TTL presence, claim API, durable buffer, fanout, and audit. |
 | `@hangar-bridge/peer-agent` | MCP stdio server, SSE and NATS transport implementations, tool registration, inbound sender gate, optional Agent Call final-mile adapter, app-side NATS ACL, correlation, permissions, task dedup, and lifecycle cleanup. |
 | `@hangar-bridge/e2e` | Cross-package loopback tests, configuration checks, and live local-NATS integration oracles. |
 | `@hangar-bridge/operations` | Relay/NATS systemd units, NATS config and provisioning, fleet roster, NKeys workflow, and Claude Code registration artifacts. |
@@ -178,25 +178,58 @@ cannot delete the relay until claims are ported or deliberately retired.
 
 ## 5. The protocol (verified against code)
 
-### 5.1 Membership — static, file-based (no discovery)
+### 5.1 Membership — static roster plus relay groups
 
-The "mesh roster" is **declared out-of-band**, not discovered. The operator distributes each
-peer's secret manually and writes `peers.json` on the relay:
+The "mesh roster" is **declared out-of-band**, not discovered. `team_id` remains the constant
+`'hangar'`, meaning this relay installation; visibility is a group overlay in `peer_group` and
+`group_member`, where a handle may belong to several groups. `peers.json` v2 carries the peer secret
+hashes, each peer's `default_group`, and group membership/caps. A legacy flat file is interpreted as
+one `cookys` group with `history: "all"` and full caps. Every message, claim, and reply route is
+relay-stamped with `group_id`; readers are filtered in SQL by their memberships plus each
+membership's `since_msg_id`. A non-member receives the same "does not exist" response body/status
+as a truly absent target, including 404 paths. Per-member caps gate actions within a group. On SIGHUP,
+shrinking membership or caps emits `reauth` to affected streams; in strict mode, vanished handles are
+disabled, their tokens are revoked, and their memberships are removed.
 
 ```jsonc
 // ~/.config/hangar-bridge/peers.json  (mode 0600)  — auth/peers-file.ts
 {
-  "gentoo":  { "secret_sha256_hex": "<64 hex>", "display_name": "…",
-               "subjects": { "owned": ["mple2"], "interest": ["mple2.status>"] } },
-  "openclaw":{ "secret_sha256_hex": "<64 hex>", "subjects": { "owned": [], "interest": [] } }
+  "peers": {
+    "gentoo": {
+      "secret_sha256_hex": "<64 hex>",
+      "display_name": "Gentoo",
+      "subjects": { "owned": ["mple2"], "interest": ["mple2.status>"] },
+      "default_group": "cookys"
+    },
+    "guest": {
+      "secret_sha256_hex": "<64 hex>",
+      "default_group": "guest-lab"
+    }
+  },
+  "groups": {
+    "cookys": {
+      "description": "migrated single group",
+      "history": "all",
+      "members": {
+        "gentoo": { "caps": ["chat", "broadcast", "dispatch", "permission", "claim"] }
+      }
+    },
+    "guest-lab": {
+      "history": "since_join",
+      "members": {
+        "guest": { "caps": ["chat"] },
+        "gentoo": { "caps": ["chat"] }
+      }
+    }
+  }
 }
 ```
 
 At **relay startup**, `seedPeers()` upserts `human` + `token` rows (idempotent; rotating a
 secret revokes the old token and inserts the new hash). There is **no dynamic registration**:
-adding/removing a peer or changing its `owned` namespaces means editing `peers.json` + a relay
-restart (the documented re-seed path, which also drops all live SSE streams so ACL changes take
-effect cleanly). Every peer is seeded at `tier='admin'` — single-tenant has no tier hierarchy.
+adding/removing a peer, changing its `owned` namespaces, or changing group membership means editing
+`peers.json` plus SIGHUP/restart. Every peer is seeded at `tier='admin'`; authorization is the
+intersection of bearer identity, group membership, caps, and subject ACL.
 
 On NATS, `packages/operations/nats/fleet-roster.json` is the membership + namespace authority and
 must exactly match the fleet NKey users in `nats-server.conf`; privileged `$SYS` and provisioning
@@ -211,6 +244,11 @@ users are excluded. Changes take effect when the peer-agent restarts/reloads its
   (`c.set('peer', …)`). A client-supplied `from` is ignored entirely. This is the primary
   impersonation defense — and the reason a compromised *relay* (which does the stamping) is the
   residual trust anchor (§6).
+- **Identity introspection**: `GET /v1/whoami` returns the authenticated handle, its
+  `default_group`, and visible group memberships with caps/history. It is the rollout probe for the
+  strict groups model.
+- **Metrics gate**: `/metrics` is not a peer route. Without `HANGAR_METRICS_TOKEN` it is 404; with
+  that variable set it requires that bearer, and peer bearer tokens receive 401.
 - **NATS equivalent**: per-user NKey permissions limit publishing to `fleet.<handle>.>`.
   `NatsTransport` parses the authenticated wire subject, ignores/overwrites the payload's claimed
   `from`, and materializes the envelope with the derived sender. Payload identity is never trusted.
@@ -220,7 +258,7 @@ users are excluded. Changes take effect when the peer-agent restarts/reloads its
 Every HTTP body and SSE payload is an `Envelope`. Six `kind`s:
 `chat · presence_update · permission_request · permission_verdict · task_dispatch · task_result`.
 Fields: `id` (`msg_<ULID>`), `v` (PROTOCOL_VERSION), `team` (always `'hangar'`), `from` (stamped),
-`to` (handle | `@team`), `subject` (dotted | null), `in_reply_to`, `thread_root`, `kind`,
+`to` (handle | `@team` | `@group`), `group`, `subject` (dotted | null), `in_reply_to`, `thread_root`, `kind`,
 `content` (≤ MAX_CONTENT_BYTES), `meta` (string→string record), `sent_at`, `delivered_at`.
 
 Cross-field invariants enforced by `superRefine` (compile-shared by relay + peer-agent):
@@ -327,15 +365,18 @@ processed, and a cold-starting client — which drains `delivered_at IS NULL` on
 them. With a persisted cursor the client resumes via `?since=`, which filters on the id cursor
 alone, and cold start becomes the rare path instead of the default one.
 
-### 5.7 Durable model (`db/schema.sql`, SQLite WAL, schema v7)
+### 5.7 Durable model (`db/schema.sql`, SQLite WAL, schema v10)
 
-`team` (single fixed `'hangar'` row) · `human` (peer roster + `subjects` JSON ACL) · `token`
-(hashed secrets, revocable) · `message` (the durable buffer; indexed by `(team,id)`,
-`(team,to,id)`, `thread_root`) · `idempotency_key` (`hash(tokenId:key) → cached response`) ·
-`audit_log` (ACL denials + events) · `claim` (one advisory owner per `(team_id, claim_key)`, TTL
-expiry). Retention `retention_days = 7` (purge job). The `team_id`
-column + FK are retained as **single-tenant stub scaffolding** (`HANGAR_TEAM_ID='hangar'`) to
-keep migration risk vs. upstream at zero.
+`team` (single fixed `'hangar'` row) · `human` (peer roster + `subjects` JSON ACL + default group) ·
+`token` (hashed secrets, revocable) · `peer_group` (group metadata/history) · `group_member`
+(handle/group membership, caps, member_since, `since_msg_id`) · `message` (the durable buffer with
+relay-stamped `group_id`; indexed by `(team,id)`, `(team,group_id,id)`, `(team,to,id)`,
+`thread_root`) · `reply_route` (`group_id` stamped with the parent message) · `idempotency_key`
+(`hash(tokenId:key) → cached response`) · `audit_log` (ACL/group denials + events) · `claim` (one
+advisory owner per `(team_id, group_id, claim_key)`, so the claim primary key is group-scoped, TTL
+expiry). Retention `retention_days = 7` (purge job). The `team_id` column + FK are retained as the
+relay-installation identity (`HANGAR_TEAM_ID='hangar'`) to keep migration risk vs. upstream low while
+groups provide visibility isolation.
 
 ### 5.8 Cooperative claims
 

@@ -208,6 +208,83 @@ the runbook, shell history, or issue evidence.
 Do not start peer rollout if the service is inactive, the route probe fails, or `build_revision`
 differs from `candidate`.
 
+### 2.4 Groups rollout (relay >= groups)
+
+Run this section on the hub after the section 2.1 backup and before restarting the new relay. The new
+relay starts in **legacy** mode on the old flat `peers.json` with byte-identical roster behavior, and
+in **strict** mode on the v2 file produced here.
+
+```bash
+cd "$repo_root"
+node packages/relay/dist/index.js peers-groups-init --peers "$peers_file"
+node packages/relay/dist/index.js peers-groups-init --peers "$peers_file" --write
+```
+
+Read the dry-run JSON before `--write`. The command preserves every existing
+`secret_sha256_hex`, writes all peers into the default `cookys` group with full caps and
+`history: "all"`, then keeps the old file as `$peers_file.bak.<epoch>`. Strict-to-legacy rollback is
+refused once a v2 file has been loaded and a non-`cookys` group exists (§2.1.10): starting that relay
+on a flat file exits 1. Rollback of the roster therefore means restoring both the `.bak.<epoch>`
+`peers.json` and the SQLite backup from section 2.1.
+
+Optionally gate metrics before the restart by adding a random token to the relay environment:
+
+```bash
+install -m 0600 /dev/null "$HOME/.config/hangar-bridge/relay.env"
+printf 'HANGAR_METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)" \
+  >> "$HOME/.config/hangar-bridge/relay.env"
+```
+
+Peer bearer tokens receive 401 on `/metrics` either way. Without `HANGAR_METRICS_TOKEN`, `/metrics`
+is 404. Today there is no scraper for this route.
+
+Restart through `install-relay.sh` as in section 2.2; the section 2.1 backup already covers both the
+SQLite file and `peers.json`.
+
+```bash
+packages/operations/systemd/install-relay.sh \
+  --revision "$candidate" \
+  --enable
+
+curl -s "$relay_url/health" | jq .build_revision
+curl -s \
+  -H "authorization: Bearer $(cat "$HOME/.config/hangar-bridge/secret")" \
+  "$relay_url/v1/whoami"
+fleet peers
+```
+
+`/v1/whoami` for the existing `openclaw` bearer should include
+`{"handle":"openclaw","default_group":"cookys","groups":[{"id":"cookys",...}]}`, and
+`fleet peers` should print `== group cookys`.
+
+Peer hosts are rebuilt as in section 3. The peer-agent tolerates an old relay and the relay tolerates
+an old peer-agent; the new peer-agent plus new relay is what enables `group` on the channel tag.
+Couriers restart as before.
+
+To add a guest group, edit the v2 `peers.json`: add the guest under `peers` with
+`default_group: "<guest-group>"`, and add a `groups.<guest-group>` entry:
+
+```json
+{
+  "history": "since_join",
+  "members": {
+    "<handle>": { "caps": ["chat"] }
+  }
+}
+```
+
+Optionally add one of your own handles to that group so you can talk to the guest. Reload without a
+process restart:
+
+```bash
+systemctl --user reload hangar-bridge-relay
+```
+
+Verify with the guest's bearer: `/v1/peers` shows only the guest group, and `/v1/whoami` shows
+`caps: ["chat"]`. To remove the guest, delete both the `peers.<handle>` entry and the
+`groups.<guest-group>` membership, then SIGHUP again. Its stream receives `event: reauth`, the next
+request is 401 (`human.disabled_at` plus revoked token), and the audit trail records `peer.removed`.
+
 ## 3. Upgrade peer hosts one at a time
 
 Run the source admission/build steps from section 1 on each peer host. Then preview and install the
@@ -295,8 +372,10 @@ candidate="$(jq -er '.candidate | select(test("^[0-9a-f]{40}$"))' \
 relay_url="${HANGAR_RELAY_URL:-http://192.168.101.6:8443}"
 data_dir="${HANGAR_DATA:-$HOME/.local/share/hangar-bridge}"
 db_path="$data_dir/hangar-bridge.sqlite"
+peers_file="${HANGAR_PEERS_FILE:-$HOME/.config/hangar-bridge/peers.json}"
 [[ "$previous_source" =~ ^[0-9a-f]{40}$ ]]
 test -f "$backup_dir/hangar-bridge.sqlite"
+test -f "$backup_dir/peers.json"
 test "$(sqlite3 "$backup_dir/hangar-bridge.sqlite" 'PRAGMA quick_check;')" = 'ok'
 
 test -z "$(git status --porcelain)"
@@ -324,6 +403,8 @@ mv "$data_dir" "$failed_data"
 mkdir -p "$data_dir"
 chmod 700 "$data_dir"
 cp -p "$backup_dir/hangar-bridge.sqlite" "$db_path"
+cp -p "$backup_dir/peers.json" "$peers_file"
+chmod 600 "$db_path" "$peers_file"
 
 if [[ "$previous_live" =~ ^[0-9a-f]{40}$ ]]; then
   HANGAR_REPO_ROOT="$(git rev-parse --show-toplevel)" \
@@ -368,12 +449,13 @@ else
 fi
 ```
 
-If a roster/config change accompanied the failed rollout, restore its protected backup deliberately
-before restarting. Do not overwrite a current roster automatically. The bootstrap exception exists
-only for a legacy relay whose recorded `previous_live` lacked build identity; all later rollbacks must
-take the exact-health branch. After rollback, keep the checkout detached at the proven rollback SHA
-until a fixed `origin/develop` candidate is admitted and deployed; do not move `develop` backward or
-force-push it.
+For groups rollout rollback, restore `peers.json.bak.<epoch>` (or the section 2.1 `peers.json`
+backup) together with the section 2.1 SQLite backup, then reinstall the previous revision. Do not
+roll back only the roster after strict groups have existed; strict-to-legacy startup is refused.
+The bootstrap exception exists only for a legacy relay whose recorded `previous_live` lacked build
+identity; all later rollbacks must take the exact-health branch. After rollback, keep the checkout
+detached at the proven rollback SHA until a fixed `origin/develop` candidate is admitted and
+deployed; do not move `develop` backward or force-push it.
 
 ## Optional Docker verification
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { openDatabase } from './db/db.ts'
 import { initRelayFromPeersFile } from './cli/init.ts'
+import { peersGroupsInit } from './cli/peers-groups-init.ts'
 import { startServer } from './cli/serve.ts'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -28,6 +29,11 @@ async function main() {
     const r = initRelayFromPeersFile(db, { peers_file: peersFile })
     console.log(`OK Seeded ${r.seeded.length} peer(s) from ${peersFile}: ${r.seeded.join(', ')}`)
     console.log(`OK DB at ${dbPath} ready for serve`)
+    return
+  }
+
+  if (cmd === 'peers-groups-init') {
+    peersGroupsInit(process.argv.slice(3))
     return
   }
 

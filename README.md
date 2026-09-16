@@ -32,6 +32,13 @@ research-preview `claude/channel` protocol; outbound actions are MCP tools.
   coordination API is available. The exact schema and compatibility rules are in
   [`docs/CLAIMS.md`](./docs/CLAIMS.md).
 
+### Groups
+
+Relay groups let one hub host multiple mutually hidden circles: legacy `peers.json` maps to the
+default `cookys` group, while v2 `peers.json` adds explicit groups, memberships, and caps. Rollout and
+guest-group operations are in [`docs/DEPLOYMENT.md` §2.4](./docs/DEPLOYMENT.md#24-groups-rollout-relay--groups);
+the protocol model is in [`docs/architecture.md` §5.1](./docs/architecture.md#51-membership--static-roster-plus-relay-groups).
+
 The project is a fork of [pouriamrt/claude-mesh](https://github.com/pouriamrt/claude-mesh)
 (MIT, base commit `a75d37a`). It keeps the relay/SSE/MCP foundation and security primitives while
 replacing the multi-tenant pair-code flow with a single-tenant, operator-managed roster and
