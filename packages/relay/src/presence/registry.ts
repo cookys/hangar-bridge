@@ -186,10 +186,13 @@ export class PresenceRegistry {
     // summary that is non-empty, not sessions[0] (Map insertion order). A
     // sibling's later heartbeat with nothing to report (summary: '') must not
     // clobber an earlier sibling's real summary — see F-P3-1.
-    let summary = first.summary
-    let summaryAt = first.last_seen
+    // Compare timestamps only among NON-EMPTY summaries: seeding from
+    // sessions[0] would let a newer empty first session suppress an older
+    // non-empty sibling (sol review, 2026-09-17).
+    let summary = ''
+    let summaryAt = ''
     for (const s of sessions) {
-      if (s.summary !== '' && s.last_seen >= summaryAt) {
+      if (s.summary !== '' && (summaryAt === '' || s.last_seen >= summaryAt)) {
         summary = s.summary
         summaryAt = s.last_seen
       }
