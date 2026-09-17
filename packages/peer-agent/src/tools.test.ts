@@ -96,6 +96,49 @@ describe('registerTools', () => {
     expect((result.content[0] as any).text).toBe(JSON.stringify(peers, null, 2))
   })
 
+  // F-P3-1 (2026-09-17): a handle with several sessions used to show ONE summary — the
+  // last writer's — so a cockpit's "cockpit: N peers (…)" was hidden behind a sibling
+  // peer-agent's "(connected)". With >1 session the grouped rendering adds one indented
+  // line per session carrying that session's own summary; a single-session handle
+  // renders exactly as before.
+  it('list_peers shows each session\'s own summary under a multi-session handle', async () => {
+    const peers = [
+      {
+        handle: 'cuda',
+        display_name: 'Cuda',
+        online: true,
+        summary: '(connected)',
+        last_seen: '2026-01-01T00:00:00.000Z',
+        sessions: [
+          { label: 'cuda#01AAA', instance: '01AAA', summary: '(connected)', repo: 'hangar-bridge' },
+          { label: 'cuda#01BBB', instance: '01BBB', summary: 'cockpit: 2 peers (a, b)' },
+        ],
+        groups: [{ id: 'cookys', caps: ['chat'] }],
+      },
+      {
+        handle: 'solo',
+        display_name: 'Solo',
+        online: true,
+        summary: 'one session only',
+        last_seen: '2026-01-01T00:00:00.000Z',
+        sessions: [{ label: 'main', summary: 'one session only' }],
+        groups: [{ id: 'cookys', caps: ['chat'] }],
+      },
+    ]
+    const client = { send: vi.fn(), listPeers: vi.fn(async () => peers), setPresence: vi.fn() } as unknown as RelayClient
+    const { callTool } = registerTools(client, { auto_publish_cwd: false, auto_publish_branch: false, auto_publish_repo: false })
+    const result = await callTool('list_peers', {})
+    const text = (result.content[0] as any).text as string
+    const lines = text.split('\n')
+    const cudaAt = lines.findIndex(l => l.startsWith('cuda '))
+    expect(lines[cudaAt]).toBe('cuda        online (connected)')
+    expect(lines[cudaAt + 1]).toBe('  01AAA (connected)')
+    expect(lines[cudaAt + 2]).toBe('  01BBB cockpit: 2 peers (a, b)')
+    const soloAt = lines.findIndex(l => l.startsWith('solo '))
+    expect(lines[soloAt]).toBe('solo        online one session only')
+    expect(lines[soloAt + 1] ?? '').not.toMatch(/^ {2}/)
+  })
+
   it('list_peers renders strict relay peers grouped by shared group with caller caps', async () => {
     const peers = [
       {

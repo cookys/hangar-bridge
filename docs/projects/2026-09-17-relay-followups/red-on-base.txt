@@ -1,0 +1,11 @@
+# red on base: source files at develop (565cb42), test files from feat/relay-followups (9ff06bf/2d233d8)
+# relay: registry.test.ts + fanout.test.ts
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/fanout.test.ts > Fanout — narrowed broadcast reaches siblings on the sender host > delivers an UNqualified broadcast to a sibling on the sending handle, not back to the sender
+ FAIL  src/presence/registry.test.ts > PresenceRegistry > carries a distinct summary per session, not just one handle-level summary
+ FAIL  src/presence/registry.test.ts > PresenceRegistry > handle-level summary is the most recently written NON-EMPTY session summary
+      Tests  3 failed | 38 passed (41)
+# peer-agent: tools.test.ts
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/tools.test.ts > registerTools > list_peers shows each session's own summary under a multi-session handle
+      Tests  1 failed | 85 passed (86)

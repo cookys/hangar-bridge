@@ -467,6 +467,20 @@ function renderPeerLine(peer: PeerSummary): string {
   return `${peer.handle.padEnd(11)} ${state}${summary}`
 }
 
+// F-P3-1: a handle is an inbox shared by several sessions, and the handle-level
+// summary is only the most recent non-empty one. With more than one session the
+// per-session summaries are what a reader needs (a cockpit's roster next to a
+// peer-agent's "(connected)"), so add one indented line per session under the
+// handle line. A single-session handle keeps the one-line rendering unchanged.
+function renderPeerSessionLines(peer: PeerSummary): string[] {
+  if (peer.sessions.length < 2) return []
+  return peer.sessions.map(s => {
+    const id = s.instance ?? s.label
+    const summary = s.summary ? ` ${s.summary}` : ''
+    return `  ${id}${summary}`
+  })
+}
+
 function renderGroupedPeers(peers: PeerSummary[], runtime: ToolGroupsRuntime | undefined): string {
   if (!peers.some(peer => Array.isArray(peer.groups))) return JSON.stringify(peers, null, 2)
   const callerGroups = runtime?.groupsMode === 'strict' ? runtime.groups : []
@@ -483,7 +497,7 @@ function renderGroupedPeers(peers: PeerSummary[], runtime: ToolGroupsRuntime | u
     const caps = capsFor.get(groupId) ?? []
     lines.push(`== ${groupId}  (caps: ${caps.join(' ')})`)
     for (const peer of peers) {
-      if ((peer.groups ?? []).some(group => group.id === groupId)) lines.push(renderPeerLine(peer))
+      if ((peer.groups ?? []).some(group => group.id === groupId)) lines.push(renderPeerLine(peer), ...renderPeerSessionLines(peer))
     }
   }
   return lines.join('\n')

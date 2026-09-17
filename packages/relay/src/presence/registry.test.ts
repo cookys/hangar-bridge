@@ -24,6 +24,41 @@ describe('PresenceRegistry', () => {
     expect(p.get('t1', 'alice')).toBeUndefined()
   })
 
+  // F-P3-1 (fleet-comms cockpit P3, cuda 2026-09-16): two peer-agents sharing
+  // one handle each POST their own summary; the cockpit's own summary was
+  // getting overwritten by a sibling peer-agent's "(connected)" because only
+  // ONE handle-level summary existed. Fixed by carrying summary PER SESSION.
+  it('carries a distinct summary per session, not just one handle-level summary', () => {
+    p.set('t1', 'alice', 'laptop', { summary: 'laptop: building X' })
+    p.set('t1', 'alice', 'cockpit', { summary: 'cockpit: 3 peers (a,b,c)' })
+    const snap = p.get('t1', 'alice')!
+    const byLabel = Object.fromEntries(snap.sessions.map(s => [s.label, s.summary]))
+    expect(byLabel['laptop']).toBe('laptop: building X')
+    expect(byLabel['cockpit']).toBe('cockpit: 3 peers (a,b,c)')
+  })
+
+  it('handle-level summary is the most recently written NON-EMPTY session summary', () => {
+    p.set('t1', 'alice', 'laptop', { summary: 'first' })
+    p.set('t1', 'alice', 'cockpit', { summary: 'second — newer' })
+    expect(p.get('t1', 'alice')?.summary).toBe('second — newer')
+  })
+
+  it('an empty session summary does not clobber a sibling\'s non-empty summary at handle level', () => {
+    p.set('t1', 'alice', 'laptop', { summary: 'has content' })
+    p.set('t1', 'alice', 'cockpit', { summary: '' }) // heartbeat with nothing to report, written LATER
+    expect(p.get('t1', 'alice')?.summary).toBe('has content')
+  })
+
+  it('a NEWER empty first session does not suppress an OLDER non-empty sibling (inverse order)', () => {
+    // Own clock: the shared fixture freezes time, which would hide the ordering bug.
+    let t = 0
+    const q = new PresenceRegistry(() => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)))
+    q.set('t1', 'alice', 'cockpit', { summary: '' })            // t=0, sessions[0]
+    q.set('t1', 'alice', 'laptop', { summary: 'older but real' }) // t=1
+    q.set('t1', 'alice', 'cockpit', { summary: '' })            // t=2: empty AND newest
+    expect(q.get('t1', 'alice')?.summary).toBe('older but real')
+  })
+
   it('listTeam returns all humans with their summaries', () => {
     p.set('t1', 'alice', 'laptop', { summary: 'A', cwd: '/', branch: 'm', repo: 'r' })
     p.set('t1', 'bob',   'laptop', { summary: 'B', cwd: '/', branch: 'm', repo: 'r' })

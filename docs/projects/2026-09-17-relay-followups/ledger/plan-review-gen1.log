@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "artifact_type": "plan_review_artifact",
+  "ticket": "relay-followups-20260917",
+  "logical_plan_id": "legacy-ticket:relay-followups-20260917",
+  "session_id": "l5-relay-followups",
+  "session_key": "311afaa8a63d7e8f8e9190deea21f0f0f33b301bb30efc432bca17f5af03d981",
+  "generation": 1,
+  "verdict": "CONDITIONAL",
+  "semantic_verdict": "CONDITIONAL",
+  "terminal": false,
+  "policy_reason": "accepted_blockers_authorize_generation_2",
+  "rubric_sha256": "4514b12f96346f52834440cc7b8eafa21b2527f2952558380d5a0f82726f709e",
+  "manifest_sha256": "662f0f51e8fca8a0de01d2864ed2b6e5cb9d76d241414922df15c7c9d69a061d",
+  "plan_sha256": "8f99d2ac3cdc45235051e611dbb1e19805446162b14296c5cab4b5e9596a9cb3",
+  "growth_ratio": {
+    "numerator": 1,
+    "denominator": 1
+  },
+  "growth_warning": false,
+  "transport_status": "complete",
+  "attempts": [
+    {
+      "seat_id": "chair",
+      "target_id": "chair",
+      "attempt": 1,
+      "transport_envelope": {
+        "schema_version": 1,
+        "artifact_type": "runner_transport_envelope",
+        "request_binding": {
+          "runner": "codex",
+          "model": "gpt-5.6-sol",
+          "operation": "plan-review",
+          "request_digest": "1d1570793a460e2d9469aa903a4bf556192919a0cc1b1ae020f8e3924590e562"
+        },
+        "outcome": {
+          "classification": "success",
+          "exit_status": 0,
+          "signal": null,
+          "error_code": null
+        },
+        "output_digests": {
+          "stdout_sha256": "b2961ee395a341efdd464ff8aef3adec8e0f7c7195af2316662af9e360d58cd7",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "private_raw_reference": {
+          "kind": "private-file",
+          "locator": "/tmp/dispatch-author-codex-RU7SVu/stdout",
+          "digest": "b2961ee395a341efdd464ff8aef3adec8e0f7c7195af2316662af9e360d58cd7"
+        },
+        "receipt_digest": "023f28837940ccf5b405d2ff2fa608a7c24e2f1ff26b8cb52038a045a7e929f4"
+      },
+      "transport_status": "success",
+      "parser_status": "strict",
+      "semantic_status": "available",
+      "unratified_semantic_status": "unavailable"
+    }
+  ],
+  "substitutions": [],
+  "reviewer_verdicts": [
+    {
+      "seat_id": "chair",
+      "target_id": "chair",
+      "family": "legacy-gpt-5.6-sol",
+      "verdict": "STOP"
+    }
+  ],
+  "findings": [
+    {
+      "rubric_id": "R1",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "Item 2 closure evidence",
+      "claim": "The closure is correct, but the plan incorrectly states that insert() is the only persistence path.",
+      "evidence": "At base 565cb42, presence.ts only calls buildEnvelope() and fanout.deliver(), and buildEnvelope() is side-effect free. However, MessageStore.persist() directly inserts message rows, while writeRouteAndMessage() can invoke persist() independently of insert().",
+      "evidence_reference": "packages/relay/src/routes/presence.ts:69-76; packages/relay/src/messages/store.ts:93-129; packages/relay/src/messages/store.ts:132-149; packages/relay/src/messages/store.ts:307-320; plan lines 9-14",
+      "repair": "Keep Item 2 closed, but replace the uniqueness claim with precise evidence that presence calls neither insert(), persist(), nor writeRouteAndMessage(), and that buildEnvelope() performs no write.",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": "accepted_nonblocking",
+      "fingerprint": "94e043f3ec471adba99659b909815c0747679095a1871e5fb32b6a3306a1fb5e",
+      "disposition_rationale": "legacy compatibility translation"
+    },
+    {
+      "rubric_id": "R8",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "Phase 3 ephemeral reply implementation",
+      "claim": "Phase 3 is based on a false current-code premise: base 565cb42 already mints an ephemeral correlation_id and installs a reply route for it.",
+      "evidence": "The ephemeral chat branch stamps meta.correlation_id with newMessageId(), constructs a ReplyRouteInput containing that correlation_id and EPHEMERAL_ROUTE_TTL_MS expiry, and commits the route and grants through writeRouteAndMessage(). The reply endpoint already resolves parents by message id or correlation-id alias.",
+      "evidence_reference": "packages/relay/src/routes/messages.ts:505-517; packages/relay/src/routes/messages.ts:556-581; packages/relay/src/routes/replies.ts:239-246; packages/relay/tests/integration/attribution.test.ts:348-378; packages/relay/tests/integration/replies.test.ts:381-387; plan lines 97-130",
+      "repair": "Remove Phase 3 as implementation work and close the stale backlog row with the existing code and test evidence. If additional assurance is wanted, add only an end-to-end regression test for the already-implemented send-and-reply flow.",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": "accepted_blocker",
+      "fingerprint": "543aaf51558ee72a27d7e26f4d4d1dd9cf3279edc373abfdd45c937420276720",
+      "disposition_rationale": "legacy compatibility translation"
+    },
+    {
+      "rubric_id": "R9",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "Phase 3 route lifetime and persistence semantics",
+      "claim": "The proposed in-memory routing table neither states the required relay-restart degradation explicitly nor preserves the stronger durable metadata routing already present at the frozen base.",
+      "evidence": "The plan says only that the table is in memory and that expired or unknown identifiers are rejected; it never states that restart clears the table and makes prior ephemeral replies fail as unknown_parent. Base 565cb42 instead stores route metadata and grants in reply_route and reply_grant while leaving ephemeral content out of the message table.",
+      "evidence_reference": "plan lines 107-124; packages/relay/src/messages/store.ts:275-320; packages/relay/src/routes/messages.ts:563-577; packages/relay/src/routes/replies.ts:239-246",
+      "repair": "Delete the obsolete in-memory-table proposal. If it is intentionally retained, explicitly document restart loss, exact unknown_parent behavior after restart, metadata-only storage, and why replacing the existing durable route metadata is acceptable.",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": "accepted_blocker",
+      "fingerprint": "ccd3ac8b1d4e7ee2c781465cd7309c0713b679104a2ea30cf2d0d156d0d21059",
+      "disposition_rationale": "legacy compatibility translation"
+    },
+    {
+      "rubric_id": "R10",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "Phase 3 unknown-parent wire contract",
+      "claim": "The plan specifies an existing unknown_parent-shaped 400, but the actual reply contract at base 565cb42 is HTTP 404 with the structured reply-error body.",
+      "evidence": "REPLY_ERROR_HTTP_STATUS maps unknown_parent to 404. The reply route returns error, message, retryable, and retry_with_new_key through writeRefusal(), and integration tests assert status 404. The 400 invalid_message response in messages.ts is a different legacy send path and is not the reply endpoint contract.",
+      "evidence_reference": "packages/shared/src/constants.ts:108-115; packages/relay/src/routes/replies.ts:361-397; packages/relay/tests/integration/replies.test.ts:249-264; packages/relay/src/routes/messages.ts:314-323; plan lines 116-118",
+      "repair": "Remove Phase 3 or require unknown and expired correlation aliases to reuse the existing /v1/replies HTTP 404 unknown_parent response exactly; do not introduce a 400 variant.",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": "accepted_blocker",
+      "fingerprint": "f3dd8094ae849eb15b6ebac8e34e18e0e6f699e16ef0ef55330e26e237431a3a",
+      "disposition_rationale": "legacy compatibility translation"
+    },
+    {
+      "rubric_id": "R13",
+      "class": "decision-now",
+      "severity": "blocking",
+      "affected_surface": "Phase 3 RED-on-base campaign",
+      "claim": "The proposed Phase 3 adversarial harness cannot be RED on base 565cb42 because the correlation-id send and reply-alias mechanisms already exist.",
+      "evidence": "Base already has a test proving directed ephemeral delivery carries a relay-generated correlation_id and another proving /v1/replies resolves a correlation-id alias. The production path creates the route and recipient grants before delivery, so the described A-to-B-to-A scenario exercises existing behavior rather than reproducing the claimed defect.",
+      "evidence_reference": "packages/relay/tests/integration/attribution.test.ts:329-378; packages/relay/tests/integration/replies.test.ts:381-387; packages/relay/src/routes/messages.ts:514-583; packages/relay/src/routes/replies.ts:390-397; plan lines 126-130",
+      "repair": "Remove the impossible RED requirement and reclassify the proposed round-trip as a GREEN regression test for an already-fixed backlog item.",
+      "blocks_next_slice_or_immediate_integrity": true,
+      "cannot_defer_to_spike": true,
+      "rubric_mapped": true,
+      "candidate_blocker": true,
+      "provenance": [
+        {
+          "seat_id": "chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": "accepted_blocker",
+      "fingerprint": "ee6d544cef6ae4a68519ee922561713699e23c3bb35aa4b12274bdd9b3c27cbf",
+      "disposition_rationale": "legacy compatibility translation"
+    },
+    {
+      "rubric_id": "R13",
+      "class": "decision-now",
+      "severity": "non-blocking",
+      "affected_surface": "Phase 1 peer-agent renderer coverage and types",
+      "claim": "The Phase 1 harness covers registry and peers JSON behavior but does not cover the planned grouped renderer change or its single-session byte-preservation invariant.",
+      "evidence": "The harness asserts session summaries and handle-level selection only. Existing grouped-renderer tests use containment assertions and one session per peer, so they cannot detect an accidental extra line for a single session. PeerSummary.sessions also lacks a summary field, although tools.ts must read it to render per-session summaries.",
+      "evidence_reference": "plan lines 50-65; packages/peer-agent/src/tools.ts:464-489; packages/peer-agent/src/tools.test.ts:99-140; packages/peer-agent/src/outbound.ts:74-81",
+      "repair": "Add summary to PeerSummary.sessions and add exact renderer tests for one-session unchanged output plus multi-session indented output.",
+      "blocks_next_slice_or_immediate_integrity": false,
+      "cannot_defer_to_spike": false,
+      "rubric_mapped": true,
+      "candidate_blocker": false,
+      "provenance": [
+        {
+          "seat_id": "chair",
+          "runner": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      ],
+      "duplicate_reports": [],
+      "disposition": "accepted_nonblocking",
+      "fingerprint": "477eb4ad9ae405ff7eb1dd3d00bf9247b5f263f44b9d037e0fee67b184ec9635",
+      "disposition_rationale": "legacy compatibility translation"
+    }
+  ],
+  "backlog_candidates": [
+    {
+      "fingerprint": "94e043f3ec471adba99659b909815c0747679095a1871e5fb32b6a3306a1fb5e",
+      "rubric_id": "R1",
+      "affected_surface": "Item 2 closure evidence",
+      "claim": "The closure is correct, but the plan incorrectly states that insert() is the only persistence path.",
+      "evidence_reference": "packages/relay/src/routes/presence.ts:69-76; packages/relay/src/messages/store.ts:93-129; packages/relay/src/messages/store.ts:132-149; packages/relay/src/messages/store.ts:307-320; plan lines 9-14",
+      "disposition": "accepted_nonblocking"
+    },
+    {
+      "fingerprint": "477eb4ad9ae405ff7eb1dd3d00bf9247b5f263f44b9d037e0fee67b184ec9635",
+      "rubric_id": "R13",
+      "affected_surface": "Phase 1 peer-agent renderer coverage and types",
+      "claim": "The Phase 1 harness covers registry and peers JSON behavior but does not cover the planned grouped renderer change or its single-session byte-preservation invariant.",
+      "evidence_reference": "plan lines 50-65; packages/peer-agent/src/tools.ts:464-489; packages/peer-agent/src/tools.test.ts:99-140; packages/peer-agent/src/outbound.ts:74-81",
+      "disposition": "accepted_nonblocking"
+    }
+  ],
+  "accepted_blocker_count": 4,
+  "repair_authorized": true,
+  "next_generation": 2,
+  "reviewed_at": "2026-09-17T01:58:23.655Z"
+}
