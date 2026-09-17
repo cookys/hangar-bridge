@@ -199,18 +199,18 @@ export class Fanout {
     if (isBroadcastHandle(e.to) || (e.kind === 'presence_update' && effectiveAudience)) {
       for (const [handle, set] of byHandle) {
         if (effectiveAudience && !effectiveAudience.has(handle)) continue
-        // Skipping the sender's whole handle is right for an unqualified
-        // broadcast: you do not need your own announcement echoed back, and the
-        // sessions beside you are not its audience.
-        //
-        // It is wrong for a NARROWED one. This fleet runs one handle per host,
-        // so "everyone working on project X" would silently exclude every
-        // sibling session on the sender's own machine — and a sibling in the
-        // same project is the single most likely collaborator. Narrow to
-        // per-instance there, exactly as the direct branch already does, so the
-        // sender still does not hear itself.
+        // Exclude only the sending INSTANCE, never the whole handle — for both
+        // a narrowed and an unqualified @team broadcast. This fleet runs one
+        // handle per host, so "everyone working on project X" (narrowed) would
+        // silently exclude every sibling session on the sender's own machine,
+        // and a sibling in the same project is the single most likely
+        // collaborator. The same is true of an UNqualified broadcast: a machine
+        // paging the fleet about its own host used to be the one host whose
+        // sessions could never hear it (BACKLOG "`@team` fanout skips the
+        // sending handle", surfaced 2026-08-31; operator-resolved design
+        // 2026-09-17). A legacy sender with no instance cannot be told apart
+        // from its own siblings, so it keeps the old whole-handle skip.
         if (handle === e.from && e.to !== GROUP_BROADCAST_HANDLE) {
-          if (e.to_filter == null) continue
           if (senderInstance === undefined) continue   // legacy peer: keep old behaviour
           collect(handle, filterOutInstance(set, senderInstance))
           selfExcluded = true

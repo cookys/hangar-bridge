@@ -12,6 +12,15 @@ export type DeliveryState = 'unverified' | 'verified' | 'deaf'
 
 export interface PresenceSession {
   label: string
+  /**
+   * This session's OWN summary (F-P3-1, 2026-09-17): two peer-agents sharing
+   * one handle each publish their own text, and only carrying it at the
+   * handle level meant the last-writer clobbered every sibling's summary on
+   * `/v1/peers` (e.g. a cockpit's "N peers (…)" overwritten by a plain
+   * peer-agent's "(connected)"). The handle-level `PresenceSnapshot.summary`
+   * remains for back-compat (most recent NON-EMPTY session summary).
+   */
+  summary: string
   /** Per-process instance id; absent for a legacy client. Observability only. */
   instance?: string
   cwd?: string
@@ -74,7 +83,7 @@ function copyOptional(src: PresenceInput): OptionalState {
 }
 
 function toSession(s: SessionState): PresenceSession {
-  const out: PresenceSession = { label: s.label, delivery_state: s.delivery_state }
+  const out: PresenceSession = { label: s.label, summary: s.summary, delivery_state: s.delivery_state }
   if (s.instance !== undefined) out.instance = s.instance
   if (s.cwd !== undefined) out.cwd = s.cwd
   if (s.branch !== undefined) out.branch = s.branch
@@ -173,9 +182,21 @@ export class PresenceRegistry {
       (max, s) => (s.last_seen > max ? s.last_seen : max),
       first.last_seen
     )
+    // Handle-level summary (back-compat): the most RECENTLY written session
+    // summary that is non-empty, not sessions[0] (Map insertion order). A
+    // sibling's later heartbeat with nothing to report (summary: '') must not
+    // clobber an earlier sibling's real summary — see F-P3-1.
+    let summary = first.summary
+    let summaryAt = first.last_seen
+    for (const s of sessions) {
+      if (s.summary !== '' && s.last_seen >= summaryAt) {
+        summary = s.summary
+        summaryAt = s.last_seen
+      }
+    }
     return {
       handle,
-      summary: first.summary,
+      summary,
       last_seen,
       sessions: sessions.map(toSession),
     }
