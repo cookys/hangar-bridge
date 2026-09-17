@@ -139,14 +139,23 @@ describe('Fanout — narrowed broadcast reaches siblings on the sender host', ()
     expect(other.received).toHaveLength(1)
   })
 
-  it('still skips the whole sending handle for an UNqualified broadcast', () => {
+  // 2026-09-17 (BACKLOG "`@team` fanout skips the sending handle"): an
+  // unqualified broadcast used to skip the WHOLE sending handle, so a
+  // machine paging the fleet about its own host was the one host whose
+  // sessions could never hear it. Operator-resolved design: unify with the
+  // narrowed branch above — exclude only the sending INSTANCE, not the
+  // whole handle, whenever an instance is known. This test's assertion is
+  // updated to match (it previously asserted the old, now-wrong, behaviour).
+  it('delivers an UNqualified broadcast to a sibling on the sending handle, not back to the sender', () => {
     const f = new Fanout()
     const me = subWithInstance('alice', 'inst-me')
     const sibling = subWithInstance('alice', 'inst-sibling')
     f.subscribe(me); f.subscribe(sibling)
-    f.deliver(env('A', '@team', 'alice'))
+    // Same sender_instance meta the direct-message / narrowed-broadcast self-exclusion
+    // already relies on — an UNqualified broadcast (no to_filter) with a known instance.
+    f.deliver({ ...env('A', '@team', 'alice'), meta: { sender_instance: 'inst-me' } })
     expect(me.received).toHaveLength(0)
-    expect(sibling.received).toHaveLength(0)
+    expect(sibling.received).toHaveLength(1)
   })
 
   it('keeps the old behaviour when the sender publishes no instance (legacy peer)', () => {
