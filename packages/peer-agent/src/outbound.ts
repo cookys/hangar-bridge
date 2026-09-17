@@ -77,7 +77,8 @@ export interface PeerSummary {
   online: boolean
   summary: string
   last_seen: string | null
-  sessions: Array<{ label: string; cwd?: string; branch?: string; repo?: string }>
+  // `summary` per session since relay F-P3-1 (2026-09-17); absent from older relays.
+  sessions: Array<{ label: string; instance?: string; summary?: string; cwd?: string; branch?: string; repo?: string }>
   groups?: Array<{ id: string; caps: string[] }>
 }
 
