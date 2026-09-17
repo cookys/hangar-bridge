@@ -94,40 +94,42 @@ handle, host A sends an UNNARROWED `@team` broadcast; assert the sending
 instance does NOT receive it and the sibling instance DOES. Confirm RED on
 base `565cb42`.
 
-## Phase 3 — ephemeral messages have no working reply path
+## Item 4 — ephemeral reply path: ALREADY FIXED at base, close only (corrected after gen-1 review)
 
-**Problem** (confirmed): `packages/relay/src/routes/messages.ts:168-169` (the
-ephemeral send branch) tells the receiver to reply via `meta.correlation_id`,
-but the correlation_id is never generated: a sender-supplied `correlation_id`
-is stripped at line ~108 as anti-forgery, and the ephemeral branch only sets
-`ephemeral='1'`. `in_reply_to` 400s because the ephemeral parent was never
-persisted (no durable row to reference). Both documented reply routes are
-therefore closed.
+**Original premise was wrong.** The BACKLOG row's description matches an
+older state of the code. Gen-1 hetero plan review (codex gpt-5.6-sol,
+2026-09-17) produced 4 accepted blockers (R8/R9/R10/R13) against the
+now-deleted "Phase 3" draft below, each citing file:line. Depth-0 independently
+re-read every citation before accepting the repair (never trust a reviewer
+verdict as fact):
 
-**Fix** (smallest correct fix per the brief): when the relay builds an
-ephemeral envelope, it — not the sender — mints a `correlation_id` (reuse the
-same ID generator as `newMessageId`/message ids, or the envelope's own `id` if
-that is already unique per send) and stamps it into `meta.correlation_id` on
-the OUTBOUND envelope the receiver gets. The relay also remembers, in-memory,
-`correlation_id -> { from, to, ttl }` for the ephemeral parent's audience
-(bounded TTL matching `EPHEMERAL_ROUTE_TTL_MS`, already imported in
-messages.ts) so that a reply carrying that `correlation_id` resolves to the
-audience the ephemeral parent reached, even though nothing durable was ever
-written. If a reply arrives after the TTL or with an unknown correlation_id,
-it is rejected the same way an unknown `in_reply_to` parent is today (existing
-`unknown_parent`-shaped 400), not a new silent failure.
+- `packages/relay/src/routes/messages.ts:505-517` — the ephemeral chat branch
+  already does `m['correlation_id'] = newMessageId()` (relay-minted, comment
+  explicitly says the anti-forgery strip makes a sender-supplied one
+  unusable, so the relay mints its own).
+- `packages/relay/src/routes/messages.ts:556-583` — a `route` (with that
+  `correlation_id`, `expires_at` = now + `EPHEMERAL_ROUTE_TTL_MS`) and grants
+  for the live-matched audience are persisted via `writeRouteAndMessage`
+  even for a directed chat with `persistMessage=false` — so the reply path
+  has real routing state, not "nothing durable was ever written" as the
+  original plan assumed.
+- `packages/relay/src/routes/replies.ts:239-246` `resolveParentRoute` —
+  looks up by id, THEN by `getRouteByCorrelation(Scoped)` alias; expired ⇒
+  treated as not found.
+- `packages/relay/src/routes/replies.ts:361-397` — an unresolved parent (never
+  existed, expired, or unknown) returns `unknown_parent`, and
+  `packages/shared/src/constants.ts:113` maps that to HTTP **404** (not 400 as
+  the original plan assumed).
+- Tests already cover exactly this: `packages/relay/tests/integration/attribution.test.ts:329-378`
+  ("stamps a correlation_id alongside the ephemeral flag", "the correlation_id
+  is relay-generated, so a forged one cannot survive") and
+  `packages/relay/tests/integration/replies.test.ts:381-387`
+  ("resolves the parent by correlation_id alias") — both pass on base
+  `565cb42` today (not written by this line).
 
-If, on reading the reply-resolution code path (`routes/messages.ts` POST
-handler, `in_reply_to` handling), the smallest correct fix needs a design
-decision beyond this (e.g. persistence semantics conflicting with the
-no-durable-write contract for ephemeral), STOP this item, write the two
-options considered in the ledger, and do not guess — per the line brief.
-
-Adversarial harness first: sender A sends an ephemeral message to B; B reads
-`meta.correlation_id` from the delivered envelope and replies using it;
-assert the reply reaches A (not a 400, not silently dropped). Confirm RED on
-base `565cb42` (today: no correlation_id present at all, or a reply attempt
-against it 400s).
+No implementation work. Action: flip the hangar-bridge BACKLOG row to Done
+with this evidence (the row is stale — the fix shipped in an earlier,
+unrelated line that never closed it out).
 
 ## Verify (every phase, fresh worktree)
 
