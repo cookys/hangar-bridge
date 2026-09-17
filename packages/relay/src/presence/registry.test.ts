@@ -49,6 +49,16 @@ describe('PresenceRegistry', () => {
     expect(p.get('t1', 'alice')?.summary).toBe('has content')
   })
 
+  it('a NEWER empty first session does not suppress an OLDER non-empty sibling (inverse order)', () => {
+    // Own clock: the shared fixture freezes time, which would hide the ordering bug.
+    let t = 0
+    const q = new PresenceRegistry(() => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)))
+    q.set('t1', 'alice', 'cockpit', { summary: '' })            // t=0, sessions[0]
+    q.set('t1', 'alice', 'laptop', { summary: 'older but real' }) // t=1
+    q.set('t1', 'alice', 'cockpit', { summary: '' })            // t=2: empty AND newest
+    expect(q.get('t1', 'alice')?.summary).toBe('older but real')
+  })
+
   it('listTeam returns all humans with their summaries', () => {
     p.set('t1', 'alice', 'laptop', { summary: 'A', cwd: '/', branch: 'm', repo: 'r' })
     p.set('t1', 'bob',   'laptop', { summary: 'B', cwd: '/', branch: 'm', repo: 'r' })

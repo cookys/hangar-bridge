@@ -89,6 +89,23 @@ describe('presence instance uniqueness', () => {
     })
   })
 
+  // F-P3-1 (2026-09-17): each session's OWN summary must survive the route's
+  // session/subscription merge, and the handle-level summary is the most recent
+  // non-empty one — asserted on the HTTP surface, not the registry.
+  it('GET /v1/peers carries each session\'s own summary and the handle-level most-recent non-empty', async () => {
+    const a = newInstanceId()
+    const b = newInstanceId()
+    await postPresence({ summary: '(connected)', instance: a })
+    await postPresence({ summary: 'cockpit: 2 peers (x, y)', instance: b })
+    await postPresence({ summary: '', instance: a })   // later heartbeat with nothing to say
+    const res = await app.request('/v1/peers', { headers: { authorization: `Bearer ${token}` } })
+    const alice = (await res.json() as any[]).find(p => p.handle === 'alice')
+    const byInstance = Object.fromEntries(alice.sessions.map((s: any) => [s.instance, s.summary]))
+    expect(byInstance[a]).toBe('')
+    expect(byInstance[b]).toBe('cockpit: 2 peers (x, y)')
+    expect(alice.summary).toBe('cockpit: 2 peers (x, y)')
+  })
+
   it('two processes on one shared secret keep SEPARATE presence rows', async () => {
     const a = newInstanceId()
     const b = newInstanceId()
