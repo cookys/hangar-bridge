@@ -1,0 +1,20 @@
+# pane final mile P3b (peer-agent local_target decline) — deploy record (2026-09-20 00:0x CST, hub = openclaw)
+
+Candidate `develop@55240438ca5f38a703c573a9688add15a1649cf6` (merge of `fix/peer-agent-ignore-foreign-local-target`,
+`b74dd00`). Operator `go` 2026-09-19 ~23:5x CST ("部屬"). Scope: **peer-agent only** — `git diff fb4c156..5524043 -- packages/relay`
+is empty, so the relay was **not restarted** (`/health` still `build_revision fb4c156…`, uptime continuous); NATS stays disabled.
+
+| step | result |
+|---|---|
+| §1 admission (scratch clone `/tmp/hb-admit`, `corepack pnpm@10.32.1`, `nats-server` v2.14.3 pinned) | sha ✓ · clean tree ✓ · ff-merge ✓ · nats pin ✓ · pnpm pin ✓ · install --frozen-lockfile ✓ · shared build ✓ · typecheck shared/relay/peer-agent ✓ · **typecheck e2e FAIL — pre-existing (`src/harness.ts(63,17) TS2345`, e2e/shared have 0 diff since fb4c156; recorded the same way on 2026-09-17)** · test:ci shared 157 / relay 469 / peer-agent 554 (+1 skipped) ✓ · build ✓ · audit --prod ✓ · audit ✓ · diff --check ✓ |
+| artifact | `packages/peer-agent/dist/index.js` sha256 `4402d8a68ac6cd7e83f31449a0b76d64d0f3ba8e44b433f9eb23181a76d062b6` (was `b775ac614b42…` at fb4c156); `dist/inbound.js` `3ee298f78203…` |
+| §2 relay | **NOT RUN by design** — relay package unchanged; no backup/restart. Rollback for the relay is therefore moot; the peer rollback is `git checkout fb4c156 && pnpm -r build` per clone (index.js back to `b775ac614b42…`). |
+| §3 peers (one at a time, `hb-peer-upgrade.sh`: ff-merge → clean → install → shared build → build → artifact sha == candidate → `install-mcp.sh --dry-run` (no `.claude.json*` mutation) → `install-mcp.sh` → `HANGAR_MCP_KEY` check) | hub linux-box/cookys (node 24) PASS · aimax395 (24) PASS · cookys-gentoo (24) PASS · crosshair8-hero (24) PASS · 7840hs (24, `npx pnpm`) PASS · twgs-revival/cookys (24, `npx pnpm`) PASS · twgs-revival/twgs-dev (22) PASS · twgs-revival/codepower (18, `npx pnpm`) PASS — all eight report `index.js=4402d8a6…` |
+| itx WSL (ChatGPT inverse courier, `install-mcp.sh` N/A) | ff-merge ✓ · install ✓ · build ✓ · artifact ✓; courier restart: `pkill -f` self-matched the ssh shell (hangar gotcha `pgrep-pkill-f-self-match`) but the kill had landed — `fleet-watchdog.sh` respawned `tunnel-client` (pid 13403) + peer-agent (pid 13436) on the new dist at 00:08:47, `readyz` 200, `fleet peers` `itx-chatgpt online=True` |
+| `bin/hangar-bridge-fleet.sh status --candidate … --artifact-sha256 …` | `twgs-revival/cookys` (the only `can-dispatch:true` principal) **FAIL gate=exact-session** — unchanged from 2026-09-17 (`agent-call` not on that login's PATH); not this candidate |
+| live acceptance (hub) | control: the hub's own long-running Claude session (old dist, started 2026-09-19) DID surface `msg_01M2X6XKMKEQEFCWN7YTYMS702` (`local_target=no-such-pane`, all-sessions bare-handle send) as a `<channel>` message. Fresh session on the new dist: see the line below. |
+| fresh-session observation | **PASS** — a fresh headless session on the new dist (relay instance `01M2X6ZHCP8G1JD7AZPTY0TFB3`) was live when `msg_01M2X6ZKE8WKJX0G0ESF60T0QX` (`local_target=no-such-pane`, all-sessions bare-handle send, relay `matched:3` incl. that instance) was sent; after a 90 s foreground wait its model turn printed `NO-CHANNEL-MESSAGES`, while the old-dist control session surfaced the same envelope as a `<channel>` message. (A first attempt was void: the probe was not yet live at send time — `matched:2` — and it backgrounded its wait.) |
+| not yet | running Claude sessions on every host keep the old peer-agent until they restart (MCP config is not hot-reloaded); the drop rule is live for every session started after 2026-09-20 00:0x CST and for the itx courier now |
+
+Retirement note: this is defense in depth for the fleet-comms pane-final-mile project (couriers retired 2026-09-19); the primary fix
+(cockpit `caps=pane`, `--local` resolved by presence caps) is already live — see hangar `decisions/_global/0016` addendum 2026-09-19.
