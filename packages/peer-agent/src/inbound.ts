@@ -39,6 +39,20 @@ export interface InboundDispatcherOpts {
   // behaviour: undefined ⇒ gate off.
   finalMileKind?: 'claude-channel' | 'agent-call' | undefined
   acceptBroadcast?: boolean | undefined
+  // Whether THIS peer is the courier for an envelope that names a pane
+  // (`meta.local_target`, bare `<name>` or `<name>@<generation>`). A Claude-
+  // channel session is never one (it has no pane to paste into); a switchboard
+  // courier is one for every name; a single-target courier only for its own
+  // target. Optional so every existing construction site keeps today's
+  // behaviour: undefined ⇒ every envelope is accepted, as before.
+  //
+  // Why it exists (2026-09-19, hangar gotcha
+  // a-local-send-to-the-wrong-handle-is-a-host-broadcast): a `--local` send to
+  // a host handle with no switchboard reached every Claude session on that host
+  // — seven models each spent a turn on a message addressed to one codex pane
+  // none of them could reach. The CLI now narrows such sends; this is the
+  // receiver-side half, so a misaddressed pane message costs nobody a turn.
+  acceptsLocalTarget?: ((localTarget: string) => boolean) | undefined
 }
 
 /**
@@ -118,6 +132,24 @@ export class InboundDispatcher {
     // That pull path is what makes turning off push safe — without it this would be
     // a drop, not a decline. Deliberately not mirrored in GET /v1/messages for the
     // same reason: a pull interrupts nobody.
+    // A pane-addressed envelope (`meta.local_target`) that this peer is not the
+    // courier for is declined like an unqualified broadcast: cursor advanced,
+    // nothing surfaced, one log line. It stays in the relay's durable buffer
+    // for `poll_inbox`, so this is a decline, not a drop. Every kind — a
+    // task_dispatch to a pane is the pane's to answer, not this session's.
+    const localTarget = e.meta.local_target
+    if (
+      typeof localTarget === 'string'
+      && localTarget.length > 0
+      && this.opts.acceptsLocalTarget !== undefined
+      && !this.opts.acceptsLocalTarget(localTarget)
+    ) {
+      logJson('info', 'peer.inbound.local_target_ignored', {
+        from: e.from, kind: e.kind, msg_id: e.id, local_target: localTarget,
+      })
+      this.opts.setCursor(e.id)
+      return 'delivered'
+    }
     if (
       this.opts.finalMileKind === 'agent-call'
       && e.to === TEAM_BROADCAST_HANDLE
