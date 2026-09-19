@@ -465,3 +465,90 @@ describe('InboundDispatcher — agent-call broadcast gate', () => {
     expect(sent).toHaveLength(1)
   })
 })
+
+describe('InboundDispatcher — pane-addressed envelopes (meta.local_target)', () => {
+  // 2026-09-19 incident: a `fleet send --to cuda --local <pane>` reached every
+  // Claude session on cuda and the pane got nothing. The receiver-side rule:
+  // an envelope naming a pane is for its courier only.
+  const withOwner = (
+    sent: { method: string; params: Record<string, unknown> }[],
+    cursors: string[],
+    acceptsLocalTarget: ((t: string) => boolean) | undefined,
+    finalMileKind: 'claude-channel' | 'agent-call' = 'claude-channel',
+  ) => new InboundDispatcher({
+    gate: new SenderGate(['alice']),
+    emit: n => { sent.push(n) },
+    setCursor: id => { cursors.push(id) },
+    finalMileKind,
+    acceptsLocalTarget,
+  })
+  const incident = (overrides: Partial<Envelope> = {}): Envelope => envelope({
+    to: 'cuda',
+    meta: { local_target: 'peer-advisory--roundtable-codex' },
+    ...overrides,
+  })
+
+  it('a claude-channel session declines the incident envelope: nothing surfaced, cursor advanced', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    const e = incident()
+    await expect(withOwner(sent, cursors, () => false).handle(e)).resolves.toBe('delivered')
+    expect(sent).toHaveLength(0)
+    expect(cursors).toEqual([e.id])
+  })
+
+  it('a selector-form target (<name>@<generation>) is declined the same way', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    const e = incident({ meta: { local_target: 'peer-advisory--roundtable-codex@01M2VKA26HH7TWRKWY3Z5TE168' } })
+    await expect(withOwner(sent, cursors, () => false).handle(e)).resolves.toBe('delivered')
+    expect(sent).toHaveLength(0)
+  })
+
+  it('every kind is declined when not the courier — a dispatch to a pane is the pane\'s to answer', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(withOwner(sent, cursors, () => false).handle(incident({ kind: 'task_dispatch' })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(0)
+  })
+
+  it('a switchboard courier accepts every pane target', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(withOwner(sent, cursors, () => true, 'agent-call').handle(incident()))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('a single-target courier accepts its own target (bare or with a generation) and declines another', async () => {
+    const owner = (t: string) => t.split('@')[0] === 'peer-advisory--roundtable-codex'
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    const d = withOwner(sent, cursors, owner, 'agent-call')
+    await expect(d.handle(incident())).resolves.toBe('delivered')
+    await expect(d.handle(incident({ id: 'msg_01KWDX987430J8QEAW26Y89HS2', meta: { local_target: 'peer-advisory--roundtable-codex@01M2VKA26HH7TWRKWY3Z5TE168' } })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(2)
+    await expect(d.handle(incident({ id: 'msg_01KWDX987430J8QEAW26Y89HS3', meta: { local_target: 'someone-else--codex' } })))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(2)
+  })
+
+  it('an envelope without local_target is untouched by the rule (acceptsLocalTarget never consulted)', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    let consulted = 0
+    await expect(withOwner(sent, cursors, () => { consulted += 1; return false }).handle(envelope()))
+      .resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+    expect(consulted).toBe(0)
+  })
+
+  it('an undefined acceptsLocalTarget keeps today\'s behaviour: the envelope is emitted', async () => {
+    const sent: { method: string; params: Record<string, unknown> }[] = []
+    const cursors: string[] = []
+    await expect(withOwner(sent, cursors, undefined).handle(incident())).resolves.toBe('delivered')
+    expect(sent).toHaveLength(1)
+  })
+})

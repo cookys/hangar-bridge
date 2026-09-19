@@ -283,6 +283,15 @@ async function main(): Promise<void> {
     ? new InboxSpool({ path: defaultInboxSpoolPath(), max: cfg.inbox.spool_max })
     : undefined
   if (inboxSpool) logJson('info', 'peer.inbox.spool', { path: defaultInboxSpoolPath(), max: cfg.inbox.spool_max })
+  // Who is a courier for a pane-addressed envelope (inbound.ts): a Claude
+  // channel session never; a switchboard for every name; a single-target
+  // courier for its own target only (bare name or `<name>@<generation>`).
+  function localTargetAcceptor(finalMile: typeof cfg.final_mile): (target: string) => boolean {
+    if (finalMile.kind === 'claude-channel') return () => false
+    if (finalMile.switchboard) return () => true
+    const own = finalMile.target
+    return (target: string) => target.split('@')[0] === own
+  }
   const dispatcher = new InboundDispatcher({
     gate,
     emit: async (notification, envelope) => {
@@ -312,6 +321,10 @@ async function main(): Promise<void> {
     presenceTracker,
     finalMileKind: cfg.final_mile.kind,
     acceptBroadcast: cfg.final_mile.kind === 'agent-call' ? cfg.final_mile.accept_broadcast : false,
+    // Who is a courier for a pane-addressed envelope (inbound.ts): a Claude
+    // channel session never; a switchboard for every name; a single-target
+    // courier for its own target only (bare name or `<name>@<generation>`).
+    acceptsLocalTarget: localTargetAcceptor(cfg.final_mile),
   })
 
   let client: PeerTransport
